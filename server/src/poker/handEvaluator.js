@@ -83,37 +83,44 @@ function evaluateFive(cards) {
     .map(([val, count]) => ({ val: parseInt(val), count }))
     .sort((a, b) => b.count - a.count || b.val - a.val)
 
+  let result
+
   if (isFlush && isStraight) {
-    if (straightHigh === 14) return { rank: HAND_RANK.ROYAL_FLUSH, kickers: [14] }
-    return { rank: HAND_RANK.STRAIGHT_FLUSH, kickers: [straightHigh] }
+    if (straightHigh === 14) result = { rank: HAND_RANK.ROYAL_FLUSH, kickers: [14] }
+    else result = { rank: HAND_RANK.STRAIGHT_FLUSH, kickers: [straightHigh] }
   }
-  if (groups[0].count === 4) {
-    return { rank: HAND_RANK.FOUR_OF_A_KIND, kickers: [groups[0].val, groups[1].val] }
+  else if (groups[0].count === 4) {
+    result = { rank: HAND_RANK.FOUR_OF_A_KIND, kickers: [groups[0].val, groups[1].val] }
   }
-  if (groups[0].count === 3 && groups[1].count === 2) {
-    return { rank: HAND_RANK.FULL_HOUSE, kickers: [groups[0].val, groups[1].val] }
+  else if (groups[0].count === 3 && groups[1].count === 2) {
+    result = { rank: HAND_RANK.FULL_HOUSE, kickers: [groups[0].val, groups[1].val] }
   }
-  if (isFlush) {
-    return { rank: HAND_RANK.FLUSH, kickers: values }
+  else if (isFlush) {
+    result = { rank: HAND_RANK.FLUSH, kickers: values }
   }
-  if (isStraight) {
-    return { rank: HAND_RANK.STRAIGHT, kickers: [straightHigh] }
+  else if (isStraight) {
+    result = { rank: HAND_RANK.STRAIGHT, kickers: [straightHigh] }
   }
-  if (groups[0].count === 3) {
+  else if (groups[0].count === 3) {
     const kickers = groups.filter(g => g.count === 1).map(g => g.val).sort((a, b) => b - a)
-    return { rank: HAND_RANK.THREE_OF_A_KIND, kickers: [groups[0].val, ...kickers] }
+    result = { rank: HAND_RANK.THREE_OF_A_KIND, kickers: [groups[0].val, ...kickers] }
   }
-  if (groups[0].count === 2 && groups[1].count === 2) {
+  else if (groups[0].count === 2 && groups[1].count === 2) {
     const pairs = groups.filter(g => g.count === 2).map(g => g.val).sort((a, b) => b - a)
     const kicker = groups.find(g => g.count === 1)?.val || 0
-    return { rank: HAND_RANK.TWO_PAIR, kickers: [...pairs, kicker] }
+    result = { rank: HAND_RANK.TWO_PAIR, kickers: [...pairs, kicker] }
   }
-  if (groups[0].count === 2) {
+  else if (groups[0].count === 2) {
     const kickers = groups.filter(g => g.count === 1).map(g => g.val).sort((a, b) => b - a)
-    return { rank: HAND_RANK.PAIR, kickers: [groups[0].val, ...kickers] }
+    result = { rank: HAND_RANK.PAIR, kickers: [groups[0].val, ...kickers] }
+  }
+  else {
+    result = { rank: HAND_RANK.HIGH_CARD, kickers: values }
   }
 
-  return { rank: HAND_RANK.HIGH_CARD, kickers: values }
+  // Attach the exact 5 cards used for this evaluation
+  result.bestCards = cards
+  return result
 }
 
 // Evaluate best 5-card hand from up to 7 cards
@@ -182,6 +189,7 @@ export function determineWinners(players, communityCards) {
   return winners.map(w => ({
     playerId: w.playerId,
     handName: getHandName(w.hand),
-    handRank: w.hand.rank
+    handRank: w.hand.rank,
+    winningCards: w.hand.bestCards
   }))
 }

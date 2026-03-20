@@ -183,6 +183,22 @@ export default function PokerPage() {
 
   const minRaise = currentBetAmount === 0 ? 10 : currentBetAmount * 2
 
+  // Check if a specific card should get the golden ring
+  const isWinningCard = (card, specificPlayerId = null) => {
+    if (phase !== 'showdown' || !showdownData?.winners) return false
+    if (!card) return false
+
+    // If specificPlayerId passed, only evaluate against their specific winning hand. 
+    // Otherwise check all winners (useful for community board check).
+    const winnersToCheck = specificPlayerId
+      ? showdownData.winners.filter(w => w.playerId === specificPlayerId)
+      : showdownData.winners
+
+    return winnersToCheck.some(w =>
+      w.winningCards?.some(wc => wc.suit === card.suit && wc.rank === card.rank)
+    )
+  }
+
   if (!joined) {
     return (
       <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4">
@@ -244,7 +260,7 @@ export default function PokerPage() {
           {/* Community Cards */}
           <div className="absolute top-[50%] left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-1 sm:gap-2 z-0">
             {(gameState?.communityCards || []).map((card, i) => (
-              <CardSprite key={i} card={card} className="w-[14vw] sm:w-[60px] md:w-[80px]" />
+              <CardSprite key={i} card={card} highlight={isWinningCard(card)} className="w-[14vw] sm:w-[60px] md:w-[80px]" />
             ))}
             {Array.from({ length: Math.max(0, 5 - (gameState?.communityCards?.length || 0)) }).map((_, i) => (
               <div key={`e-${i}`} className="border border-white/[0.08] rounded-md w-[14vw] sm:w-[60px] md:w-[80px] aspect-[80/110]" style={{ background: 'rgba(255,255,255,0.02)' }} />
@@ -312,6 +328,7 @@ export default function PokerPage() {
                       <CardSprite 
                         key={ci} 
                         card={card} 
+                        highlight={isWinningCard(card, player.id)}
                         className={isMe ? "w-[12vw] sm:w-[60px] md:w-[82px]" : "w-[9vw] sm:w-[45px] md:w-[60px]"} 
                       />
                     ))}

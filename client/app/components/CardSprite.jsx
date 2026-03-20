@@ -9,15 +9,20 @@ const RANK_INDEX = {
 export const CARD_W = 80
 export const CARD_H = 110
 
-export default function CardSprite({ card, className = '', ...props }) {
+export default function CardSprite({ card, className = '', highlight = false, ...props }) {
   // Map to the 5th row, 1st column if no card is passed (card back)
   const bgX = card ? -(RANK_INDEX[card.rank] * CARD_W) : 0
   const bgY = card ? -(SUIT_INDEX[card.suit] * CARD_H) : -(4 * CARD_H)
 
+  // Switch to the gold active glow if the card is a winning piece
+  const borderClass = highlight
+    ? 'ring-2 ring-amber-400 shadow-[0_0_20px_rgba(251,191,36,0.4)] border-transparent z-10 relative'
+    : 'border border-white/10 shadow-sm relative'
+
   return (
     <svg
       viewBox={`0 0 ${CARD_W} ${CARD_H}`}
-      className={`inline-block overflow-hidden rounded-md shadow-sm border border-white/10 h-auto ${className}`}
+      className={`inline-block overflow-hidden rounded-md h-auto transition-all duration-300 ${borderClass} ${className}`}
       {...props}
     >
       <image

@@ -460,7 +460,8 @@ export class PokerGame {
               username: player.username,
               chips: wonAmount,
               handName: getHandName(w.hand),
-              handRank: w.hand.rank
+              handRank: w.hand.rank,
+              winningCards: w.hand.bestCards // Pass the specific 5 winning cards down
             })
           }
         }
@@ -523,7 +524,7 @@ export class PokerGame {
     this.onBroadcast({
       type: 'showdown',
       data: {
-        winners: [{ playerId: winnerId, username: winner?.username, chips: this.pot, handName: 'Won by fold' }],
+        winners: [{ playerId: winnerId, username: winner?.username, chips: this.pot, handName: 'Won by fold', winningCards: [] }],
         hands: {},
         playerHandNames: { [winnerId]: 'Won by fold' }
       }
