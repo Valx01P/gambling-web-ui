@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import PokerChip from '../components/PokerChip'
-import CardSprite, { CARD_W, CARD_H, CARD_SCALE } from '../components/CardSprite'
+import CardSprite from '../components/CardSprite'
 import { BetChips, PotChips } from '../components/ChipStack'
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001'
@@ -10,19 +10,26 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001'
 function ActionBadge({ action }) {
   if (!action || !action.action) return null
   const labels = {
-    fold:   { text: 'FOLD',                   color: 'text-red-100 bg-red-800/90 border-red-600/50' },
-    check:  { text: 'CHECK',                  color: 'text-white bg-zinc-600/90 border-zinc-400/50' },
-    call:   { text: `CALL ${action.amount || ''}`.trim(),   color: 'text-emerald-100 bg-emerald-700/90 border-emerald-500/50' },
-    raise:  { text: `RAISE ${action.amount || ''}`.trim(),  color: 'text-amber-100 bg-amber-700/90 border-amber-500/50' },
-    all_in: { text: 'ALL IN',                 color: 'text-amber-100 bg-amber-600/90 border-amber-400/50' },
-    sb:     { text: 'SB',                     color: 'text-white bg-zinc-600/90 border-zinc-400/50' },
-    bb:     { text: 'BB',                     color: 'text-white bg-zinc-600/90 border-zinc-400/50' },
+    fold:   { bg: 'bg-red-800/90 border-red-600/50 text-red-100', defaultText: 'FOLD' },
+    check:  { bg: 'bg-zinc-600/90 border-zinc-400/50 text-white', defaultText: 'CHECK' },
+    call:   { bg: 'bg-emerald-700/90 border-emerald-500/50 text-emerald-100', defaultText: 'CALL' },
+    raise:  { bg: 'bg-amber-700/90 border-amber-500/50 text-amber-100', defaultText: 'RAISE' },
+    all_in: { bg: 'bg-amber-600/90 border-amber-400/50 text-amber-100', defaultText: 'ALL IN' },
+    sb:     { bg: 'bg-zinc-800/95 border-zinc-600/50 text-zinc-200', defaultText: 'SB' },
+    bb:     { bg: 'bg-zinc-800/95 border-zinc-600/50 text-zinc-200', defaultText: 'BB' },
   }
   const info = labels[action.action]
   if (!info) return null
+  
+  // Use dynamically generated server terminology if provided, fallback to defaults
+  let text = action.text || info.defaultText
+  if (action.amount > 0 && action.action !== 'sb' && action.action !== 'bb') {
+    text += ` ${action.amount}`
+  }
+
   return (
-    <div className={`text-xs sm:text-sm font-bold px-2.5 py-1 rounded-md border ${info.color} whitespace-nowrap shadow-sm`}>
-      {info.text}
+    <div className={`text-[10px] sm:text-xs font-bold px-2 py-0.5 sm:py-1 rounded-md border ${info.bg} whitespace-nowrap shadow-sm`}>
+      {text}
     </div>
   )
 }
@@ -37,29 +44,27 @@ function PhaseLabel({ phase }) {
     showdown: 'SHOWDOWN',
   }
   return (
-    <span className="text-sm sm:text-base font-bold text-white tracking-wider bg-zinc-700/80 px-3 py-1.5 rounded-lg border border-zinc-500/50">
+    <span className="text-xs sm:text-sm font-bold text-white tracking-wider bg-zinc-700/80 px-3 py-1.5 rounded-lg border border-zinc-500/50">
       {map[phase] || phase.toUpperCase()}
     </span>
   )
 }
 
-// Adjusted coordinates slightly outwards to accommodate 1.5x bigger cards
 const SEATS = [
-  { top: '88%', left: '50%' }, // Bottom Center (Me)
-  { top: '50%', left: '10%' }, // Bottom Left
-  { top: '15%', left: '18%' }, // Top Left
-  { top: '8%',  left: '50%' }, // Top Center
-  { top: '15%', left: '82%' }, // Top Right
-  { top: '50%', left: '90%' }, // Bottom Right
+  { top: '110%', left: '50%' }, // Bottom Center (Me)
+  { top: '85%', left: '10%' },  // Bottom Left
+  { top: '15%', left: '10%' },  // Top Left
+  { top: '-5%', left: '50%' },  // Top Center
+  { top: '15%', left: '90%' },  // Top Right
+  { top: '85%', left: '90%' },  // Bottom Right
 ]
 
-// Determine where the chips go relative to the player so they land "on the table"
 const getBetPosClasses = (posIndex) => {
   switch(posIndex) {
-    case 0: return 'bottom-full mb-5 left-1/2 -translate-x-1/2'
-    case 1: case 2: return 'left-full ml-6 top-1/2 -translate-y-1/2'
-    case 3: return 'top-full mt-5 left-1/2 -translate-x-1/2'
-    case 4: case 5: return 'right-full mr-6 top-1/2 -translate-y-1/2'
+    case 0: return 'bottom-[102%] sm:bottom-[105%] left-1/2 -translate-x-1/2'
+    case 1: case 2: return 'left-[105%] sm:left-[110%] top-1/2 -translate-y-1/2'
+    case 3: return 'top-[105%] sm:top-[110%] left-1/2 -translate-x-1/2'
+    case 4: case 5: return 'right-[105%] sm:right-[110%] top-1/2 -translate-y-1/2'
     default: return ''
   }
 }
@@ -73,6 +78,7 @@ export default function PokerPage() {
   const [joined, setJoined] = useState(false)
   const [isSpectator, setIsSpectator] = useState(false)
   const [gameState, setGameState] = useState(null)
+  const [showdownData, setShowdownData] = useState(null)
   const [raiseAmount, setRaiseAmount] = useState(0)
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
@@ -109,6 +115,9 @@ export default function PokerPage() {
           break
         case 'game_state':
           setGameState(msg.data)
+          if (msg.data.phase !== 'showdown') {
+            setShowdownData(null) // Clear hand names when next hand starts
+          }
           break
         case 'room_update':
           if (msg.data.gameState) setGameState(msg.data.gameState)
@@ -118,10 +127,19 @@ export default function PokerPage() {
           if (msg.data.gameState) setGameState(msg.data.gameState)
           if (msg.data.message) addSys(msg.data.message)
           break
+        case 'system_message':
+          if (msg.data.message) addSys(msg.data.message)
+          break
         case 'showdown':
-          if (msg.data.winners?.length) {
-            const w = msg.data.winners[0]
-            addSys(`Winner: ${w.playerId.substring(0, 6)} — ${w.handName}`)
+          // Properly reading 'msg.data' resolving the silent analysis freeze 
+          if (msg.data) {
+            setShowdownData(msg.data)
+            if (msg.data.winners?.length) {
+              msg.data.winners.forEach(w => {
+                const name = w.username || w.playerId.substring(0, 6);
+                addSys(`Winner: ${name} (+${w.chips}) — ${w.handName}`)
+              })
+            }
           }
           break
         case 'chat':
@@ -159,9 +177,11 @@ export default function PokerPage() {
   const myPlayer = gameState?.players?.find((p) => p.id === playerId)
   const isMyTurn = gameState?.activePlayerId === playerId
   const myBet = myPlayer?.bet || 0
-  const toCall = (gameState?.currentBet || 0) - myBet
+  const currentBetAmount = gameState?.currentBet || 0
+  const toCall = currentBetAmount - myBet
   const phase = gameState?.phase || 'waiting'
-  const minRaise = (gameState?.currentBet || 0) + 10
+
+  const minRaise = currentBetAmount === 0 ? 10 : currentBetAmount * 2
 
   if (!joined) {
     return (
@@ -190,156 +210,186 @@ export default function PokerPage() {
   }
 
   return (
-    <div className="min-h-[100dvh] flex flex-col px-4 pt-4 max-w-7xl mx-auto relative overflow-hidden pb-64">
+    <div className="min-h-[100dvh] flex flex-col p-3 md:p-4 max-w-7xl mx-auto overflow-x-hidden">
       
       {/* Top Header Row */}
-      <div className="flex items-center justify-between mb-8 z-50">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between mb-3 sm:mb-4 z-20 shrink-0">
+        <div className="flex items-center gap-2 sm:gap-3">
           {isSpectator && (
-            <span className="text-sm font-bold bg-zinc-700/80 text-white border border-zinc-500/50 px-3 py-1.5 rounded-lg shadow-sm">Spectating</span>
+            <span className="text-xs sm:text-sm font-bold bg-zinc-700/80 text-white border border-zinc-500/50 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg shadow-sm">Spectating</span>
           )}
           <PhaseLabel phase={phase} />
         </div>
-        <button onClick={() => send('leave_game')} className="text-sm font-bold text-white bg-zinc-700/80 hover:bg-zinc-600 px-4 py-2 rounded-lg border border-zinc-500/50 shadow-sm transition-colors">
+        <button onClick={() => send('leave_game')} className="text-xs sm:text-sm font-bold text-white bg-zinc-700/80 hover:bg-zinc-600 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg border border-zinc-500/50 shadow-sm transition-colors">
           Leave Table
         </button>
       </div>
 
-      {/* Main Table Area */}
-      <div className="relative w-full aspect-[2.4/1] sm:aspect-[2.2/1] min-h-[400px] flex-shrink-0">
-        <div
-          className="absolute inset-[3%] sm:inset-[4%] rounded-[50%] border-4 border-emerald-900/40"
-          style={{
-            background: 'radial-gradient(ellipse 70% 60% at 50% 45%, #1a5c3a 0%, #14472c 45%, #0f3521 80%, #0a2a18 100%)',
-            boxShadow: 'inset 0 2px 50px rgba(0,0,0,0.5), 0 0 100px rgba(0,0,0,0.4)',
-          }}
-        />
+      {/* Main Table Wrapper */}
+      <div className="flex-1 flex flex-col justify-center relative w-full mb-4">
+        
+        <div className="relative w-full max-w-5xl mx-auto aspect-[1.1/1] sm:aspect-[1.8/1] md:aspect-[2.2/1] rounded-[50%] border-4 border-emerald-900/40 shrink-0 mt-2 sm:mt-4 mb-16 md:mb-24"
+             style={{
+               background: 'radial-gradient(ellipse 70% 60% at 50% 45%, #1a5c3a 0%, #14472c 45%, #0f3521 80%, #0a2a18 100%)',
+               boxShadow: 'inset 0 2px 50px rgba(0,0,0,0.5), 0 0 100px rgba(0,0,0,0.4)',
+             }}>
 
-        {/* Pot positioned higher so it doesn't overlap cards */}
-        <div className="absolute top-[18%] sm:top-[16%] left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 z-0">
-          <PotChips amount={gameState?.pot || 0} />
-          <div className="text-xs text-white/60 font-bold tracking-widest bg-black/30 px-2 py-0.5 rounded-md mt-1">POT</div>
-          <div className="font-black text-2xl sm:text-3xl text-white drop-shadow-md">{gameState?.pot || 0}</div>
-        </div>
+          {/* Pot */}
+          <div className="absolute top-[12%] sm:top-[10%] left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 z-0">
+            <PotChips amount={gameState?.pot || 0} />
+            <div className="text-[10px] sm:text-xs text-white/60 font-bold tracking-widest bg-black/30 px-2 py-0.5 rounded-md mt-1">POT</div>
+            <div className="font-black text-2xl sm:text-3xl text-white drop-shadow-md">{gameState?.pot || 0}</div>
+          </div>
 
-        {/* Community Cards */}
-        <div className="absolute top-[48%] left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-1.5 sm:gap-2 z-0">
-          {(gameState?.communityCards || []).map((card, i) => (
-            <CardSprite key={i} card={card} />
-          ))}
-          {Array.from({ length: Math.max(0, 5 - (gameState?.communityCards?.length || 0)) }).map((_, i) => (
-            <div key={`e-${i}`} className="border-2 border-white/[0.08] rounded-md" style={{ width: CARD_W * CARD_SCALE, height: CARD_H * CARD_SCALE, background: 'rgba(255,255,255,0.02)' }} />
-          ))}
-        </div>
+          {/* Community Cards */}
+          <div className="absolute top-[50%] left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-1 sm:gap-2 z-0">
+            {(gameState?.communityCards || []).map((card, i) => (
+              <CardSprite key={i} card={card} className="w-[14vw] sm:w-[60px] md:w-[80px]" />
+            ))}
+            {Array.from({ length: Math.max(0, 5 - (gameState?.communityCards?.length || 0)) }).map((_, i) => (
+              <div key={`e-${i}`} className="border border-white/[0.08] rounded-md w-[14vw] sm:w-[60px] md:w-[80px] aspect-[80/110]" style={{ background: 'rgba(255,255,255,0.02)' }} />
+            ))}
+          </div>
 
-        {/* Players */}
-        {orderedPlayers.map((player, seatIndex) => {
-          const pos = SEATS[seatIndex]
-          if (!pos) return null
-          const isMe = player.id === playerId
-          const isActive = gameState?.activePlayerId === player.id
-          const isDealer = getOriginalIndex(player) === gameState?.dealerIndex
+          {/* Players */}
+          {orderedPlayers.map((player, seatIndex) => {
+            const pos = SEATS[seatIndex]
+            if (!pos) return null
+            const isMe = player.id === playerId
+            const isActive = gameState?.activePlayerId === player.id
+            const isDealer = getOriginalIndex(player) === gameState?.dealerIndex
 
-          return (
-            <div key={player.id} className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center" style={{ top: pos.top, left: pos.left }}>
-              
-              {/* Bet Stack projected onto the table */}
-              {player.lastAction && (
-                <div className={`absolute flex flex-col items-center justify-center gap-1 z-20 ${getBetPosClasses(seatIndex)}`}>
-                  <ActionBadge action={player.lastAction} />
-                  {player.bet > 0 && <BetChips amount={player.bet} />}
-                </div>
-              )}
+            const isWinner = phase === 'showdown' && showdownData?.winners?.some(w => w.playerId === player.id)
+            const wonAmount = showdownData?.winners?.find(w => w.playerId === player.id)?.chips
+            const handName = showdownData?.playerHandNames?.[player.id]
 
-              {/* Stack / Info Box (Behind Cards) */}
-              <div className="relative flex justify-center mt-6">
-                <div className={`
-                  absolute -top-10 left-1/2 -translate-x-1/2
-                  px-3 py-1.5 rounded-lg text-center min-w-[120px] shadow-xl
-                  transition-all border z-0
-                  ${isMe ? 'bg-zinc-600/95 border-zinc-400/50' : 'bg-zinc-700/95 border-zinc-500/50'}
-                  ${player.folded ? 'opacity-40' : ''}
-                  ${isActive ? 'ring-2 ring-amber-400 shadow-[0_0_20px_rgba(251,191,36,0.4)]' : ''}
-                `}>
-                  {isActive && (
-                    <div className="absolute -top-5 left-1/2 -translate-x-1/2 text-amber-400 text-sm animate-bounce">▼</div>
-                  )}
-                  <div className="text-sm font-bold truncate max-w-[110px] text-white">
-                    {isMe ? 'You' : player.username}
-                    {isDealer && <span className="ml-1 text-[10px] bg-amber-500 text-black px-1.5 py-0.5 rounded-sm">D</span>}
+            return (
+              <div key={player.id} className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center" style={{ top: pos.top, left: pos.left }}>
+                
+                {/* Bet Stack projected into the table */}
+                {player.lastAction && (
+                  <div className={`absolute flex flex-col items-center justify-center gap-1 z-20 ${getBetPosClasses(seatIndex)}`}>
+                    {player.bet > 0 && <BetChips amount={player.bet} />}
+                    <ActionBadge action={player.lastAction} />
                   </div>
-                  <div className="text-xs text-zinc-200 font-medium">{player.chips} chips</div>
-                </div>
+                )}
 
-                {/* Player Cards (In front of Stack) */}
-                <div className={`flex gap-1 z-10 relative ${player.folded ? 'opacity-40 grayscale' : ''}`}>
-                  {(player.cards || []).map((card, ci) => (
-                    <CardSprite key={ci} card={card} />
-                  ))}
+                {/* Info & Cards Wrapper */}
+                <div className="relative flex flex-col items-center gap-1">
+                  
+                  {/* Dealer Button Badge */}
+                  {isDealer && (
+                    <div className="absolute -right-3 sm:-right-4 -top-2 w-4 h-4 sm:w-5 sm:h-5 bg-white rounded-full flex items-center justify-center text-black font-black text-[9px] sm:text-[10px] shadow-md border border-zinc-300 z-30">
+                      D
+                    </div>
+                  )}
+
+                  {/* Uniform Nameplate styling */}
+                  <div className={`
+                    px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg text-center min-w-[70px] sm:min-w-[100px] shadow-xl
+                    transition-all border z-10 relative bg-zinc-800/95 border-zinc-600/50
+                    ${player.folded ? 'opacity-40' : ''}
+                    ${isActive ? 'ring-2 ring-amber-400 shadow-[0_0_20px_rgba(251,191,36,0.4)]' : ''}
+                  `}>
+                    {isActive && (
+                      <div className="absolute -top-4 sm:-top-5 left-1/2 -translate-x-1/2 text-amber-400 text-xs sm:text-sm animate-bounce">▼</div>
+                    )}
+                    <div className="text-[10px] sm:text-sm font-bold truncate max-w-[70px] sm:max-w-[100px] text-white">
+                      {isMe ? 'You' : player.username}
+                    </div>
+                    <div className="text-[9px] sm:text-xs text-zinc-200 font-medium">
+                      {phase === 'showdown' && handName && !player.folded ? (
+                        <span className="text-amber-300 font-bold">{handName}</span>
+                      ) : (
+                        `${player.chips} chips`
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Player Cards */}
+                  <div className={`flex gap-0.5 sm:gap-1 z-20 relative ${player.folded ? 'opacity-40 grayscale' : ''}`}>
+                    {(player.cards || []).map((card, ci) => (
+                      <CardSprite 
+                        key={ci} 
+                        card={card} 
+                        className={isMe ? "w-[12vw] sm:w-[60px] md:w-[82px]" : "w-[9vw] sm:w-[45px] md:w-[60px]"} 
+                      />
+                    ))}
+                  </div>
+
+                  {/* Winner Floating Text */}
+                  {isWinner && (
+                    <div className="absolute top-full mt-1 left-1/2 -translate-x-1/2 text-amber-400 font-black text-xs sm:text-sm whitespace-nowrap z-40 drop-shadow-[0_2px_4px_rgba(0,0,0,1)]">
+                      WINNER +{wonAmount}
+                    </div>
+                  )}
+
                 </div>
               </div>
-
-            </div>
-          )
-        })}
+            )
+          })}
+        </div>
       </div>
 
-      {/* Fixed Bottom UI overlay for Chat and Actions */}
-      <div className="fixed bottom-4 left-4 right-4 flex justify-between items-end pointer-events-none z-50">
+      {/* Natural Flow Bottom UI */}
+      <div className="w-full flex flex-col md:flex-row justify-between items-stretch md:items-end gap-3 sm:gap-4 shrink-0 mt-auto">
         
-        {/* Left Side: Actions */}
-        <div className="pointer-events-auto w-full max-w-[300px]">
+        {/* Actions Panel */}
+        <div className="w-full md:w-[240px]">
           {isMyTurn && !isSpectator && !myPlayer?.folded && phase !== 'waiting' && phase !== 'showdown' && (
-            <div className="flex flex-col gap-4 py-4 px-5 bg-zinc-700/95 border border-zinc-500/50 rounded-xl shadow-2xl backdrop-blur-md">
-              <div className="text-xs font-black text-amber-400 tracking-widest animate-pulse text-center">● YOUR TURN</div>
+            <div className="flex flex-col gap-2 py-3 px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md">
+              <div className="text-[9px] sm:text-[10px] font-black text-amber-400 tracking-widest animate-pulse text-center">● YOUR TURN</div>
               
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-1.5">
                 <button onClick={() => send('poker_fold')}
-                  className="px-4 py-2.5 rounded-lg text-sm font-bold transition-all bg-zinc-600 hover:bg-zinc-500 border border-zinc-400/50 text-white shadow-sm active:scale-95">
+                  className="px-2 py-1.5 rounded-md text-xs font-bold transition-all bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95">
                   Fold
                 </button>
                 {toCall === 0 ? (
                   <button onClick={() => send('poker_check')}
-                    className="px-4 py-2.5 rounded-lg text-sm font-bold transition-all bg-zinc-600 hover:bg-zinc-500 border border-zinc-400/50 text-white shadow-sm active:scale-95">
+                    className="px-2 py-1.5 rounded-md text-xs font-bold transition-all bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95">
                     Check
                   </button>
                 ) : (
                   <button onClick={() => send('poker_call')}
-                    className="px-4 py-2.5 rounded-lg text-sm font-bold transition-all bg-emerald-600 hover:bg-emerald-500 border border-emerald-400/50 text-white shadow-sm active:scale-95">
-                    Call {toCall}
+                    className="px-2 py-1.5 rounded-md text-xs font-bold transition-all bg-emerald-600 hover:bg-emerald-50 border border-emerald-400/50 text-white shadow-sm active:scale-95">
+                    Call {Math.min(toCall, myPlayer?.chips || 0)}
                   </button>
                 )}
                 <button onClick={() => send('poker_all_in')}
-                  className="col-span-2 px-4 py-2.5 rounded-lg text-sm font-bold transition-all bg-amber-600 hover:bg-amber-500 border border-amber-400/50 text-white shadow-sm active:scale-95">
+                  className="col-span-2 px-2 py-1.5 rounded-md text-xs font-bold transition-all bg-amber-600 hover:bg-amber-500 border border-amber-400/50 text-white shadow-sm active:scale-95">
                   All In
                 </button>
               </div>
 
-              <div className="flex items-center gap-3 w-full">
-                <input type="range" min={minRaise} max={myPlayer?.chips || 100} step={5}
-                  value={raiseAmount || minRaise} onChange={e => setRaiseAmount(parseInt(e.target.value))}
-                  className="flex-1 accent-white h-1.5 bg-zinc-900 rounded-full" />
-                <button onClick={() => send('poker_raise', { amount: raiseAmount || minRaise })}
-                  className="px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap bg-zinc-600 hover:bg-zinc-500 border border-zinc-400/50 text-white shadow-sm active:scale-95">
-                  Raise {raiseAmount || minRaise}
-                </button>
-              </div>
+              {/* Only show raise slider if the player has enough chips to legally raise */}
+              {myPlayer?.chips > minRaise && (
+                <div className="flex items-center gap-2 w-full mt-0.5">
+                  <input type="range" min={minRaise} max={myPlayer?.chips || 100} step={5}
+                    value={raiseAmount < minRaise ? minRaise : raiseAmount} onChange={e => setRaiseAmount(parseInt(e.target.value))}
+                    className="flex-1 accent-white h-1 bg-zinc-900 rounded-full" />
+                  <button onClick={() => send('poker_raise', { amount: raiseAmount < minRaise ? minRaise : raiseAmount })}
+                    className="px-2 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95">
+                    Raise {raiseAmount < minRaise ? minRaise : raiseAmount}
+                  </button>
+                </div>
+              )}
             </div>
           )}
           {!isMyTurn && !isSpectator && phase !== 'waiting' && phase !== 'showdown' && (
-             <div className="py-3 px-4 bg-zinc-700/95 border border-zinc-500/50 rounded-xl shadow-2xl backdrop-blur-md text-center text-zinc-200 text-sm font-bold">
+             <div className="py-2.5 px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md text-center text-zinc-200 text-xs sm:text-sm font-bold">
                Waiting for {gameState?.players?.find((p) => p.id === gameState.activePlayerId)?.username || '...'}
              </div>
           )}
           {phase === 'waiting' && !isSpectator && (
-            <div className="py-3 px-4 bg-zinc-700/95 border border-zinc-500/50 rounded-xl shadow-2xl backdrop-blur-md text-center text-zinc-200 text-sm font-bold">
+            <div className="py-2.5 px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md text-center text-zinc-200 text-xs sm:text-sm font-bold">
                Waiting for players...
             </div>
           )}
         </div>
 
-        {/* Right Side: Chat */}
-        <div className="pointer-events-auto w-full max-w-[300px] flex flex-col h-56 bg-zinc-700/95 border border-zinc-500/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden">
+        {/* Chat Panel */}
+        <div className="w-full md:w-[260px] flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1.5">
             {chatMessages.length === 0 && sysMessages.length === 0 && (
               <div className="text-xs text-zinc-300 italic">No messages...</div>
@@ -357,11 +407,11 @@ export default function PokerPage() {
             ))}
             <div ref={chatEndRef} />
           </div>
-          <div className="flex border-t border-zinc-500/50 bg-zinc-800/50">
-            <input className="flex-1 bg-transparent px-4 py-3 text-sm text-white placeholder-zinc-400 outline-none"
+          <div className="flex border-t border-zinc-600/50 bg-zinc-900/50 shrink-0">
+            <input className="flex-1 bg-transparent px-4 py-2.5 text-sm text-white placeholder-zinc-400 outline-none"
               placeholder="Message..." value={chatInput} onChange={e => setChatInput(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && sendChat()} maxLength={200} />
-            <button onClick={sendChat} className="px-5 text-sm font-bold text-white hover:bg-zinc-600 transition-colors">Send</button>
+            <button onClick={sendChat} className="px-4 text-sm font-bold text-white hover:bg-zinc-700 transition-colors">Send</button>
           </div>
         </div>
 

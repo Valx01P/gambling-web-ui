@@ -1,6 +1,6 @@
 import { Deck } from './deck.js'
 import { GAME_PHASES, POKER_CONFIG } from '../config/constants.js'
-import { determineWinners } from './handEvaluator.js'
+import { evaluateHand, compareHands, getHandName } from './handEvaluator.js'
 
 export class PokerGame {
   constructor(onBroadcast) {
@@ -21,6 +21,8 @@ export class PokerGame {
     this.foldedPlayers = new Set()
     this.allInPlayers = new Set()
     this.roundActed = new Set()
+    this.aggressionCount = 0 // Tracks betting terminology
+    this.runOutBoardTimeout = null // Tracks the async board runout to prevent race conditions
     this.onBroadcast = onBroadcast || (() => {})
   }
 
@@ -32,21 +34,28 @@ export class PokerGame {
   }
 
   removePlayer(playerId) {
-    const player = this.players.find(p => p.id === playerId)
-    if (!player) return
-    player.isConnected = false
+    const playerIdx = this.players.findIndex(p => p.id === playerId)
+    if (playerIdx === -1) return
+    
+    this.players[playerIdx].isConnected = false
 
     if (this.phase !== GAME_PHASES.WAITING && this.phase !== GAME_PHASES.SHOWDOWN) {
-      // If active hand and it's their turn, gracefully fold them to keep the game loop intact
-      if (this.players[this.activeIndex]?.id === playerId) {
+      if (this.activeIndex === playerIdx) {
         this.handleAction(playerId, 'fold')
       } else {
         this.foldedPlayers.add(playerId)
         this.checkHandOver()
       }
     } else {
-      // Safe to immediately pull them out if no hand is running
-      this.players = this.players.filter(p => p.id !== playerId)
+      if (playerIdx < this.dealerIndex) {
+        this.dealerIndex--
+      }
+      this.players.splice(playerIdx, 1)
+      if (this.players.length > 0) {
+        this.dealerIndex = this.dealerIndex % this.players.length
+      } else {
+        this.dealerIndex = 0
+      }
     }
   }
 
@@ -89,6 +98,8 @@ export class PokerGame {
     this.playerTotalBets.clear()
     this.playerActions.clear()
     this.roundActed.clear()
+    this.aggressionCount = 1 // Big Blind is considered the 1st bet preflop
+    clearTimeout(this.runOutBoardTimeout)
 
     this.dealerIndex = this.dealerIndex % this.players.length
 
@@ -108,9 +119,9 @@ export class PokerGame {
     }
 
     this.postBlind(this.players[sbIdx], this.smallBlind)
-    this.playerActions.set(this.players[sbIdx].id, { action: 'sb', amount: this.smallBlind })
+    this.playerActions.set(this.players[sbIdx].id, { action: 'sb', amount: this.smallBlind, text: 'SB' })
     this.postBlind(this.players[bbIdx], this.bigBlind)
-    this.playerActions.set(this.players[bbIdx].id, { action: 'bb', amount: this.bigBlind })
+    this.playerActions.set(this.players[bbIdx].id, { action: 'bb', amount: this.bigBlind, text: 'BB' })
     this.currentBet = this.bigBlind
 
     const firstAct = this.findNextDecisionIndex((bbIdx + 1) % this.players.length)
@@ -134,6 +145,16 @@ export class PokerGame {
     if (player.chips === 0) this.allInPlayers.add(player.id)
   }
 
+  getAggressionLabel(isAllIn) {
+    let label = ''
+    if (this.aggressionCount === 1) label = 'Bet'
+    else if (this.aggressionCount === 2) label = 'Raise'
+    else if (this.aggressionCount === 3) label = 'Re-raise'
+    else label = `${this.aggressionCount}-Bet`
+
+    return isAllIn ? `${label} All-In` : label
+  }
+
   handleAction(playerId, action, amount = 0) {
     if (this.phase === GAME_PHASES.WAITING || this.phase === GAME_PHASES.SHOWDOWN) {
       return { success: false, error: 'No active hand' }
@@ -153,12 +174,12 @@ export class PokerGame {
     switch (action) {
       case 'fold':
         this.foldedPlayers.add(playerId)
-        this.playerActions.set(playerId, { action: 'fold', amount: 0 })
+        this.playerActions.set(playerId, { action: 'fold', amount: 0, text: 'FOLD' })
         break
 
       case 'check':
         if (toCall > 0) return { success: false, error: 'Must call or raise' }
-        this.playerActions.set(playerId, { action: 'check', amount: 0 })
+        this.playerActions.set(playerId, { action: 'check', amount: 0, text: 'CHECK' })
         break
 
       case 'call': {
@@ -169,17 +190,19 @@ export class PokerGame {
         const newBet = playerBet + callAmt
         this.playerBets.set(playerId, newBet)
         this.playerTotalBets.set(playerId, (this.playerTotalBets.get(playerId) || 0) + callAmt)
-        this.playerActions.set(playerId, { action: 'call', amount: callAmt })
+        this.playerActions.set(playerId, { action: 'call', amount: callAmt, text: 'CALL' })
         if (currentPlayer.chips === 0) this.allInPlayers.add(playerId)
         break
       }
 
       case 'raise': {
+        const minRaise = this.currentBet === 0 ? this.bigBlind : this.currentBet * 2;
         const raiseTarget = amount
-        const minRaise = this.currentBet + this.bigBlind
+        
         if (raiseTarget < minRaise && currentPlayer.chips > (raiseTarget - playerBet)) {
           return { success: false, error: `Min raise is ${minRaise}` }
         }
+        
         const raiseAmt = Math.min(raiseTarget - playerBet, currentPlayer.chips)
         if (raiseAmt <= 0) return { success: false, error: 'Invalid raise' }
         currentPlayer.chips -= raiseAmt
@@ -191,7 +214,9 @@ export class PokerGame {
           this.currentBet = newBet
           this.roundActed.clear()
         }
-        this.playerActions.set(playerId, { action: 'raise', amount: newBet })
+
+        this.aggressionCount++
+        this.playerActions.set(playerId, { action: 'raise', amount: newBet, text: this.getAggressionLabel(false) })
         if (currentPlayer.chips === 0) this.allInPlayers.add(playerId)
         break
       }
@@ -203,11 +228,17 @@ export class PokerGame {
         const newBet = playerBet + allAmt
         this.playerBets.set(playerId, newBet)
         this.playerTotalBets.set(playerId, (this.playerTotalBets.get(playerId) || 0) + allAmt)
-        if (newBet > this.currentBet) {
+        
+        let isRaise = newBet > this.currentBet
+        if (isRaise) {
           this.currentBet = newBet
           this.roundActed.clear()
+          this.aggressionCount++
         }
-        this.playerActions.set(playerId, { action: 'all_in', amount: newBet })
+
+        const label = isRaise ? this.getAggressionLabel(true) : 'Call All-In'
+
+        this.playerActions.set(playerId, { action: 'all_in', amount: newBet, text: label })
         currentPlayer.chips = 0
         this.allInPlayers.add(playerId)
         break
@@ -231,6 +262,7 @@ export class PokerGame {
 
     const decision = this.getDecisionPlayers()
 
+    // If everyone remaining is all-in, cleanly run out the board with a visual delay
     if (decision.length === 0) {
       this.runOutBoard()
       return
@@ -254,6 +286,11 @@ export class PokerGame {
 
     if (allActed && allEven) {
       this.advancePhase()
+
+      if (this.phase === GAME_PHASES.SHOWDOWN) {
+        this.resolveShowdown()
+        return
+      }
 
       const newDecision = this.getDecisionPlayers()
       if (newDecision.length <= 1) {
@@ -282,11 +319,19 @@ export class PokerGame {
   }
 
   runOutBoard() {
-    while (this.phase !== GAME_PHASES.SHOWDOWN) {
-      this.advancePhaseCards()
+    if (this.phase === GAME_PHASES.SHOWDOWN || this.phase === GAME_PHASES.WAITING) {
+      return
     }
-    this.resolveShowdown()
+
+    this.advancePhaseCards()
     this.broadcastState()
+
+    if (this.phase === GAME_PHASES.SHOWDOWN) {
+      this.resolveShowdown()
+    } else {
+      // Dramatic 1.2s delay between dealing the flop, turn, and river
+      this.runOutBoardTimeout = setTimeout(() => this.runOutBoard(), 1200)
+    }
   }
 
   advancePhaseCards() {
@@ -312,12 +357,13 @@ export class PokerGame {
   advancePhase() {
     this.roundActed.clear()
     this.currentBet = 0
+    this.aggressionCount = 0 // Reset aggression terminology for the new betting round
     for (const p of this.players) {
       this.playerBets.set(p.id, 0)
     }
     for (const [id, act] of this.playerActions) {
       if (act.action !== 'fold' && act.action !== 'all_in') {
-        this.playerActions.set(id, { action: '', amount: 0 })
+        this.playerActions.set(id, { action: '', amount: 0, text: '' })
       }
     }
 
@@ -331,45 +377,141 @@ export class PokerGame {
 
   checkHandOver() {
     const notFolded = this.players.filter(p => !this.foldedPlayers.has(p.id))
-    if (notFolded.length <= 1) {
-      if (notFolded.length === 1) this.finishHand(notFolded[0].id)
+    if (notFolded.length === 1) {
+      clearTimeout(this.runOutBoardTimeout)
+      this.finishHand(notFolded[0].id)
+    } else if (notFolded.length === 0) {
+      clearTimeout(this.runOutBoardTimeout)
+      this.phase = GAME_PHASES.WAITING
+      this.pot = 0
+      this.broadcastState()
     }
   }
 
+  calculatePots() {
+    const pots = []
+    let activeBetters = [...this.players].filter(p => this.playerTotalBets.get(p.id) > 0)
+    
+    while (activeBetters.length > 0) {
+      const minBet = Math.min(...activeBetters.map(p => this.playerTotalBets.get(p.id)))
+      let potAmount = 0
+      const eligiblePlayers = []
+      
+      for (const p of this.players) {
+        const bet = this.playerTotalBets.get(p.id) || 0
+        if (bet > 0) {
+          const contribution = Math.min(bet, minBet)
+          potAmount += contribution
+          this.playerTotalBets.set(p.id, bet - contribution)
+          if (!this.foldedPlayers.has(p.id)) {
+            eligiblePlayers.push(p.id)
+          }
+        }
+      }
+      
+      if (potAmount > 0) {
+        pots.push({ amount: potAmount, eligiblePlayers })
+      }
+      
+      activeBetters = [...this.players].filter(p => this.playerTotalBets.get(p.id) > 0)
+    }
+    return pots
+  }
+
   resolveShowdown() {
+    const pots = this.calculatePots()
+    
     const active = this.players.filter(p => !this.foldedPlayers.has(p.id))
-    const playerData = active.map(p => ({
+    const evaluated = active.map(p => ({
       playerId: p.id,
-      cards: this.playerHands.get(p.id) || []
+      hand: evaluateHand([...(this.playerHands.get(p.id) || []), ...this.communityCards])
     }))
+    
+    const winnersOutput = new Map()
+    const playerHandNames = {}
+    
+    evaluated.forEach(e => {
+      playerHandNames[e.playerId] = getHandName(e.hand)
+    })
 
-    const winners = determineWinners(playerData, this.communityCards)
-    const share = Math.floor(this.pot / winners.length)
-
-    for (const w of winners) {
-      const player = this.players.find(p => p.id === w.playerId)
-      if (player) player.chips += share
+    for (const pot of pots) {
+      const eligibleEvaluated = evaluated.filter(e => pot.eligiblePlayers.includes(e.playerId))
+      if (eligibleEvaluated.length === 0) continue
+      
+      eligibleEvaluated.sort((a, b) => compareHands(b.hand, a.hand))
+      const best = eligibleEvaluated[0]
+      const potWinners = eligibleEvaluated.filter(e => compareHands(e.hand, best.hand) === 0)
+      
+      const share = Math.floor(pot.amount / potWinners.length)
+      let remainder = pot.amount % potWinners.length
+      
+      for (const w of potWinners) {
+        const player = this.players.find(p => p.id === w.playerId)
+        if (player) {
+          const wonAmount = share + (remainder > 0 ? 1 : 0)
+          player.chips += wonAmount
+          remainder = Math.max(0, remainder - 1)
+          
+          if (winnersOutput.has(w.playerId)) {
+            winnersOutput.get(w.playerId).chips += wonAmount
+          } else {
+            winnersOutput.set(w.playerId, {
+              playerId: w.playerId,
+              username: player.username,
+              chips: wonAmount,
+              handName: getHandName(w.hand),
+              handRank: w.hand.rank
+            })
+          }
+        }
+      }
     }
 
     this.phase = GAME_PHASES.SHOWDOWN
+    this.broadcastState() // Broadcast immediately so clients can render opponent cards before timeout
     this.onBroadcast({
       type: 'showdown',
-      winners: winners.map(w => ({ ...w, chips: share })),
-      hands: Object.fromEntries(active.map(p => [p.id, this.playerHands.get(p.id)]))
+      data: {
+        winners: Array.from(winnersOutput.values()),
+        hands: Object.fromEntries(active.map(p => [p.id, this.playerHands.get(p.id)])),
+        playerHandNames
+      }
     })
 
+    // Showdown cards stay visible for 15 seconds before processing rebuy and advancing
     setTimeout(() => {
-      // Safely reap eliminated and disconnected players after the hand is completely resolved
-      this.players = this.players.filter(p => p.chips > 0 && p.isConnected)
+      const oldDealerId = this.players[this.dealerIndex]?.id;
+
+      // Auto-Rebuy any player who busted completely
+      this.players.forEach(p => {
+        if (p.chips <= 0) {
+          p.chips = POKER_CONFIG.STARTING_CHIPS;
+          this.onBroadcast({ 
+            type: 'system_message', 
+            data: { message: `${p.username} auto-rebought for ${POKER_CONFIG.STARTING_CHIPS} chips.` } 
+          });
+        }
+      });
+
+      this.players = this.players.filter(p => p.isConnected)
+      
       if (this.players.length > 0) {
-        this.dealerIndex = (this.dealerIndex + 1) % this.players.length
+        const prevIdx = this.players.findIndex(p => p.id === oldDealerId)
+        if (prevIdx !== -1) {
+          this.dealerIndex = (prevIdx + 1) % this.players.length
+        } else {
+          this.dealerIndex = this.dealerIndex % this.players.length
+        }
+      } else {
+        this.dealerIndex = 0
       }
+
       this.phase = GAME_PHASES.WAITING
       this.broadcastState()
       if (this.canStart()) {
         setTimeout(() => this.startHand(), 1500)
       }
-    }, 4000)
+    }, 15000)
   }
 
   finishHand(winnerId) {
@@ -377,24 +519,50 @@ export class PokerGame {
     if (winner) winner.chips += this.pot
 
     this.phase = GAME_PHASES.SHOWDOWN
+    this.broadcastState() // Broadcast state to formally freeze the hand view
     this.onBroadcast({
       type: 'showdown',
-      winners: [{ playerId: winnerId, chips: this.pot, handName: 'Last standing' }],
-      hands: {}
+      data: {
+        winners: [{ playerId: winnerId, username: winner?.username, chips: this.pot, handName: 'Won by fold' }],
+        hands: {},
+        playerHandNames: { [winnerId]: 'Won by fold' }
+      }
     })
 
+    // Wait 5 seconds to view hand when opponents simply folded
     setTimeout(() => {
-      // Safely reap eliminated and disconnected players after the hand is completely resolved
-      this.players = this.players.filter(p => p.chips > 0 && p.isConnected)
+      const oldDealerId = this.players[this.dealerIndex]?.id;
+
+      // Auto-rebuy
+      this.players.forEach(p => {
+        if (p.chips <= 0) {
+          p.chips = POKER_CONFIG.STARTING_CHIPS;
+          this.onBroadcast({ 
+            type: 'system_message', 
+            data: { message: `${p.username} auto-rebought for ${POKER_CONFIG.STARTING_CHIPS} chips.` } 
+          });
+        }
+      });
+
+      this.players = this.players.filter(p => p.isConnected)
+      
       if (this.players.length > 0) {
-        this.dealerIndex = (this.dealerIndex + 1) % this.players.length
+        const prevIdx = this.players.findIndex(p => p.id === oldDealerId)
+        if (prevIdx !== -1) {
+          this.dealerIndex = (prevIdx + 1) % this.players.length
+        } else {
+          this.dealerIndex = this.dealerIndex % this.players.length
+        }
+      } else {
+        this.dealerIndex = 0
       }
+
       this.phase = GAME_PHASES.WAITING
       this.broadcastState()
       if (this.canStart()) {
         setTimeout(() => this.startHand(), 1500)
       }
-    }, 3000)
+    }, 5000)
   }
 
   getGameState(forPlayerId = null) {
@@ -415,7 +583,8 @@ export class PokerGame {
         folded: this.foldedPlayers.has(p.id),
         allIn: this.allInPlayers.has(p.id),
         isConnected: p.isConnected,
-        cards: (forPlayerId === p.id || this.phase === GAME_PHASES.SHOWDOWN)
+        // Send cards if it's the player themselves, OR if it's showdown and they didn't fold
+        cards: (forPlayerId === p.id || (this.phase === GAME_PHASES.SHOWDOWN && !this.foldedPlayers.has(p.id)))
           ? (this.playerHands.get(p.id) || [])
           : (this.playerHands.has(p.id) ? [null, null] : [])
       }))

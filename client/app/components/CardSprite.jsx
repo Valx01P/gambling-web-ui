@@ -8,28 +8,25 @@ const RANK_INDEX = {
 
 export const CARD_W = 80
 export const CARD_H = 110
-export const CARD_SCALE = 1.05 // 1.5x larger than the previous 0.7
 
-export default function CardSprite({ card, ...props }) {
-  const w = CARD_W * CARD_SCALE
-  const h = CARD_H * CARD_SCALE
-
-  // Map to the 5th row (index 4), 1st column (index 0) if there's no card passed.
-  const bgX = card ? -(RANK_INDEX[card.rank] * CARD_W * CARD_SCALE) : 0
-  const bgY = card ? -(SUIT_INDEX[card.suit] * CARD_H * CARD_SCALE) : -(4 * CARD_H * CARD_SCALE)
+export default function CardSprite({ card, className = '', ...props }) {
+  // Map to the 5th row, 1st column if no card is passed (card back)
+  const bgX = card ? -(RANK_INDEX[card.rank] * CARD_W) : 0
+  const bgY = card ? -(SUIT_INDEX[card.suit] * CARD_H) : -(4 * CARD_H)
 
   return (
-    <div
+    <svg
+      viewBox={`0 0 ${CARD_W} ${CARD_H}`}
+      className={`inline-block overflow-hidden rounded-md shadow-sm border border-white/10 h-auto ${className}`}
       {...props}
-      className={`border border-white/10 ${!card ? 'rounded-[4px] shadow-sm' : ''} ${props.className || ''}`}
-      style={{
-        width: w, height: h,
-        backgroundImage: `url('/images/cards.png')`,
-        backgroundPosition: `${bgX}px ${bgY}px`,
-        backgroundSize: `${1040 * CARD_SCALE}px ${688 * CARD_SCALE}px`,
-        backgroundRepeat: 'no-repeat',
-        ...props.style
-      }}
-    />
+    >
+      <image
+        href="/images/cards.png"
+        x={bgX}
+        y={bgY}
+        width="1040"
+        height="688"
+      />
+    </svg>
   )
 }

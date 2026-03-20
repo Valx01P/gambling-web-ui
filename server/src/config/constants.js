@@ -26,6 +26,7 @@ export const MESSAGE_TYPES = {
 
   // Chat
   CHAT: 'chat',
+  SYSTEM_MESSAGE: 'system_message',
 
   // State
   GAME_STATE: 'game_state',

@@ -34,6 +34,11 @@ function rankValue(rank) {
   return RANK_VALUES[rank]
 }
 
+function cardName(val) {
+  const names = { 11: 'Jack', 12: 'Queen', 13: 'King', 14: 'Ace' }
+  return names[val] || String(val)
+}
+
 // Get all 5-card combinations from 7 cards
 function combinations(cards, k) {
   if (k === 0) return [[]]
@@ -137,7 +142,26 @@ export function compareHands(a, b) {
 }
 
 export function getHandName(evaluation) {
-  return HAND_NAMES[evaluation.rank]
+  const baseName = HAND_NAMES[evaluation.rank];
+  
+  if (!evaluation.kickers || evaluation.kickers.length === 0) return baseName;
+
+  const main = cardName(evaluation.kickers[0]);
+  const sub = evaluation.kickers.length > 1 ? cardName(evaluation.kickers[1]) : '';
+
+  switch (evaluation.rank) {
+    case 0: return `${main} High`;
+    case 1: return `Pair of ${main}s`;
+    case 2: return `Two Pair, ${main}s & ${sub}s`;
+    case 3: return `Three of a Kind, ${main}s`;
+    case 4: return `Straight, ${main} High`;
+    case 5: return `Flush, ${main} High`;
+    case 6: return `Full House, ${main}s full of ${sub}s`;
+    case 7: return `Four of a Kind, ${main}s`;
+    case 8: return `Straight Flush, ${main} High`;
+    case 9: return `Royal Flush`;
+    default: return baseName;
+  }
 }
 
 // Determine winners from array of { playerId, cards }

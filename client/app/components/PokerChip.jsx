@@ -23,13 +23,13 @@ function formatValue(value) {
   return String(value)
 }
 
-export default function PokerChip({ value = 5, width = 100, height = 100, className = '' }) {
+export default function PokerChip({ value = 5, className = '' }) {
   const config = chipConfig[value] || chipConfig[5]
 
   return (
     <svg
-      width={width} height={height} viewBox="0 0 100 100"
-      className={`inline-block drop-shadow-lg ${className}`}
+      viewBox="0 0 100 100"
+      className={`inline-block drop-shadow-md ${className}`}
       aria-label={`${value} chip`}
     >
       <circle cx="50" cy="50" r="48" fill={config.color} />
@@ -51,8 +51,8 @@ export default function PokerChip({ value = 5, width = 100, height = 100, classN
       })}
       <circle cx="50" cy="50" r="36" fill={config.color} />
       <circle cx="50" cy="50" r="28" fill="#FFFFFF" />
-      <text x="50" y="50" textAnchor="middle" dominantBaseline="central"
-            fontSize="22" fontWeight="900" fill="#000" fontFamily="Arial, sans-serif">
+      <text x="50" y="52" textAnchor="middle" dominantBaseline="middle"
+            fontSize="34" fontWeight="900" fill="#000" fontFamily="Arial, sans-serif" letterSpacing="-1px">
         {formatValue(value)}
       </text>
       <circle cx="50" cy="50" r="48" fill="none" stroke="rgba(0,0,0,0.2)" strokeWidth="1" />

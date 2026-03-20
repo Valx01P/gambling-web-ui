@@ -21,10 +21,10 @@ export function BetChips({ amount }) {
   const chips = chipBreakdown(amount, 8)
 
   return (
-    <div className="flex flex-col-reverse items-center" style={{ height: 12 + chips.length * 3 }}>
+    <div className="relative w-5 h-5 sm:w-6 sm:h-6">
       {chips.map((d, i) => (
-        <div key={i} className="absolute" style={{ bottom: i * 3 }}>
-          <PokerChip value={d} width={22} height={22} />
+        <div key={i} className="absolute left-0" style={{ bottom: i * 3 }}>
+          <PokerChip value={d} className="w-5 h-5 sm:w-6 sm:h-6" />
         </div>
       ))}
     </div>
@@ -38,19 +38,19 @@ export function PotChips({ amount }) {
   if (chips.length === 0) chips.push(5)
 
   return (
-    <div className="flex items-end justify-center gap-0.5">
-      <div className="relative" style={{ width: 20, height: 14 + Math.min(chips.length, 5) * 3 }}>
+    <div className="flex items-end justify-center gap-1 sm:gap-1.5">
+      <div className="relative w-5 h-5 sm:w-6 sm:h-6">
         {chips.slice(0, 5).map((d, i) => (
           <div key={i} className="absolute left-0" style={{ bottom: i * 3 }}>
-            <PokerChip value={d} width={20} height={20} />
+            <PokerChip value={d} className="w-5 h-5 sm:w-6 sm:h-6" />
           </div>
         ))}
       </div>
       {chips.length > 5 && (
-        <div className="relative" style={{ width: 20, height: 14 + (chips.length - 5) * 3 }}>
+        <div className="relative w-5 h-5 sm:w-6 sm:h-6">
           {chips.slice(5).map((d, i) => (
             <div key={i} className="absolute left-0" style={{ bottom: i * 3 }}>
-              <PokerChip value={d} width={20} height={20} />
+              <PokerChip value={d} className="w-5 h-5 sm:w-6 sm:h-6" />
             </div>
           ))}
         </div>
