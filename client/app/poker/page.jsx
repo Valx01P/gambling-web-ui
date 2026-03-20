@@ -21,7 +21,6 @@ function ActionBadge({ action }) {
   const info = labels[action.action]
   if (!info) return null
   
-  // Use dynamically generated server terminology if provided, fallback to defaults
   let text = action.text || info.defaultText
   if (action.amount > 0 && action.action !== 'sb' && action.action !== 'bb') {
     text += ` ${action.amount}`
@@ -50,21 +49,20 @@ function PhaseLabel({ phase }) {
   )
 }
 
+// Adjusted seats for better mobile containment
 const SEATS = [
-  { top: '110%', left: '50%' }, // Bottom Center (Me)
-  { top: '85%', left: '10%' },  // Bottom Left
-  { top: '15%', left: '10%' },  // Top Left
-  { top: '-5%', left: '50%' },  // Top Center
-  { top: '15%', left: '90%' },  // Top Right
-  { top: '85%', left: '90%' },  // Bottom Right
+  { top: '100%', left: '50%' }, // 0: Bottom Center (Me)
+  { top: '65%', left: '5%' },   // 1: Bottom Left
+  { top: '15%', left: '20%' },  // 2: Top Left (Pushed down to avoid header overlap)
+  { top: '15%', left: '80%' },  // 3: Top Right (Pushed down to avoid header overlap)
+  { top: '65%', left: '95%' },  // 4: Bottom Right
 ]
 
 const getBetPosClasses = (posIndex) => {
   switch(posIndex) {
-    case 0: return 'bottom-[102%] sm:bottom-[105%] left-1/2 -translate-x-1/2'
+    case 0: return 'bottom-[105%] sm:bottom-[105%] left-1/2 -translate-x-1/2'
     case 1: case 2: return 'left-[105%] sm:left-[110%] top-1/2 -translate-y-1/2'
-    case 3: return 'top-[105%] sm:top-[110%] left-1/2 -translate-x-1/2'
-    case 4: case 5: return 'right-[105%] sm:right-[110%] top-1/2 -translate-y-1/2'
+    case 3: case 4: return 'right-[105%] sm:right-[110%] top-1/2 -translate-y-1/2'
     default: return ''
   }
 }
@@ -116,7 +114,7 @@ export default function PokerPage() {
         case 'game_state':
           setGameState(msg.data)
           if (msg.data.phase !== 'showdown') {
-            setShowdownData(null) // Clear hand names when next hand starts
+            setShowdownData(null) 
           }
           break
         case 'room_update':
@@ -131,7 +129,6 @@ export default function PokerPage() {
           if (msg.data.message) addSys(msg.data.message)
           break
         case 'showdown':
-          // Properly reading 'msg.data' resolving the silent analysis freeze 
           if (msg.data) {
             setShowdownData(msg.data)
             if (msg.data.winners?.length) {
@@ -180,16 +177,14 @@ export default function PokerPage() {
   const currentBetAmount = gameState?.currentBet || 0
   const toCall = currentBetAmount - myBet
   const phase = gameState?.phase || 'waiting'
+  const isWaitingNextHand = myPlayer?.waitingNextHand
 
   const minRaise = currentBetAmount === 0 ? 10 : currentBetAmount * 2
 
-  // Check if a specific card should get the golden ring
   const isWinningCard = (card, specificPlayerId = null) => {
     if (phase !== 'showdown' || !showdownData?.winners) return false
     if (!card) return false
 
-    // If specificPlayerId passed, only evaluate against their specific winning hand. 
-    // Otherwise check all winners (useful for community board check).
     const winnersToCheck = specificPlayerId
       ? showdownData.winners.filter(w => w.playerId === specificPlayerId)
       : showdownData.winners
@@ -244,7 +239,7 @@ export default function PokerPage() {
       {/* Main Table Wrapper */}
       <div className="flex-1 flex flex-col justify-center relative w-full mb-4">
         
-        <div className="relative w-full max-w-5xl mx-auto aspect-[1.1/1] sm:aspect-[1.8/1] md:aspect-[2.2/1] rounded-[50%] border-4 border-emerald-900/40 shrink-0 mt-2 sm:mt-4 mb-16 md:mb-24"
+        <div className="relative w-full max-w-5xl mx-auto aspect-[1.1/1] sm:aspect-[1.8/1] md:aspect-[2.2/1] rounded-[50%] border-4 border-emerald-900/40 shrink-0 mt-10 sm:mt-6 mb-24 md:mb-24"
              style={{
                background: 'radial-gradient(ellipse 70% 60% at 50% 45%, #1a5c3a 0%, #14472c 45%, #0f3521 80%, #0a2a18 100%)',
                boxShadow: 'inset 0 2px 50px rgba(0,0,0,0.5), 0 0 100px rgba(0,0,0,0.4)',
@@ -274,6 +269,7 @@ export default function PokerPage() {
             const isMe = player.id === playerId
             const isActive = gameState?.activePlayerId === player.id
             const isDealer = getOriginalIndex(player) === gameState?.dealerIndex
+            const isPlayerWaiting = player.waitingNextHand
 
             const isWinner = phase === 'showdown' && showdownData?.winners?.some(w => w.playerId === player.id)
             const wonAmount = showdownData?.winners?.find(w => w.playerId === player.id)?.chips
@@ -304,7 +300,8 @@ export default function PokerPage() {
                   <div className={`
                     px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg text-center min-w-[70px] sm:min-w-[100px] shadow-xl
                     transition-all border z-10 relative bg-zinc-800/95 border-zinc-600/50
-                    ${player.folded ? 'opacity-40' : ''}
+                    ${player.folded && !isPlayerWaiting ? 'opacity-40' : ''}
+                    ${isPlayerWaiting ? 'opacity-60' : ''}
                     ${isActive ? 'ring-2 ring-amber-400 shadow-[0_0_20px_rgba(251,191,36,0.4)]' : ''}
                   `}>
                     {isActive && (
@@ -314,7 +311,9 @@ export default function PokerPage() {
                       {isMe ? 'You' : player.username}
                     </div>
                     <div className="text-[9px] sm:text-xs text-zinc-200 font-medium">
-                      {phase === 'showdown' && handName && !player.folded ? (
+                      {isPlayerWaiting ? (
+                        <span className="text-zinc-400 font-bold italic">Waiting...</span>
+                      ) : phase === 'showdown' && handName && !player.folded ? (
                         <span className="text-amber-300 font-bold">{handName}</span>
                       ) : (
                         `${player.chips} chips`
@@ -323,16 +322,18 @@ export default function PokerPage() {
                   </div>
 
                   {/* Player Cards */}
-                  <div className={`flex gap-0.5 sm:gap-1 z-20 relative ${player.folded ? 'opacity-40 grayscale' : ''}`}>
-                    {(player.cards || []).map((card, ci) => (
-                      <CardSprite 
-                        key={ci} 
-                        card={card} 
-                        highlight={isWinningCard(card, player.id)}
-                        className={isMe ? "w-[12vw] sm:w-[60px] md:w-[82px]" : "w-[9vw] sm:w-[45px] md:w-[60px]"} 
-                      />
-                    ))}
-                  </div>
+                  {!isPlayerWaiting && (
+                    <div className={`flex gap-0.5 sm:gap-1 z-20 relative ${player.folded ? 'opacity-40 grayscale' : ''}`}>
+                      {(player.cards || []).map((card, ci) => (
+                        <CardSprite 
+                          key={ci} 
+                          card={card} 
+                          highlight={isWinningCard(card, player.id)}
+                          className={isMe ? "w-[12vw] sm:w-[60px] md:w-[82px]" : "w-[9vw] sm:w-[45px] md:w-[60px]"} 
+                        />
+                      ))}
+                    </div>
+                  )}
 
                   {/* Winner Floating Text */}
                   {isWinner && (
@@ -349,10 +350,10 @@ export default function PokerPage() {
       </div>
 
       {/* Natural Flow Bottom UI */}
-      <div className="w-full flex flex-col md:flex-row justify-between items-stretch md:items-end gap-3 sm:gap-4 shrink-0 mt-auto">
+      <div className="w-full flex flex-col md:flex-row justify-center md:justify-between items-center md:items-end gap-3 sm:gap-4 shrink-0 mt-auto pb-4 md:pb-0">
         
         {/* Actions Panel */}
-        <div className="w-full md:w-[240px]">
+        <div className="w-[92%] max-w-[320px] md:w-[260px] md:max-w-none shrink-0">
           {isMyTurn && !isSpectator && !myPlayer?.folded && phase !== 'waiting' && phase !== 'showdown' && (
             <div className="flex flex-col gap-2 py-3 px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md">
               <div className="text-[9px] sm:text-[10px] font-black text-amber-400 tracking-widest animate-pulse text-center">● YOUR TURN</div>
@@ -393,26 +394,31 @@ export default function PokerPage() {
               )}
             </div>
           )}
-          {!isMyTurn && !isSpectator && phase !== 'waiting' && phase !== 'showdown' && (
-             <div className="py-2.5 px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md text-center text-zinc-200 text-xs sm:text-sm font-bold">
+          {isWaitingNextHand && (
+            <div className="py-2 sm:py-2.5 px-3 sm:px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md text-center text-amber-300 text-xs sm:text-sm font-bold">
+               Sitting out this hand. You will join the next round.
+            </div>
+          )}
+          {!isMyTurn && !isSpectator && !isWaitingNextHand && phase !== 'waiting' && phase !== 'showdown' && (
+             <div className="py-2 sm:py-2.5 px-3 sm:px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md text-center text-zinc-200 text-xs sm:text-sm font-bold">
                Waiting for {gameState?.players?.find((p) => p.id === gameState.activePlayerId)?.username || '...'}
              </div>
           )}
           {phase === 'waiting' && !isSpectator && (
-            <div className="py-2.5 px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md text-center text-zinc-200 text-xs sm:text-sm font-bold">
+            <div className="py-2 sm:py-2.5 px-3 sm:px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md text-center text-zinc-200 text-xs sm:text-sm font-bold">
                Waiting for players...
             </div>
           )}
         </div>
 
         {/* Chat Panel */}
-        <div className="w-full md:w-[260px] flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
+        <div className="w-[92%] max-w-[320px] md:w-[280px] md:max-w-none flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1.5">
             {chatMessages.length === 0 && sysMessages.length === 0 && (
-              <div className="text-xs text-zinc-300 italic">No messages...</div>
+              <div className="text-xs text-zinc-600 italic">No messages...</div>
             )}
             {sysMessages.map((msg, i) => (
-              <div key={`s-${i}`} className="text-xs text-zinc-300 italic font-medium">{msg}</div>
+              <div key={`s-${i}`} className="text-xs text-zinc-600 italic font-medium">{msg}</div>
             ))}
             {chatMessages.map((msg, i) => (
               <div key={`c-${i}`} className="text-sm">

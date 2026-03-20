@@ -42,7 +42,7 @@ export default function Home() {
 
           <h2 className="font-bold text-xl mb-1">Texas Hold&apos;em</h2>
           <p className="text-sm opacity-60 mb-6">
-            Up to 6 players &middot; Spectate or play
+            Up to 5 players &middot; Spectate or play
           </p>
 
           <div className="flex gap-2">

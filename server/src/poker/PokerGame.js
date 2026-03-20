@@ -21,15 +21,34 @@ export class PokerGame {
     this.foldedPlayers = new Set()
     this.allInPlayers = new Set()
     this.roundActed = new Set()
-    this.aggressionCount = 0 // Tracks betting terminology
-    this.runOutBoardTimeout = null // Tracks the async board runout to prevent race conditions
+    this.waitingNextHand = new Set() // Tracks players who joined post-flop
+    this.aggressionCount = 0 
+    this.runOutBoardTimeout = null 
     this.onBroadcast = onBroadcast || (() => {})
   }
 
   addPlayer(player) {
     if (this.players.length >= POKER_CONFIG.MAX_PLAYERS) return false
     if (this.players.find(p => p.id === player.id)) return false
+    
     this.players.push(player)
+    
+    // Intercept mid-game joins natively
+    if (this.phase !== GAME_PHASES.WAITING) {
+      this.playerBets.set(player.id, 0)
+      this.playerTotalBets.set(player.id, 0)
+      this.playerActions.set(player.id, { action: '', amount: 0, text: '' })
+      
+      if (this.phase === GAME_PHASES.PREFLOP) {
+        // Deal cards to late preflop joiner
+        this.playerHands.set(player.id, this.deck.drawMultiple(2))
+      } else {
+        // Joined post-flop: sit them out visually
+        this.playerHands.set(player.id, [])
+        this.foldedPlayers.add(player.id)
+        this.waitingNextHand.add(player.id)
+      }
+    }
     return true
   }
 
@@ -38,6 +57,7 @@ export class PokerGame {
     if (playerIdx === -1) return
     
     this.players[playerIdx].isConnected = false
+    this.waitingNextHand.delete(playerId)
 
     if (this.phase !== GAME_PHASES.WAITING && this.phase !== GAME_PHASES.SHOWDOWN) {
       if (this.activeIndex === playerIdx) {
@@ -93,12 +113,13 @@ export class PokerGame {
     this.currentBet = 0
     this.foldedPlayers.clear()
     this.allInPlayers.clear()
+    this.waitingNextHand.clear() // Clean slate for everyone
     this.playerHands.clear()
     this.playerBets.clear()
     this.playerTotalBets.clear()
     this.playerActions.clear()
     this.roundActed.clear()
-    this.aggressionCount = 1 // Big Blind is considered the 1st bet preflop
+    this.aggressionCount = 1
     clearTimeout(this.runOutBoardTimeout)
 
     this.dealerIndex = this.dealerIndex % this.players.length
@@ -253,16 +274,45 @@ export class PokerGame {
     return { success: true }
   }
 
+  returnUncalledBets() {
+    let highestBet = 0
+    let secondHighestBet = 0
+    let highestBettor = null
+
+    for (const p of this.players) {
+      const bet = this.playerTotalBets.get(p.id) || 0
+      if (bet > highestBet) {
+        secondHighestBet = highestBet
+        highestBet = bet
+        highestBettor = p
+      } else if (bet > secondHighestBet) {
+        secondHighestBet = bet
+      }
+    }
+
+    if (highestBet > secondHighestBet && highestBettor) {
+      const uncalled = highestBet - secondHighestBet
+      highestBettor.chips += uncalled
+      this.playerTotalBets.set(highestBettor.id, secondHighestBet)
+      
+      const currentRoundBet = this.playerBets.get(highestBettor.id) || 0
+      this.playerBets.set(highestBettor.id, Math.max(0, currentRoundBet - uncalled))
+      this.pot -= uncalled
+    }
+  }
+
   afterAction() {
     const notFolded = this.players.filter(p => !this.foldedPlayers.has(p.id))
     if (notFolded.length <= 1) {
-      if (notFolded.length === 1) this.finishHand(notFolded[0].id)
+      if (notFolded.length === 1) {
+        this.returnUncalledBets() 
+        this.finishHand(notFolded[0].id)
+      }
       return
     }
 
     const decision = this.getDecisionPlayers()
 
-    // If everyone remaining is all-in, cleanly run out the board with a visual delay
     if (decision.length === 0) {
       this.runOutBoard()
       return
@@ -329,7 +379,6 @@ export class PokerGame {
     if (this.phase === GAME_PHASES.SHOWDOWN) {
       this.resolveShowdown()
     } else {
-      // Dramatic 1.2s delay between dealing the flop, turn, and river
       this.runOutBoardTimeout = setTimeout(() => this.runOutBoard(), 1200)
     }
   }
@@ -355,9 +404,11 @@ export class PokerGame {
   }
 
   advancePhase() {
+    this.returnUncalledBets() 
+
     this.roundActed.clear()
     this.currentBet = 0
-    this.aggressionCount = 0 // Reset aggression terminology for the new betting round
+    this.aggressionCount = 0 
     for (const p of this.players) {
       this.playerBets.set(p.id, 0)
     }
@@ -461,7 +512,7 @@ export class PokerGame {
               chips: wonAmount,
               handName: getHandName(w.hand),
               handRank: w.hand.rank,
-              winningCards: w.hand.bestCards // Pass the specific 5 winning cards down
+              winningCards: w.hand.bestCards
             })
           }
         }
@@ -469,7 +520,7 @@ export class PokerGame {
     }
 
     this.phase = GAME_PHASES.SHOWDOWN
-    this.broadcastState() // Broadcast immediately so clients can render opponent cards before timeout
+    this.broadcastState() 
     this.onBroadcast({
       type: 'showdown',
       data: {
@@ -479,11 +530,9 @@ export class PokerGame {
       }
     })
 
-    // Showdown cards stay visible for 15 seconds before processing rebuy and advancing
     setTimeout(() => {
       const oldDealerId = this.players[this.dealerIndex]?.id;
 
-      // Auto-Rebuy any player who busted completely
       this.players.forEach(p => {
         if (p.chips <= 0) {
           p.chips = POKER_CONFIG.STARTING_CHIPS;
@@ -520,7 +569,7 @@ export class PokerGame {
     if (winner) winner.chips += this.pot
 
     this.phase = GAME_PHASES.SHOWDOWN
-    this.broadcastState() // Broadcast state to formally freeze the hand view
+    this.broadcastState() 
     this.onBroadcast({
       type: 'showdown',
       data: {
@@ -530,11 +579,9 @@ export class PokerGame {
       }
     })
 
-    // Wait 5 seconds to view hand when opponents simply folded
     setTimeout(() => {
       const oldDealerId = this.players[this.dealerIndex]?.id;
 
-      // Auto-rebuy
       this.players.forEach(p => {
         if (p.chips <= 0) {
           p.chips = POKER_CONFIG.STARTING_CHIPS;
@@ -583,11 +630,12 @@ export class PokerGame {
         lastAction: this.playerActions.get(p.id) || null,
         folded: this.foldedPlayers.has(p.id),
         allIn: this.allInPlayers.has(p.id),
+        waitingNextHand: this.waitingNextHand.has(p.id), // Sent directly to frontend
         isConnected: p.isConnected,
-        // Send cards if it's the player themselves, OR if it's showdown and they didn't fold
-        cards: (forPlayerId === p.id || (this.phase === GAME_PHASES.SHOWDOWN && !this.foldedPlayers.has(p.id)))
+        // Block empty rendering by verifying the array length is valid
+        cards: (forPlayerId === p.id || (this.phase === GAME_PHASES.SHOWDOWN && !this.foldedPlayers.has(p.id) && !this.waitingNextHand.has(p.id)))
           ? (this.playerHands.get(p.id) || [])
-          : (this.playerHands.has(p.id) ? [null, null] : [])
+          : (this.playerHands.has(p.id) && this.playerHands.get(p.id).length > 0 ? [null, null] : [])
       }))
     }
   }

@@ -10,8 +10,8 @@ export class PokerRoom {
   }
 
   addPlayer(player) {
-    // If game is in progress or full, add as spectator
-    if (this.players.size >= POKER_CONFIG.MAX_PLAYERS || this.game.phase !== 'waiting') {
+    // Only force spectator if the physical seats are full
+    if (this.players.size >= POKER_CONFIG.MAX_PLAYERS) {
       return this.addSpectator(player)
     }
 
@@ -40,7 +40,7 @@ export class PokerRoom {
       data: {
         roomId: this.roomId,
         gameState: this.game.getGameState(),
-        message: 'Watching as spectator. You will join next hand when a seat opens.'
+        message: 'Table is full. Watching as spectator until a seat opens.'
       }
     })
 
@@ -93,11 +93,9 @@ export class PokerRoom {
   }
 
   broadcast(message) {
-    // Send to all players
     for (const player of this.players.values()) {
       player.send(message)
     }
-    // Send to spectators (without private info)
     for (const spectator of this.spectators.values()) {
       spectator.send(message)
     }
