@@ -1,0 +1,10 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-gscode: var(--font-google-sans-code), sans-serif;
+}
+
+body {
+  font-family: var(--font-gscode);
+}
