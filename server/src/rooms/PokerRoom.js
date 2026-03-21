@@ -2,8 +2,10 @@ import { PokerGame } from '../poker/PokerGame.js'
 import { POKER_CONFIG, MESSAGE_TYPES } from '../config/constants.js'
 
 export class PokerRoom {
-  constructor(roomId) {
+  constructor(roomId, isPrivate = false) {
     this.roomId = roomId
+    this.isPrivate = isPrivate
+    this.inviteCode = null
     this.players = new Map()    // playerId -> player (seated)
     this.spectators = new Map() // playerId -> player (watching)
     this.game = new PokerGame((msg) => this.broadcast(msg))
@@ -106,6 +108,8 @@ export class PokerRoom {
       type: MESSAGE_TYPES.ROOM_UPDATE,
       data: {
         roomId: this.roomId,
+        isPrivate: this.isPrivate,
+        inviteCode: this.inviteCode,
         players: this.getPlayerList(),
         spectators: this.getSpectatorList(),
         gameState: this.game.getGameState()

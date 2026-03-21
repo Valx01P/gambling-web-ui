@@ -49,7 +49,6 @@ function PhaseLabel({ phase }) {
   )
 }
 
-// Adjusted seats for better mobile containment
 const SEATS = [
   { top: '100%', left: '50%' }, // 0: Bottom Center (Me)
   { top: '65%', left: '5%' },   // 1: Bottom Left
@@ -81,6 +80,12 @@ export default function PokerPage() {
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [sysMessages, setSysMessages] = useState([])
+  
+  // New room feature states
+  const [joinMode, setJoinMode] = useState('general') // 'general', 'create_private', 'join_private'
+  const [inputCode, setInputCode] = useState('')
+  const [isPrivate, setIsPrivate] = useState(false)
+  const [inviteCode, setInviteCode] = useState(null)
 
   const addSys = useCallback((msg) => {
     setSysMessages(prev => [...prev.slice(-30), msg])
@@ -89,6 +94,18 @@ export default function PokerPage() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages, sysMessages])
+
+  // Parse URL for invite code
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const codeParam = params.get('code')
+      if (codeParam && codeParam.length === 5) {
+        setJoinMode('join_private')
+        setInputCode(codeParam.toUpperCase())
+      }
+    }
+  }, [])
 
   useEffect(() => {
     const ws = new WebSocket(WS_URL)
@@ -107,9 +124,12 @@ export default function PokerPage() {
           setJoined(true)
           setIsSpectator(msg.data.isSpectator || false)
           setGameState(msg.data.gameState)
+          setIsPrivate(msg.data.isPrivate || false)
+          setInviteCode(msg.data.inviteCode || null)
           break
         case 'leave_game':
           setJoined(false); setGameState(null)
+          setIsPrivate(false); setInviteCode(null)
           break
         case 'game_state':
           setGameState(msg.data)
@@ -119,6 +139,8 @@ export default function PokerPage() {
           break
         case 'room_update':
           if (msg.data.gameState) setGameState(msg.data.gameState)
+          if (msg.data.isPrivate !== undefined) setIsPrivate(msg.data.isPrivate)
+          if (msg.data.inviteCode !== undefined) setInviteCode(msg.data.inviteCode)
           break
         case 'spectator_update':
           setIsSpectator(true)
@@ -153,12 +175,14 @@ export default function PokerPage() {
   function send(type, data = {}) {
     wsRef.current?.send(JSON.stringify({ type, data }))
   }
+  
   function sendChat() {
     const text = chatInput.trim()
     if (!text) return
     send('chat', { message: text })
     setChatInput('')
   }
+  
   function getOrderedPlayers() {
     if (!gameState?.players) return []
     const ps = gameState.players
@@ -166,8 +190,15 @@ export default function PokerPage() {
     if (mi <= 0) return ps
     return [...ps.slice(mi), ...ps.slice(0, mi)]
   }
+  
   function getOriginalIndex(player) {
     return gameState?.players?.findIndex((p) => p.id === player.id) ?? -1
+  }
+
+  const copyInviteLink = () => {
+    const url = `${window.location.origin}${window.location.pathname}?code=${inviteCode}`;
+    navigator.clipboard.writeText(url);
+    addSys(`Invite link copied to clipboard!`);
   }
 
   const orderedPlayers = getOrderedPlayers()
@@ -197,23 +228,42 @@ export default function PokerPage() {
   if (!joined) {
     return (
       <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4">
-        <div className="flex flex-col items-center gap-4 w-full max-w-72">
-          <div className={`text-sm px-4 py-1.5 rounded-full font-bold ${connected ? 'bg-emerald-800/80 text-emerald-100 border border-emerald-600/50' : 'bg-red-800/80 text-red-100 border border-red-600/50'}`}>
+        <div className="flex flex-col items-center gap-5 w-full max-w-[380px]">
+          <div className={`text-sm px-5 py-2 rounded-full font-bold ${connected ? 'bg-emerald-800/80 text-emerald-100 border border-emerald-600/50' : 'bg-red-800/80 text-red-100 border border-red-600/50'}`}>
             {connected ? '● Connected' : '○ Connecting...'}
           </div>
+
+          <div className="flex w-full bg-zinc-800/80 p-1.5 gap-1.5 rounded-xl border border-zinc-600/50 shadow-md">
+             <button onClick={() => setJoinMode('general')} className={`flex-1 text-sm py-2.5 rounded-lg font-bold transition-all ${joinMode === 'general' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>General</button>
+             <button onClick={() => setJoinMode('create_private')} className={`flex-1 text-sm py-2.5 rounded-lg font-bold transition-all ${joinMode === 'create_private' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>Create Private</button>
+             <button onClick={() => setJoinMode('join_private')} className={`flex-1 text-sm py-2.5 rounded-lg font-bold transition-all ${joinMode === 'join_private' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>Join Private</button>
+          </div>
+
           <input
-            className="w-full bg-zinc-800/90 border border-zinc-500/50 rounded-lg px-4 py-3 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-lg"
+            className="w-full bg-zinc-800/90 border border-zinc-500/50 rounded-xl px-4 py-3.5 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-lg"
             placeholder="Username (optional)"
             value={username}
             onChange={e => setUsername(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && connected && send('join_game', { username: username || undefined })}
+            onKeyDown={e => e.key === 'Enter' && connected && joinMode !== 'join_private' && send('join_game', { username: username || undefined, mode: joinMode })}
           />
+
+          {joinMode === 'join_private' && (
+            <input
+               className="w-full bg-zinc-800/90 border border-zinc-500/50 rounded-xl px-4 py-3.5 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-lg uppercase tracking-widest font-black"
+               placeholder="5-LETTER CODE"
+               maxLength={5}
+               value={inputCode}
+               onChange={e => setInputCode(e.target.value.toUpperCase())}
+               onKeyDown={e => e.key === 'Enter' && connected && inputCode.length === 5 && send('join_game', { username: username || undefined, mode: joinMode, code: inputCode })}
+            />
+          )}
+
           <button
-            onClick={() => send('join_game', { username: username || undefined })}
-            disabled={!connected}
-            className="w-full bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 py-3 rounded-lg text-base font-bold text-white transition-colors border border-zinc-500/50 shadow-lg"
+            onClick={() => send('join_game', { username: username || undefined, mode: joinMode, code: joinMode === 'join_private' ? inputCode : undefined })}
+            disabled={!connected || (joinMode === 'join_private' && inputCode.length !== 5)}
+            className="w-full bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 py-3.5 rounded-xl text-base font-bold text-white transition-colors border border-zinc-500/50 shadow-lg"
           >
-            Find Table
+            {joinMode === 'general' ? 'Find Table' : joinMode === 'create_private' ? 'Create Private Room' : 'Join Private Room'}
           </button>
         </div>
       </div>
@@ -230,6 +280,12 @@ export default function PokerPage() {
             <span className="text-xs sm:text-sm font-bold bg-zinc-700/80 text-white border border-zinc-500/50 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg shadow-sm">Spectating</span>
           )}
           <PhaseLabel phase={phase} />
+          {isPrivate && inviteCode && (
+             <button onClick={copyInviteLink} title="Click to copy invite link" className="text-xs sm:text-sm font-bold text-white bg-zinc-800/80 hover:bg-zinc-700/80 transition-colors px-2 sm:px-3 py-1.5 rounded-lg border border-zinc-500/50 shadow-sm flex items-center gap-1.5 sm:gap-2 active:scale-95">
+               <span className="text-zinc-400">CODE:</span>
+               <span className="text-amber-400 tracking-widest">{inviteCode}</span>
+             </button>
+          )}
         </div>
         <button onClick={() => send('leave_game')} className="text-xs sm:text-sm font-bold text-white bg-zinc-700/80 hover:bg-zinc-600 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg border border-zinc-500/50 shadow-sm transition-colors">
           Leave Table
@@ -406,7 +462,7 @@ export default function PokerPage() {
           )}
           {phase === 'waiting' && !isSpectator && (
             <div className="py-2 sm:py-2.5 px-3 sm:px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md text-center text-zinc-200 text-xs sm:text-sm font-bold">
-               Waiting for players...
+               {gameState?.players?.length <= 1 ? "Waiting for others to join..." : "Waiting for players..."}
             </div>
           )}
         </div>

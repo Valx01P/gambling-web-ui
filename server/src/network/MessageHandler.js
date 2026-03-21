@@ -45,7 +45,10 @@ export class MessageHandler {
   handleJoin(player, data) {
     if (data?.username) player.username = data.username
 
-    const result = this.roomManager.joinGame(player)
+    const mode = data?.mode || 'general'
+    const code = data?.code || null
+
+    const result = this.roomManager.joinGame(player, mode, code)
 
     if (result.success) {
       player.send({
@@ -53,6 +56,8 @@ export class MessageHandler {
         data: {
           success: true,
           roomId: result.room.roomId,
+          isPrivate: result.room.isPrivate,
+          inviteCode: result.room.inviteCode,
           isSpectator: result.isSpectator,
           players: result.room.getPlayerList(),
           spectators: result.room.getSpectatorList(),
