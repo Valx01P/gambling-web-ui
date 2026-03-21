@@ -44,10 +44,10 @@ export class WebSocketServer {
       ws.on('pong', () => { ws.isAlive = true })
     })
 
-    // Heartbeat & Inactivity Check
+    // Heartbeat
     this.heartbeat = setInterval(() => {
       const now = Date.now()
-      const INACTIVITY_LIMIT = 2 * 60 * 1000 // 2 minutes
+      const TURN_LIMIT = 1 * 60 * 1000 // 2 minutes turn inactivity limit
 
       this.wss.clients.forEach((ws) => {
         if (!ws.isAlive) return ws.terminate()
@@ -55,16 +55,31 @@ export class WebSocketServer {
         ws.ping()
       })
 
-      // Boot inactive players
-      for (const player of this.playerManager.getConnectedPlayers()) {
-        if (player.currentRoom && (now - player.lastActiveTime > INACTIVITY_LIMIT)) {
-          console.log(`Booting ${player.username} for inactivity.`)
+      // Turn-based inactivity check
+      for (const room of this.roomManager.rooms.values()) {
+        const game = room.game
+        
+        if (game.phase !== 'waiting' && game.phase !== 'showdown') {
+          const activePlayerId = game.players[game.activeIndex]?.id
           
-          player.send({ type: 'error', data: { message: 'You were removed from the room due to inactivity.' } })
-          
-          const result = this.roomManager.leaveGame(player)
-          if (result.success) {
-            player.send({ type: MESSAGE_TYPES.LEAVE_GAME, data: result })
+          if (activePlayerId && game.lastTurnChange && (now - game.lastTurnChange > TURN_LIMIT)) {
+            const player = this.playerManager.getPlayer(activePlayerId)
+            
+            if (player) {
+              console.log(`Booting ${player.username} for turn inactivity.`)
+              
+              // Auto-check or fold the inactive player
+              const toCall = game.currentBet - (game.playerBets.get(activePlayerId) || 0)
+              game.handleAction(activePlayerId, toCall === 0 ? 'check' : 'fold')
+
+              player.send({ type: 'error', data: { message: 'You were removed from the room for taking too long to act.' } })
+              
+              // Disconnect them from the room
+              const result = this.roomManager.leaveGame(player)
+              if (result.success) {
+                player.send({ type: MESSAGE_TYPES.LEAVE_GAME, data: result })
+              }
+            }
           }
         }
       }

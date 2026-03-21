@@ -13,6 +13,7 @@ export class PokerGame {
     this.bigBlind = POKER_CONFIG.BIG_BLIND
     this.dealerIndex = 0
     this.activeIndex = 0
+    this.lastTurnChange = Date.now()
     this.players = []
     this.playerHands = new Map()
     this.playerBets = new Map()
@@ -21,10 +22,15 @@ export class PokerGame {
     this.foldedPlayers = new Set()
     this.allInPlayers = new Set()
     this.roundActed = new Set()
-    this.waitingNextHand = new Set() // Tracks players who joined post-flop
+    this.waitingNextHand = new Set()
     this.aggressionCount = 0 
     this.runOutBoardTimeout = null 
     this.onBroadcast = onBroadcast || (() => {})
+  }
+
+  setActiveIndex(index) {
+    this.activeIndex = index
+    this.lastTurnChange = Date.now()
   }
 
   addPlayer(player) {
@@ -33,17 +39,14 @@ export class PokerGame {
     
     this.players.push(player)
     
-    // Intercept mid-game joins natively
     if (this.phase !== GAME_PHASES.WAITING) {
       this.playerBets.set(player.id, 0)
       this.playerTotalBets.set(player.id, 0)
       this.playerActions.set(player.id, { action: '', amount: 0, text: '' })
       
       if (this.phase === GAME_PHASES.PREFLOP) {
-        // Deal cards to late preflop joiner
         this.playerHands.set(player.id, this.deck.drawMultiple(2))
       } else {
-        // Joined post-flop: sit them out visually
         this.playerHands.set(player.id, [])
         this.foldedPlayers.add(player.id)
         this.waitingNextHand.add(player.id)
@@ -113,7 +116,7 @@ export class PokerGame {
     this.currentBet = 0
     this.foldedPlayers.clear()
     this.allInPlayers.clear()
-    this.waitingNextHand.clear() // Clean slate for everyone
+    this.waitingNextHand.clear()
     this.playerHands.clear()
     this.playerBets.clear()
     this.playerTotalBets.clear()
@@ -151,7 +154,8 @@ export class PokerGame {
       this.runOutBoard()
       return true
     }
-    this.activeIndex = firstAct
+    
+    this.setActiveIndex(firstAct)
     this.phase = GAME_PHASES.PREFLOP
     this.broadcastState()
     return true
@@ -323,7 +327,7 @@ export class PokerGame {
       const pBet = this.playerBets.get(p.id) || 0
       const needsToAct = pBet < this.currentBet && !this.roundActed.has(p.id)
       if (needsToAct) {
-        this.activeIndex = this.players.indexOf(p)
+        this.setActiveIndex(this.players.indexOf(p))
         this.broadcastState()
         return
       }
@@ -346,7 +350,7 @@ export class PokerGame {
       if (newDecision.length <= 1) {
         if (newDecision.length === 1 && this.currentBet > 0 &&
             (this.playerBets.get(newDecision[0].id) || 0) < this.currentBet) {
-          this.activeIndex = this.players.indexOf(newDecision[0])
+          this.setActiveIndex(this.players.indexOf(newDecision[0]))
           this.broadcastState()
           return
         }
@@ -364,7 +368,8 @@ export class PokerGame {
       this.runOutBoard()
       return
     }
-    this.activeIndex = nextIdx
+    
+    this.setActiveIndex(nextIdx)
     this.broadcastState()
   }
 
@@ -422,7 +427,7 @@ export class PokerGame {
 
     if (this.phase !== GAME_PHASES.SHOWDOWN) {
       const next = this.findNextDecisionIndex((this.dealerIndex + 1) % this.players.length)
-      if (next !== -1) this.activeIndex = next
+      if (next !== -1) this.setActiveIndex(next)
     }
   }
 
@@ -630,9 +635,8 @@ export class PokerGame {
         lastAction: this.playerActions.get(p.id) || null,
         folded: this.foldedPlayers.has(p.id),
         allIn: this.allInPlayers.has(p.id),
-        waitingNextHand: this.waitingNextHand.has(p.id), // Sent directly to frontend
+        waitingNextHand: this.waitingNextHand.has(p.id),
         isConnected: p.isConnected,
-        // Block empty rendering by verifying the array length is valid
         cards: (forPlayerId === p.id || (this.phase === GAME_PHASES.SHOWDOWN && !this.foldedPlayers.has(p.id) && !this.waitingNextHand.has(p.id)))
           ? (this.playerHands.get(p.id) || [])
           : (this.playerHands.has(p.id) && this.playerHands.get(p.id).length > 0 ? [null, null] : [])
