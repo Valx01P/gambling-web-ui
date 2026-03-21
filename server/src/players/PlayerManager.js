@@ -9,6 +9,11 @@ export class Player {
     this.currentRoom = null
     this.isSpectator = false
     this.isConnected = true
+    this.lastActiveTime = Date.now() // Track inactivity
+  }
+
+  updateActivity() {
+    this.lastActiveTime = Date.now()
   }
 
   send(data) {

@@ -44,13 +44,30 @@ export class WebSocketServer {
       ws.on('pong', () => { ws.isAlive = true })
     })
 
-    // Heartbeat
+    // Heartbeat & Inactivity Check
     this.heartbeat = setInterval(() => {
+      const now = Date.now()
+      const INACTIVITY_LIMIT = 2 * 60 * 1000 // 2 minutes
+
       this.wss.clients.forEach((ws) => {
         if (!ws.isAlive) return ws.terminate()
         ws.isAlive = false
         ws.ping()
       })
+
+      // Boot inactive players
+      for (const player of this.playerManager.getConnectedPlayers()) {
+        if (player.currentRoom && (now - player.lastActiveTime > INACTIVITY_LIMIT)) {
+          console.log(`Booting ${player.username} for inactivity.`)
+          
+          player.send({ type: 'error', data: { message: 'You were removed from the room due to inactivity.' } })
+          
+          const result = this.roomManager.leaveGame(player)
+          if (result.success) {
+            player.send({ type: MESSAGE_TYPES.LEAVE_GAME, data: result })
+          }
+        }
+      }
     }, 30000)
   }
 

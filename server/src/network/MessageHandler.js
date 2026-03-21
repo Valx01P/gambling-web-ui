@@ -10,6 +10,9 @@ export class MessageHandler {
     const player = this.playerManager.getPlayer(playerId)
     if (!player) return this.error('Player not found')
 
+    // Refresh activity on any message received
+    player.updateActivity()
+
     try {
       const { type, data } = JSON.parse(message)
 
