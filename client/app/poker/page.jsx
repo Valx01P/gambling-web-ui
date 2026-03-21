@@ -228,19 +228,19 @@ export default function PokerPage() {
   if (!joined) {
     return (
       <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4">
-        <div className="flex flex-col items-center gap-5 w-full max-w-[380px]">
-          <div className={`text-sm px-5 py-2 rounded-full font-bold ${connected ? 'bg-emerald-800/80 text-emerald-100 border border-emerald-600/50' : 'bg-red-800/80 text-red-100 border border-red-600/50'}`}>
+        <div className="flex flex-col items-center gap-6 w-full max-w-[460px]">
+          <div className={`text-sm sm:text-base px-6 py-2.5 rounded-full font-bold shadow-sm ${connected ? 'bg-emerald-800/80 text-emerald-100 border border-emerald-600/50' : 'bg-red-800/80 text-red-100 border border-red-600/50'}`}>
             {connected ? '● Connected' : '○ Connecting...'}
           </div>
 
-          <div className="flex w-full bg-zinc-800/80 p-1.5 gap-1.5 rounded-xl border border-zinc-600/50 shadow-md">
-             <button onClick={() => setJoinMode('general')} className={`flex-1 text-sm py-2.5 rounded-lg font-bold transition-all ${joinMode === 'general' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>General</button>
-             <button onClick={() => setJoinMode('create_private')} className={`flex-1 text-sm py-2.5 rounded-lg font-bold transition-all ${joinMode === 'create_private' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>Create Private</button>
-             <button onClick={() => setJoinMode('join_private')} className={`flex-1 text-sm py-2.5 rounded-lg font-bold transition-all ${joinMode === 'join_private' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>Join Private</button>
+          <div className="flex w-full bg-zinc-800/80 p-2 gap-2 rounded-xl border border-zinc-600/50 shadow-md">
+             <button onClick={() => setJoinMode('general')} className={`flex-1 text-sm sm:text-base py-3 rounded-lg font-bold transition-all ${joinMode === 'general' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>General</button>
+             <button onClick={() => setJoinMode('create_private')} className={`flex-1 text-sm sm:text-base py-3 rounded-lg font-bold transition-all ${joinMode === 'create_private' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>Create Private</button>
+             <button onClick={() => setJoinMode('join_private')} className={`flex-1 text-sm sm:text-base py-3 rounded-lg font-bold transition-all ${joinMode === 'join_private' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>Join Private</button>
           </div>
 
           <input
-            className="w-full bg-zinc-800/90 border border-zinc-500/50 rounded-xl px-4 py-3.5 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-lg"
+            className="w-full bg-zinc-800/90 border border-zinc-500/50 rounded-xl px-5 py-4 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-lg"
             placeholder="Username (optional)"
             value={username}
             onChange={e => setUsername(e.target.value)}
@@ -249,7 +249,7 @@ export default function PokerPage() {
 
           {joinMode === 'join_private' && (
             <input
-               className="w-full bg-zinc-800/90 border border-zinc-500/50 rounded-xl px-4 py-3.5 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-lg uppercase tracking-widest font-black"
+               className="w-full bg-zinc-800/90 border border-zinc-500/50 rounded-xl px-5 py-4 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-lg uppercase tracking-widest font-black"
                placeholder="5-LETTER CODE"
                maxLength={5}
                value={inputCode}
@@ -261,7 +261,7 @@ export default function PokerPage() {
           <button
             onClick={() => send('join_game', { username: username || undefined, mode: joinMode, code: joinMode === 'join_private' ? inputCode : undefined })}
             disabled={!connected || (joinMode === 'join_private' && inputCode.length !== 5)}
-            className="w-full bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 py-3.5 rounded-xl text-base font-bold text-white transition-colors border border-zinc-500/50 shadow-lg"
+            className="w-full bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 py-4 rounded-xl text-base font-bold text-white transition-colors border border-zinc-500/50 shadow-lg"
           >
             {joinMode === 'general' ? 'Find Table' : joinMode === 'create_private' ? 'Create Private Room' : 'Join Private Room'}
           </button>

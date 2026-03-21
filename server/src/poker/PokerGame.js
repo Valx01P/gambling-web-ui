@@ -475,6 +475,9 @@ export class PokerGame {
   }
 
   resolveShowdown() {
+    // Prevent uncalled bets on all-in scenarios from being treated as side pots
+    this.returnUncalledBets()
+
     const pots = this.calculatePots()
     
     const active = this.players.filter(p => !this.foldedPlayers.has(p.id))
