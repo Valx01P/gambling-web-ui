@@ -8,31 +8,47 @@ export class PokerRoom {
     this.inviteCode = null
     this.players = new Map()    // playerId -> player (seated)
     this.spectators = new Map() // playerId -> player (watching)
-    this.game = new PokerGame((msg) => this.broadcast(msg))
+    this.startHandTimeout = null
+    this.game = new PokerGame(
+      (msg) => this.broadcast(msg),
+      () => this.broadcastGameState()
+    )
   }
 
   addPlayer(player) {
+    if (this.players.has(player.id)) {
+      return { success: true, isSpectator: false }
+    }
+    if (this.spectators.has(player.id)) {
+      return { success: true, isSpectator: true }
+    }
+
     // Only force spectator if the physical seats are full
     if (this.players.size >= POKER_CONFIG.MAX_PLAYERS) {
+      return this.addSpectator(player)
+    }
+
+    const addedToGame = this.game.addPlayer(player)
+    if (!addedToGame) {
       return this.addSpectator(player)
     }
 
     this.players.set(player.id, player)
     player.currentRoom = this.roomId
     player.isSpectator = false
-    this.game.addPlayer(player)
-
     this.broadcastRoomUpdate()
 
     // Auto-start when we have enough players
-    if (this.game.canStart()) {
-      setTimeout(() => this.game.startHand(), 2000)
-    }
+    this.scheduleStartHand()
 
     return { success: true, isSpectator: false }
   }
 
   addSpectator(player) {
+    if (this.spectators.has(player.id)) {
+      return { success: true, isSpectator: true }
+    }
+
     this.spectators.set(player.id, player)
     player.currentRoom = this.roomId
     player.isSpectator = true
@@ -46,20 +62,26 @@ export class PokerRoom {
       }
     })
 
+    this.broadcastRoomUpdate()
+
     return { success: true, isSpectator: true }
   }
 
   removePlayer(playerId) {
     const wasPlayer = this.players.has(playerId)
     const wasSpectator = this.spectators.has(playerId)
+    const player = this.players.get(playerId)
+    const spectatorPlayer = this.spectators.get(playerId)
 
     if (wasPlayer) {
       this.players.delete(playerId)
+      if (player) player.isSpectator = false
       this.game.removePlayer(playerId)
     }
 
     if (wasSpectator) {
       this.spectators.delete(playerId)
+      if (spectatorPlayer) spectatorPlayer.isSpectator = false
     }
 
     // Promote a spectator to player if there's room
@@ -67,16 +89,23 @@ export class PokerRoom {
       const [specId, spectator] = this.spectators.entries().next().value
       this.spectators.delete(specId)
       spectator.isSpectator = false
-      this.players.set(specId, spectator)
-      this.game.addPlayer(spectator)
+      const addedToGame = this.game.addPlayer(spectator)
 
-      spectator.send({
-        type: MESSAGE_TYPES.ROOM_UPDATE,
-        data: { message: 'You have been seated at the table!' }
-      })
+      if (addedToGame) {
+        this.players.set(specId, spectator)
+
+        spectator.send({
+          type: MESSAGE_TYPES.ROOM_UPDATE,
+          data: { ...this.getRoomData(specId), message: 'You have been seated at the table!' }
+        })
+      } else {
+        spectator.isSpectator = true
+        this.spectators.set(specId, spectator)
+      }
     }
 
     this.broadcastRoomUpdate()
+    this.scheduleStartHand()
   }
 
   handlePlayerAction(playerId, actionType, data) {
@@ -103,19 +132,57 @@ export class PokerRoom {
     }
   }
 
-  broadcastRoomUpdate() {
-    const update = {
-      type: MESSAGE_TYPES.ROOM_UPDATE,
-      data: {
-        roomId: this.roomId,
-        isPrivate: this.isPrivate,
-        inviteCode: this.inviteCode,
-        players: this.getPlayerList(),
-        spectators: this.getSpectatorList(),
-        gameState: this.game.getGameState()
-      }
+  scheduleStartHand(delay = 2000) {
+    if (this.startHandTimeout || !this.game.canStart()) return
+
+    this.startHandTimeout = setTimeout(() => {
+      this.startHandTimeout = null
+      this.game.startHand()
+    }, delay)
+  }
+
+  getRoomData(forPlayerId = null) {
+    const isSpectator = forPlayerId ? this.spectators.has(forPlayerId) : false
+
+    return {
+      roomId: this.roomId,
+      isPrivate: this.isPrivate,
+      inviteCode: this.inviteCode,
+      isSpectator,
+      players: this.getPlayerList(),
+      spectators: this.getSpectatorList(),
+      gameState: this.game.getGameState(isSpectator ? null : forPlayerId)
     }
-    this.broadcast(update)
+  }
+
+  broadcastGameState() {
+    for (const player of this.players.values()) {
+      player.send({
+        type: MESSAGE_TYPES.GAME_STATE,
+        data: this.game.getGameState(player.id)
+      })
+    }
+    for (const spectator of this.spectators.values()) {
+      spectator.send({
+        type: MESSAGE_TYPES.GAME_STATE,
+        data: this.game.getGameState()
+      })
+    }
+  }
+
+  broadcastRoomUpdate() {
+    for (const player of this.players.values()) {
+      player.send({
+        type: MESSAGE_TYPES.ROOM_UPDATE,
+        data: this.getRoomData(player.id)
+      })
+    }
+    for (const spectator of this.spectators.values()) {
+      spectator.send({
+        type: MESSAGE_TYPES.ROOM_UPDATE,
+        data: this.getRoomData(spectator.id)
+      })
+    }
   }
 
   getPlayerList() {

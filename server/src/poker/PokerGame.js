@@ -3,7 +3,7 @@ import { GAME_PHASES, POKER_CONFIG } from '../config/constants.js'
 import { evaluateHand, compareHands, getHandName } from './handEvaluator.js'
 
 export class PokerGame {
-  constructor(onBroadcast) {
+  constructor(onBroadcast, onStateBroadcast = null) {
     this.deck = new Deck()
     this.phase = GAME_PHASES.WAITING
     this.communityCards = []
@@ -23,9 +23,13 @@ export class PokerGame {
     this.allInPlayers = new Set()
     this.roundActed = new Set()
     this.waitingNextHand = new Set()
+    this.removedPlayers = new Set()
+    this.actionStarted = false
     this.aggressionCount = 0 
     this.runOutBoardTimeout = null 
+    this.nextHandTimeout = null
     this.onBroadcast = onBroadcast || (() => {})
+    this.onStateBroadcast = onStateBroadcast
   }
 
   setActiveIndex(index) {
@@ -33,23 +37,105 @@ export class PokerGame {
     this.lastTurnChange = Date.now()
   }
 
-  addPlayer(player) {
-    if (this.players.length >= POKER_CONFIG.MAX_PLAYERS) return false
-    if (this.players.find(p => p.id === player.id)) return false
-    
-    this.players.push(player)
-    
-    if (this.phase !== GAME_PHASES.WAITING) {
-      this.playerBets.set(player.id, 0)
-      this.playerTotalBets.set(player.id, 0)
+  getSeatedPlayers() {
+    return this.players.filter(p => p.isConnected && !this.removedPlayers.has(p.id))
+  }
+
+  hasPlayerActionStarted() {
+    return this.actionStarted
+  }
+
+  canJoinCurrentHand() {
+    return this.phase === GAME_PHASES.WAITING ||
+      (this.phase === GAME_PHASES.PREFLOP && !this.hasPlayerActionStarted())
+  }
+
+  clearPlayerState(playerId) {
+    this.playerHands.delete(playerId)
+    this.playerBets.delete(playerId)
+    this.playerTotalBets.delete(playerId)
+    this.playerActions.delete(playerId)
+    this.foldedPlayers.delete(playerId)
+    this.allInPlayers.delete(playerId)
+    this.roundActed.delete(playerId)
+    this.waitingNextHand.delete(playerId)
+    this.removedPlayers.delete(playerId)
+  }
+
+  markWaitingForNextHand(player) {
+    if (!this.playerBets.has(player.id)) this.playerBets.set(player.id, 0)
+    if (!this.playerTotalBets.has(player.id)) this.playerTotalBets.set(player.id, 0)
+    if (!this.playerActions.has(player.id)) {
       this.playerActions.set(player.id, { action: '', amount: 0, text: '' })
-      
-      if (this.phase === GAME_PHASES.PREFLOP) {
+    }
+    if (!this.playerHands.has(player.id)) this.playerHands.set(player.id, [])
+
+    this.foldedPlayers.add(player.id)
+    this.waitingNextHand.add(player.id)
+    this.allInPlayers.delete(player.id)
+    this.roundActed.delete(player.id)
+  }
+
+  scheduleNextHand(delay = 1500) {
+    if (this.nextHandTimeout || !this.canStart()) return
+
+    this.nextHandTimeout = setTimeout(() => {
+      this.nextHandTimeout = null
+      this.startHand()
+    }, delay)
+  }
+
+  resetToWaiting() {
+    clearTimeout(this.runOutBoardTimeout)
+    this.players = this.getSeatedPlayers()
+    this.communityCards = []
+    this.pot = 0
+    this.currentBet = 0
+    this.activeIndex = 0
+    this.phase = GAME_PHASES.WAITING
+    this.playerHands.clear()
+    this.playerBets.clear()
+    this.playerTotalBets.clear()
+    this.playerActions.clear()
+    this.foldedPlayers.clear()
+    this.allInPlayers.clear()
+    this.roundActed.clear()
+    this.waitingNextHand.clear()
+    this.removedPlayers.clear()
+    this.actionStarted = false
+    this.broadcastState()
+    this.scheduleNextHand()
+  }
+
+  addPlayer(player) {
+    const existingIndex = this.players.findIndex(p => p.id === player.id)
+    const isReturningRemovedPlayer = existingIndex !== -1 && this.removedPlayers.has(player.id)
+
+    if (existingIndex !== -1 && !isReturningRemovedPlayer) return false
+    if (!isReturningRemovedPlayer && this.getSeatedPlayers().length >= POKER_CONFIG.MAX_PLAYERS) return false
+
+    player.isConnected = true
+
+    if (existingIndex === -1) {
+      this.players.push(player)
+    } else {
+      this.players[existingIndex] = player
+      this.removedPlayers.delete(player.id)
+    }
+
+    if (this.phase !== GAME_PHASES.WAITING) {
+      if (!this.playerBets.has(player.id)) this.playerBets.set(player.id, 0)
+      if (!this.playerTotalBets.has(player.id)) this.playerTotalBets.set(player.id, 0)
+      if (!this.playerActions.has(player.id)) {
+        this.playerActions.set(player.id, { action: '', amount: 0, text: '' })
+      }
+
+      if (!isReturningRemovedPlayer && this.canJoinCurrentHand()) {
         this.playerHands.set(player.id, this.deck.drawMultiple(2))
+        this.foldedPlayers.delete(player.id)
+        this.waitingNextHand.delete(player.id)
       } else {
-        this.playerHands.set(player.id, [])
-        this.foldedPlayers.add(player.id)
-        this.waitingNextHand.add(player.id)
+        this.markWaitingForNextHand(player)
       }
     }
     return true
@@ -59,17 +145,21 @@ export class PokerGame {
     const playerIdx = this.players.findIndex(p => p.id === playerId)
     if (playerIdx === -1) return
     
-    this.players[playerIdx].isConnected = false
     this.waitingNextHand.delete(playerId)
 
     if (this.phase !== GAME_PHASES.WAITING && this.phase !== GAME_PHASES.SHOWDOWN) {
       if (this.activeIndex === playerIdx) {
-        this.handleAction(playerId, 'fold')
+        const result = this.handleAction(playerId, 'fold')
+        this.removedPlayers.add(playerId)
+        if (result.success) this.broadcastState()
       } else {
+        this.removedPlayers.add(playerId)
         this.foldedPlayers.add(playerId)
         this.checkHandOver()
+        this.broadcastState()
       }
     } else {
+      this.clearPlayerState(playerId)
       if (playerIdx < this.dealerIndex) {
         this.dealerIndex--
       }
@@ -83,24 +173,37 @@ export class PokerGame {
   }
 
   getActivePlayers() {
-    return this.players.filter(p => !this.foldedPlayers.has(p.id) && p.isConnected)
+    return this.players.filter(p =>
+      !this.removedPlayers.has(p.id) && !this.foldedPlayers.has(p.id) && p.isConnected
+    )
   }
 
   getDecisionPlayers() {
     return this.players.filter(p =>
-      !this.foldedPlayers.has(p.id) && !this.allInPlayers.has(p.id) && p.isConnected
+      !this.removedPlayers.has(p.id) &&
+      !this.waitingNextHand.has(p.id) &&
+      !this.foldedPlayers.has(p.id) &&
+      !this.allInPlayers.has(p.id) &&
+      p.isConnected
     )
   }
 
   canStart() {
-    return this.players.length >= POKER_CONFIG.MIN_PLAYERS && this.phase === GAME_PHASES.WAITING
+    return this.getSeatedPlayers().length >= POKER_CONFIG.MIN_PLAYERS && this.phase === GAME_PHASES.WAITING
   }
 
   findNextDecisionIndex(startFrom) {
     for (let i = 0; i < this.players.length; i++) {
       const idx = (startFrom + i) % this.players.length
       const p = this.players[idx]
-      if (p && !this.foldedPlayers.has(p.id) && !this.allInPlayers.has(p.id) && p.isConnected) {
+      if (
+        p &&
+        !this.removedPlayers.has(p.id) &&
+        !this.waitingNextHand.has(p.id) &&
+        !this.foldedPlayers.has(p.id) &&
+        !this.allInPlayers.has(p.id) &&
+        p.isConnected
+      ) {
         return idx
       }
     }
@@ -110,6 +213,10 @@ export class PokerGame {
   startHand() {
     if (!this.canStart()) return false
 
+    clearTimeout(this.nextHandTimeout)
+    this.nextHandTimeout = null
+    this.players = this.getSeatedPlayers()
+    this.removedPlayers.clear()
     this.deck.reset()
     this.communityCards = []
     this.pot = 0
@@ -123,6 +230,7 @@ export class PokerGame {
     this.playerActions.clear()
     this.roundActed.clear()
     this.aggressionCount = 1
+    this.actionStarted = false
     clearTimeout(this.runOutBoardTimeout)
 
     this.dealerIndex = this.dealerIndex % this.players.length
@@ -183,6 +291,9 @@ export class PokerGame {
   handleAction(playerId, action, amount = 0) {
     if (this.phase === GAME_PHASES.WAITING || this.phase === GAME_PHASES.SHOWDOWN) {
       return { success: false, error: 'No active hand' }
+    }
+    if (this.removedPlayers.has(playerId) || this.waitingNextHand.has(playerId)) {
+      return { success: false, error: 'Not in this hand' }
     }
 
     const currentPlayer = this.players[this.activeIndex]
@@ -273,6 +384,7 @@ export class PokerGame {
         return { success: false, error: 'Invalid action' }
     }
 
+    this.actionStarted = true
     this.roundActed.add(playerId)
     this.afterAction()
     return { success: true }
@@ -306,7 +418,7 @@ export class PokerGame {
   }
 
   afterAction() {
-    const notFolded = this.players.filter(p => !this.foldedPlayers.has(p.id))
+    const notFolded = this.players.filter(p => !this.removedPlayers.has(p.id) && !this.foldedPlayers.has(p.id))
     if (notFolded.length <= 1) {
       if (notFolded.length === 1) {
         this.returnUncalledBets() 
@@ -432,15 +544,12 @@ export class PokerGame {
   }
 
   checkHandOver() {
-    const notFolded = this.players.filter(p => !this.foldedPlayers.has(p.id))
+    const notFolded = this.players.filter(p => !this.removedPlayers.has(p.id) && !this.foldedPlayers.has(p.id))
     if (notFolded.length === 1) {
       clearTimeout(this.runOutBoardTimeout)
       this.finishHand(notFolded[0].id)
     } else if (notFolded.length === 0) {
-      clearTimeout(this.runOutBoardTimeout)
-      this.phase = GAME_PHASES.WAITING
-      this.pot = 0
-      this.broadcastState()
+      this.resetToWaiting()
     }
   }
 
@@ -459,7 +568,7 @@ export class PokerGame {
           const contribution = Math.min(bet, minBet)
           potAmount += contribution
           this.playerTotalBets.set(p.id, bet - contribution)
-          if (!this.foldedPlayers.has(p.id)) {
+          if (!this.removedPlayers.has(p.id) && !this.foldedPlayers.has(p.id)) {
             eligiblePlayers.push(p.id)
           }
         }
@@ -480,7 +589,7 @@ export class PokerGame {
 
     const pots = this.calculatePots()
     
-    const active = this.players.filter(p => !this.foldedPlayers.has(p.id))
+    const active = this.players.filter(p => !this.removedPlayers.has(p.id) && !this.foldedPlayers.has(p.id))
     const evaluated = active.map(p => ({
       playerId: p.id,
       hand: evaluateHand([...(this.playerHands.get(p.id) || []), ...this.communityCards])
@@ -551,7 +660,8 @@ export class PokerGame {
         }
       });
 
-      this.players = this.players.filter(p => p.isConnected)
+      this.players = this.getSeatedPlayers()
+      this.removedPlayers.clear()
       
       if (this.players.length > 0) {
         const prevIdx = this.players.findIndex(p => p.id === oldDealerId)
@@ -565,10 +675,21 @@ export class PokerGame {
       }
 
       this.phase = GAME_PHASES.WAITING
+      this.communityCards = []
+      this.pot = 0
+      this.currentBet = 0
+      this.activeIndex = 0
+      this.playerHands.clear()
+      this.playerBets.clear()
+      this.playerTotalBets.clear()
+      this.playerActions.clear()
+      this.foldedPlayers.clear()
+      this.allInPlayers.clear()
+      this.roundActed.clear()
+      this.waitingNextHand.clear()
+      this.actionStarted = false
       this.broadcastState()
-      if (this.canStart()) {
-        setTimeout(() => this.startHand(), 1500)
-      }
+      this.scheduleNextHand()
     }, 15000)
   }
 
@@ -600,7 +721,8 @@ export class PokerGame {
         }
       });
 
-      this.players = this.players.filter(p => p.isConnected)
+      this.players = this.getSeatedPlayers()
+      this.removedPlayers.clear()
       
       if (this.players.length > 0) {
         const prevIdx = this.players.findIndex(p => p.id === oldDealerId)
@@ -614,22 +736,40 @@ export class PokerGame {
       }
 
       this.phase = GAME_PHASES.WAITING
+      this.communityCards = []
+      this.pot = 0
+      this.currentBet = 0
+      this.activeIndex = 0
+      this.playerHands.clear()
+      this.playerBets.clear()
+      this.playerTotalBets.clear()
+      this.playerActions.clear()
+      this.foldedPlayers.clear()
+      this.allInPlayers.clear()
+      this.roundActed.clear()
+      this.waitingNextHand.clear()
+      this.actionStarted = false
       this.broadcastState()
-      if (this.canStart()) {
-        setTimeout(() => this.startHand(), 1500)
-      }
+      this.scheduleNextHand()
     }, 5000)
   }
 
   getGameState(forPlayerId = null) {
+    const visiblePlayers = this.getSeatedPlayers()
+    const dealerPlayerId = this.players[this.dealerIndex]?.id || null
+    const visibleDealerIndex = visiblePlayers.findIndex(p => p.id === dealerPlayerId)
+    const activePlayer = this.players[this.activeIndex]
+
     return {
       phase: this.phase,
       pot: this.pot,
       currentBet: this.currentBet,
       communityCards: this.communityCards,
-      dealerIndex: this.dealerIndex,
-      activePlayerId: this.players[this.activeIndex]?.id || null,
-      players: this.players.map(p => ({
+      dealerIndex: visibleDealerIndex,
+      activePlayerId: activePlayer && !this.removedPlayers.has(activePlayer.id) && activePlayer.isConnected
+        ? activePlayer.id
+        : null,
+      players: visiblePlayers.map(p => ({
         id: p.id,
         username: p.username,
         chips: p.chips,
@@ -648,7 +788,12 @@ export class PokerGame {
   }
 
   broadcastState() {
-    for (const player of this.players) {
+    if (this.onStateBroadcast) {
+      this.onStateBroadcast()
+      return
+    }
+
+    for (const player of this.getSeatedPlayers()) {
       player.send({ type: 'game_state', data: this.getGameState(player.id) })
     }
   }

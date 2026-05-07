@@ -44,6 +44,19 @@ export class RoomManager {
   }
 
   joinGame(player, mode = 'general', code = null) {
+    if (player.currentRoom) {
+      const currentRoom = this.getRoom(player.currentRoom)
+      if (currentRoom) {
+        return {
+          success: true,
+          isSpectator: player.isSpectator,
+          room: currentRoom
+        }
+      }
+      player.currentRoom = null
+      player.isSpectator = false
+    }
+
     let room
 
     if (mode === 'general') {
@@ -68,10 +81,15 @@ export class RoomManager {
     if (!player.currentRoom) return { success: false, error: 'Not in a room' }
 
     const room = this.getRoom(player.currentRoom)
-    if (!room) return { success: false, error: 'Room not found' }
+    if (!room) {
+      player.currentRoom = null
+      player.isSpectator = false
+      return { success: false, error: 'Room not found' }
+    }
 
     room.removePlayer(player.id)
     player.currentRoom = null
+    player.isSpectator = false
 
     if (room.isEmpty()) {
       this.rooms.delete(room.roomId)

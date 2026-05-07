@@ -139,6 +139,7 @@ export default function PokerPage() {
           break
         case 'room_update':
           if (msg.data.gameState) setGameState(msg.data.gameState)
+          if (msg.data.isSpectator !== undefined) setIsSpectator(msg.data.isSpectator)
           if (msg.data.isPrivate !== undefined) setIsPrivate(msg.data.isPrivate)
           if (msg.data.inviteCode !== undefined) setInviteCode(msg.data.inviteCode)
           break

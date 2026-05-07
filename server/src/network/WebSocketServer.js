@@ -47,7 +47,7 @@ export class WebSocketServer {
     // Heartbeat
     this.heartbeat = setInterval(() => {
       const now = Date.now()
-      const TURN_LIMIT = 1 * 60 * 1000 // 2 minutes turn inactivity limit
+      const TURN_LIMIT = 1 * 60 * 1000 // 1 minute turn inactivity limit
 
       this.wss.clients.forEach((ws) => {
         if (!ws.isAlive) return ws.terminate()
@@ -89,6 +89,7 @@ export class WebSocketServer {
   handleDisconnect(playerId) {
     const player = this.playerManager.getPlayer(playerId)
     if (!player) return
+    player.isConnected = false
     this.roomManager.leaveGame(player)
     this.playerManager.deletePlayer(playerId)
   }

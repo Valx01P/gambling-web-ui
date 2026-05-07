@@ -55,13 +55,8 @@ export class MessageHandler {
         type: MESSAGE_TYPES.JOIN_GAME,
         data: {
           success: true,
-          roomId: result.room.roomId,
-          isPrivate: result.room.isPrivate,
-          inviteCode: result.room.inviteCode,
-          isSpectator: result.isSpectator,
-          players: result.room.getPlayerList(),
-          spectators: result.room.getSpectatorList(),
-          gameState: result.room.game.getGameState()
+          ...result.room.getRoomData(player.id),
+          isSpectator: result.isSpectator
         }
       })
     } else {
