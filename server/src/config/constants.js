@@ -7,6 +7,14 @@ export const POKER_CONFIG = {
   MIN_RAISE: 10
 }
 
+export const BLACKJACK_CONFIG = {
+  MAX_PLAYERS: 5,
+  STARTING_CHIPS: 1000,
+  MIN_BET: 10,
+  BLACKJACK_PAYOUT_NUMERATOR: 3,
+  BLACKJACK_PAYOUT_DENOMINATOR: 2,
+}
+
 export const PROFILE_AVATARS = [
   { id: 'op1', url: 'https://i.ibb.co/Wpf6XVp0/image.png' },
   { id: 'op2', url: 'https://i.ibb.co/XdFhJ7w/image.png' },
@@ -40,6 +48,14 @@ export const MESSAGE_TYPES = {
   POKER_CALL: 'poker_call',
   POKER_RAISE: 'poker_raise',
   POKER_ALL_IN: 'poker_all_in',
+
+  // Blackjack actions
+  BLACKJACK_BET: 'blackjack_bet',
+  BLACKJACK_HIT: 'blackjack_hit',
+  BLACKJACK_STAND: 'blackjack_stand',
+  BLACKJACK_DOUBLE: 'blackjack_double',
+  BLACKJACK_SPLIT: 'blackjack_split',
+  BLACKJACK_SURRENDER: 'blackjack_surrender',
 
   // Chat
   CHAT: 'chat',

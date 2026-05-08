@@ -15,6 +15,36 @@ const DiamondSVG = () => (
   </svg>
 )
 
+const ClubSVG = () => (
+  <svg width="30" height="30" viewBox="0 0 24 24" fill="none">
+    <path
+      d="M12 3a4.5 4.5 0 0 0-2.9 7.95A4.5 4.5 0 1 0 9 18.4c-.7 1.2-1.6 2.1-2.4 2.6h10.8c-.8-.5-1.7-1.4-2.4-2.6a4.5 4.5 0 1 0-.1-7.45A4.5 4.5 0 0 0 12 3Z"
+      fill="currentColor"
+    />
+  </svg>
+)
+
+function GameCard({ href, title, description, tags, icon }) {
+  return (
+    <Link href={href} className="group w-full">
+      <div className="relative h-full bg-green-900/80 border border-white/10 rounded-xl p-6 transition-all duration-200 group-hover:border-white/30 group-hover:bg-green-900 group-hover:scale-[1.02]">
+        <div className="absolute top-4 right-4 opacity-30 group-hover:opacity-60 transition-opacity">
+          {icon}
+        </div>
+
+        <h2 className="font-bold text-xl mb-1">{title}</h2>
+        <p className="text-sm opacity-60 mb-6">{description}</p>
+
+        <div className="flex flex-wrap gap-2">
+          {tags.map((tag) => (
+            <span key={tag} className="text-xs bg-white/10 rounded px-2 py-1">{tag}</span>
+          ))}
+        </div>
+      </div>
+    </Link>
+  )
+}
+
 export default function Home() {
   return (
     <div className="min-h-screen flex flex-col items-center px-4 pt-16">
@@ -31,27 +61,22 @@ export default function Home() {
         </p>
       </div>
 
-      <Link href="/poker" className="group w-full max-w-xs">
-        <div className="relative bg-green-900/80 border border-white/10 rounded-xl p-6 
-                        transition-all duration-200 group-hover:border-white/30 
-                        group-hover:bg-green-900 group-hover:scale-[1.02]">
-          
-          <div className="absolute top-4 right-4 opacity-30 group-hover:opacity-60 transition-opacity">
-            <SpadeSVG />
-          </div>
-
-          <h2 className="font-bold text-xl mb-1">Texas Hold&apos;em</h2>
-          <p className="text-sm opacity-60 mb-6">
-            Up to 5 players &middot; Spectate or play
-          </p>
-
-          <div className="flex gap-2">
-            <span className="text-xs bg-white/10 rounded px-2 py-1">AI opponents</span>
-            <span className="text-xs bg-white/10 rounded px-2 py-1">Multiplayer</span>
-            <span className="text-xs bg-white/10 rounded px-2 py-1">Spectate</span>
-          </div>
-        </div>
-      </Link>
+      <div className="grid w-full max-w-2xl gap-4 sm:grid-cols-2">
+        <GameCard
+          href="/poker"
+          title="Texas Hold'em"
+          description="Up to 5 players - spectate or play"
+          tags={['Multiplayer', 'Spectate', 'Stats']}
+          icon={<SpadeSVG />}
+        />
+        <GameCard
+          href="/blackjack"
+          title="Blackjack"
+          description="Up to 5 players - beat the dealer together"
+          tags={['Split', 'Double', 'Chat']}
+          icon={<ClubSVG />}
+        />
+      </div>
 
     </div>
   )

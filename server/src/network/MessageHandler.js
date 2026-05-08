@@ -37,6 +37,12 @@ export class MessageHandler {
         case MESSAGE_TYPES.POKER_CALL:
         case MESSAGE_TYPES.POKER_RAISE:
         case MESSAGE_TYPES.POKER_ALL_IN:
+        case MESSAGE_TYPES.BLACKJACK_BET:
+        case MESSAGE_TYPES.BLACKJACK_HIT:
+        case MESSAGE_TYPES.BLACKJACK_STAND:
+        case MESSAGE_TYPES.BLACKJACK_DOUBLE:
+        case MESSAGE_TYPES.BLACKJACK_SPLIT:
+        case MESSAGE_TYPES.BLACKJACK_SURRENDER:
           return this.handleAction(player, type, data)
 
         default:
@@ -57,8 +63,9 @@ export class MessageHandler {
     const mode = data?.mode || 'general'
     const code = data?.code || null
     const roomId = data?.roomId || null
+    const game = data?.game || 'poker'
 
-    const result = this.roomManager.joinGame(player, mode, code, roomId)
+    const result = this.roomManager.joinGame(player, mode, code, roomId, game)
 
     if (result.success) {
       player.send({

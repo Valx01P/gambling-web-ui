@@ -57,6 +57,7 @@ export class WebSocketServer {
 
       // Turn-based inactivity check
       for (const room of this.roomManager.rooms.values()) {
+        if (room.roomType !== 'poker') continue
         const game = room.game
         
         if (game.phase !== 'waiting' && game.phase !== 'showdown') {

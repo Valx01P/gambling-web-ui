@@ -6,6 +6,7 @@ const TABLE_EMOTES = new Set(['angry', 'laugh', 'sad', 'shush', 'sunglasses'])
 export class PokerRoom {
   constructor(roomId, isPrivate = false) {
     this.roomId = roomId
+    this.roomType = 'poker'
     this.isPrivate = isPrivate
     this.inviteCode = null
     this.players = new Map()    // playerId -> player (seated)

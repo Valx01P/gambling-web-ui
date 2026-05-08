@@ -6,6 +6,7 @@ import CardSprite from '../components/CardSprite'
 import { BetChips, PotChips } from '../components/ChipStack'
 import { EMOTE_OPTIONS, EmoteIcon, SeatEmotes } from '../components/PokerEmotes'
 import ProfileSelector, { getProfileAvatar, ProfileAvatar } from '../components/ProfileSelector'
+import HomeBackLink from '../components/HomeBackLink'
 import StatsPanel from '../components/StatsPanel'
 import SpectatorPanel from '../components/SpectatorPanel'
 import { buildPokerStatistics, buildSpectatorStatistics, formatPercent } from '../lib/pokerOdds'
@@ -407,6 +408,7 @@ export default function PokerPage() {
   if (!joined) {
     return (
       <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4">
+        <HomeBackLink className="absolute right-4 top-4" />
         <div className="flex flex-col items-center gap-6 w-full max-w-[620px]">
           <div className={`text-sm sm:text-base px-6 py-2.5 rounded-full font-bold shadow-sm ${connected ? 'bg-emerald-800/80 text-emerald-100 border border-emerald-600/50' : 'bg-red-800/80 text-red-100 border border-red-600/50'}`}>
             {connected ? '● Connected' : '○ Connecting...'}
@@ -528,6 +530,7 @@ export default function PokerPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <HomeBackLink />
           {!isSpectator && (
             <button
               type="button"

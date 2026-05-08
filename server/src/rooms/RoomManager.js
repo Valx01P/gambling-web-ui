@@ -1,4 +1,5 @@
 import { PokerRoom } from './PokerRoom.js'
+import { BlackjackRoom } from './BlackjackRoom.js'
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -32,18 +33,33 @@ export class RoomManager {
     return room
   }
 
+  createBlackjackRoom() {
+    this.roomCounter++
+    const roomId = `blackjack_${this.roomCounter}`
+    const room = new BlackjackRoom(roomId)
+    this.rooms.set(roomId, room)
+    return room
+  }
+
   getRoom(roomId) {
     return this.rooms.get(roomId)
   }
 
   findAvailableRoom() {
     for (const room of this.rooms.values()) {
-      if (!room.isPrivate && !room.isFull()) return room
+      if (room.roomType === 'poker' && !room.isPrivate && !room.isFull()) return room
     }
     return this.createRoom(false)
   }
 
-  joinGame(player, mode = 'general', code = null, roomId = null) {
+  findAvailableBlackjackRoom() {
+    for (const room of this.rooms.values()) {
+      if (room.roomType === 'blackjack' && !room.isFull()) return room
+    }
+    return this.createBlackjackRoom()
+  }
+
+  joinGame(player, mode = 'general', code = null, roomId = null, game = 'poker') {
     if (player.currentRoom) {
       const currentRoom = this.getRoom(player.currentRoom)
       if (currentRoom) {
@@ -59,7 +75,10 @@ export class RoomManager {
 
     let room
 
-    if (mode === 'general') {
+    if (game === 'blackjack') {
+      if (mode !== 'general') return { success: false, error: 'Invalid blackjack join mode' }
+      room = this.findAvailableBlackjackRoom()
+    } else if (mode === 'general') {
       room = this.findAvailableRoom()
     } else if (mode === 'create_private') {
       room = this.createRoom(true)
@@ -124,7 +143,7 @@ export class RoomManager {
 
   getTableList() {
     return [...this.rooms.values()]
-      .filter(room => room.players.size > 0)
+      .filter(room => room.roomType === 'poker' && room.players.size > 0)
       .map(room => room.getTableSummary())
       .sort((a, b) => b.playerCount - a.playerCount || a.roomId.localeCompare(b.roomId))
   }

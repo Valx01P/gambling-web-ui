@@ -31,7 +31,7 @@ export default function FuzzyBackground() {
   return (
     <canvas
       ref={canvasRef}
-      className="fixed top-0 left-0 w-full h-full -z-10"
+      className="pointer-events-none fixed inset-0 -z-10 h-[100dvh] w-screen"
       style={{ objectFit: 'cover' }}
     />
   )
