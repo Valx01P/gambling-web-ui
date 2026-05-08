@@ -151,6 +151,28 @@ test('blackjack mid-round joiners wait for the next hand', () => {
   assert.equal(secondState.waitingNextRound, false)
 })
 
+test('blackjack sitting out players do not block betting rounds', () => {
+  const room = new BlackjackRoom('blackjack')
+  const [first, second] = addPlayers(room, 2)
+
+  assert.equal(room.handlePlayerAction(second.id, MESSAGE_TYPES.BLACKJACK_SET_AFK, { afk: true }).success, true)
+  assert.equal(room.handlePlayerAction(first.id, MESSAGE_TYPES.BLACKJACK_BET, { amount: 25 }).success, true)
+  room.game.clearTimers()
+  const drawOrder = [card('5'), card('6'), card('9'), card('7')]
+  room.game.deck.reset = () => {}
+  room.game.deck.draw = () => drawOrder.shift()
+  room.game.dealRound()
+
+  const state = room.game.getGameState()
+  const firstState = state.players.find(player => player.id === first.id)
+  const secondState = state.players.find(player => player.id === second.id)
+
+  assert.equal(state.phase, 'playing')
+  assert.equal(firstState.hands[0].cards.length, 2)
+  assert.equal(secondState.sittingOut, true)
+  assert.equal(secondState.hands.length, 0)
+})
+
 test('blackjack supports splitting once into two hands', () => {
   const room = new BlackjackRoom('blackjack')
   const [player] = addPlayers(room, 1)

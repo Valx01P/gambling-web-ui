@@ -24,6 +24,15 @@ const ClubSVG = () => (
   </svg>
 )
 
+const HeartSVG = () => (
+  <svg width="30" height="30" viewBox="0 0 24 24" fill="none">
+    <path
+      d="M12 21s-8-4.9-8-11.2C4 6.5 6.3 4 9.2 4c1.6 0 2.9.8 3.8 2 0.9-1.2 2.2-2 3.8-2C19.7 4 22 6.5 22 9.8 22 16.1 12 21 12 21Z"
+      fill="#ef4444"
+    />
+  </svg>
+)
+
 function GameCard({ href, title, description, tags, icon }) {
   return (
     <Link href={href} className="group w-full">
@@ -61,7 +70,7 @@ export default function Home() {
         </p>
       </div>
 
-      <div className="grid w-full max-w-2xl gap-4 sm:grid-cols-2">
+      <div className="grid w-full max-w-4xl gap-4 sm:grid-cols-3">
         <GameCard
           href="/poker"
           title="Texas Hold'em"
@@ -75,6 +84,13 @@ export default function Home() {
           description="Up to 5 players - beat the dealer together"
           tags={['Split', 'Double', 'Chat']}
           icon={<ClubSVG />}
+        />
+        <GameCard
+          href="/baccarat"
+          title="Baccarat"
+          description="Bet player, banker, or tie with friends"
+          tags={['Fast Bets', 'Big Stacks', 'Chat']}
+          icon={<HeartSVG />}
         />
       </div>
 

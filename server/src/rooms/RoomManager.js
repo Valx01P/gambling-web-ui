@@ -1,5 +1,6 @@
 import { PokerRoom } from './PokerRoom.js'
 import { BlackjackRoom } from './BlackjackRoom.js'
+import { BaccaratRoom } from './BaccaratRoom.js'
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -41,6 +42,14 @@ export class RoomManager {
     return room
   }
 
+  createBaccaratRoom() {
+    this.roomCounter++
+    const roomId = `baccarat_${this.roomCounter}`
+    const room = new BaccaratRoom(roomId)
+    this.rooms.set(roomId, room)
+    return room
+  }
+
   getRoom(roomId) {
     return this.rooms.get(roomId)
   }
@@ -57,6 +66,13 @@ export class RoomManager {
       if (room.roomType === 'blackjack' && !room.isFull()) return room
     }
     return this.createBlackjackRoom()
+  }
+
+  findAvailableBaccaratRoom() {
+    for (const room of this.rooms.values()) {
+      if (room.roomType === 'baccarat' && !room.isFull()) return room
+    }
+    return this.createBaccaratRoom()
   }
 
   joinGame(player, mode = 'general', code = null, roomId = null, game = 'poker') {
@@ -78,6 +94,9 @@ export class RoomManager {
     if (game === 'blackjack') {
       if (mode !== 'general') return { success: false, error: 'Invalid blackjack join mode' }
       room = this.findAvailableBlackjackRoom()
+    } else if (game === 'baccarat') {
+      if (mode !== 'general') return { success: false, error: 'Invalid baccarat join mode' }
+      room = this.findAvailableBaccaratRoom()
     } else if (mode === 'general') {
       room = this.findAvailableRoom()
     } else if (mode === 'create_private') {

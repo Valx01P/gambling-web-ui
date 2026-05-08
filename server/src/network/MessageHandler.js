@@ -43,6 +43,9 @@ export class MessageHandler {
         case MESSAGE_TYPES.BLACKJACK_DOUBLE:
         case MESSAGE_TYPES.BLACKJACK_SPLIT:
         case MESSAGE_TYPES.BLACKJACK_SURRENDER:
+        case MESSAGE_TYPES.BLACKJACK_SET_AFK:
+        case MESSAGE_TYPES.BACCARAT_BET:
+        case MESSAGE_TYPES.BACCARAT_SET_AFK:
           return this.handleAction(player, type, data)
 
         default:

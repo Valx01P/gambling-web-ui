@@ -58,6 +58,7 @@ export class BlackjackGame {
     this.phase = PHASES.WAITING
     this.players = []
     this.waitingNextRound = new Set()
+    this.sittingOut = new Set()
     this.playerHands = new Map()
     this.dealerHand = []
     this.currentPlayerIndex = -1
@@ -105,10 +106,39 @@ export class BlackjackGame {
   reloadBettingPlayersBelowMinimum() {
     let reloaded = false
     for (const player of this.players) {
-      if (!player.isConnected || this.waitingNextRound.has(player.id)) continue
+      if (!player.isConnected || this.waitingNextRound.has(player.id) || this.sittingOut.has(player.id)) continue
       reloaded = this.reloadForMinimumBet(player) || reloaded
     }
     return reloaded
+  }
+
+  setPlayerAfk(playerId, afk) {
+    const player = this.players.find(p => p.id === playerId)
+    if (!player) return { success: false, error: 'Player not seated' }
+
+    if (afk) {
+      this.sittingOut.add(playerId)
+      if (this.phase === PHASES.PLAYING) {
+        this.standActiveHands(playerId)
+        if (this.getCurrentPlayer()?.id === playerId) {
+          this.advanceTurn()
+          return { success: true }
+        }
+      }
+    } else {
+      this.sittingOut.delete(playerId)
+    }
+
+    this.maybeStartRound()
+    this.broadcastState()
+    return { success: true }
+  }
+
+  standActiveHands(playerId) {
+    const hands = this.playerHands.get(playerId) || []
+    for (const hand of hands) {
+      if (hand.status === 'active') hand.status = 'stood'
+    }
   }
 
   addPlayer(player) {
@@ -136,6 +166,7 @@ export class BlackjackGame {
     this.players = this.players.filter(player => player.id !== playerId)
     this.playerHands.delete(playerId)
     this.waitingNextRound.delete(playerId)
+    this.sittingOut.delete(playerId)
 
     if (this.players.length === 0) {
       this.resetToWaiting()
@@ -158,6 +189,7 @@ export class BlackjackGame {
     this.dealerHand = []
     this.currentPlayerIndex = -1
     this.currentHandIndex = 0
+    if (this.players.length === 0) this.sittingOut.clear()
     if (this.phase === PHASES.BETTING) this.reloadBettingPlayersBelowMinimum()
     this.broadcastState()
   }
@@ -166,6 +198,7 @@ export class BlackjackGame {
     return this.players.filter(player =>
       player.isConnected &&
       !this.waitingNextRound.has(player.id) &&
+      !this.sittingOut.has(player.id) &&
       player.blackjackChips >= BLACKJACK_CONFIG.MIN_BET
     )
   }
@@ -196,6 +229,7 @@ export class BlackjackGame {
 
     const player = this.players.find(p => p.id === playerId)
     if (!player || this.waitingNextRound.has(playerId)) return { success: false, error: 'Not seated for this round' }
+    if (this.sittingOut.has(playerId)) return { success: false, error: 'You are sitting out' }
 
     this.ensureBankroll(player)
     this.reloadForMinimumBet(player)
@@ -379,6 +413,10 @@ export class BlackjackGame {
 
     for (let i = this.currentPlayerIndex + 1; i < this.players.length; i++) {
       const player = this.players[i]
+      if (this.sittingOut.has(player.id)) {
+        this.standActiveHands(player.id)
+        continue
+      }
       const hands = this.playerHands.get(player.id) || []
       const nextHandIndex = hands.findIndex(hand => hand.status === 'active')
       if (nextHandIndex !== -1) {
@@ -525,6 +563,7 @@ export class BlackjackGame {
           chips: player.blackjackChips,
           profit: player.blackjackProfit,
           waitingNextRound: this.waitingNextRound.has(player.id),
+          sittingOut: this.sittingOut.has(player.id),
           isConnected: player.isConnected,
           hands: (this.playerHands.get(player.id) || []).map(hand => this.handState(hand)),
         }

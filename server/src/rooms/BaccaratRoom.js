@@ -1,15 +1,15 @@
-import { BlackjackGame } from '../blackjack/BlackjackGame.js'
-import { BLACKJACK_CONFIG, MESSAGE_TYPES } from '../config/constants.js'
+import { BaccaratGame } from '../baccarat/BaccaratGame.js'
+import { BACCARAT_CONFIG, MESSAGE_TYPES } from '../config/constants.js'
 
 const TABLE_EMOTES = new Set(['angry', 'laugh', 'sad', 'shush', 'sunglasses'])
 
-export class BlackjackRoom {
+export class BaccaratRoom {
   constructor(roomId) {
     this.roomId = roomId
-    this.roomType = 'blackjack'
+    this.roomType = 'baccarat'
     this.players = new Map()
     this.emoteSequence = 0
-    this.game = new BlackjackGame(
+    this.game = new BaccaratGame(
       (msg) => this.broadcast(msg),
       () => this.broadcastGameState()
     )
@@ -19,12 +19,12 @@ export class BlackjackRoom {
     if (this.players.has(player.id)) {
       return { success: true, isSpectator: false }
     }
-    if (this.players.size >= BLACKJACK_CONFIG.MAX_PLAYERS) {
-      return { success: false, error: 'Blackjack table is full' }
+    if (this.players.size >= BACCARAT_CONFIG.MAX_PLAYERS) {
+      return { success: false, error: 'Baccarat table is full' }
     }
 
     const added = this.game.addPlayer(player)
-    if (!added) return { success: false, error: 'Could not join blackjack table' }
+    if (!added) return { success: false, error: 'Could not join baccarat table' }
 
     this.players.set(player.id, player)
     player.currentRoom = this.roomId
@@ -47,21 +47,13 @@ export class BlackjackRoom {
   }
 
   handlePlayerAction(playerId, actionType, data) {
-    const actionMap = {
-      [MESSAGE_TYPES.BLACKJACK_BET]: 'bet',
-      [MESSAGE_TYPES.BLACKJACK_HIT]: 'hit',
-      [MESSAGE_TYPES.BLACKJACK_STAND]: 'stand',
-      [MESSAGE_TYPES.BLACKJACK_DOUBLE]: 'double',
-      [MESSAGE_TYPES.BLACKJACK_SPLIT]: 'split',
-      [MESSAGE_TYPES.BLACKJACK_SURRENDER]: 'surrender',
-      [MESSAGE_TYPES.BLACKJACK_SET_AFK]: 'set_afk',
+    if (actionType === MESSAGE_TYPES.BACCARAT_SET_AFK) {
+      return this.game.setPlayerAfk(playerId, Boolean(data?.afk))
     }
-
-    const action = actionMap[actionType]
-    if (!action) return { success: false, error: 'Unknown blackjack action' }
-    if (action === 'bet') return this.game.placeBet(playerId, data?.amount || 0)
-    if (action === 'set_afk') return this.game.setPlayerAfk(playerId, Boolean(data?.afk))
-    return this.game.handleAction(playerId, action)
+    if (actionType !== MESSAGE_TYPES.BACCARAT_BET) {
+      return { success: false, error: 'Unknown baccarat action' }
+    }
+    return this.game.placeBet(playerId, data?.betType, data?.amount || 0)
   }
 
   handlePlayerEmote(playerId, data) {
@@ -99,7 +91,7 @@ export class BlackjackRoom {
   getRoomData(forPlayerId = null) {
     return {
       roomId: this.roomId,
-      game: 'blackjack',
+      game: 'baccarat',
       isPrivate: false,
       inviteCode: null,
       isSpectator: false,
@@ -132,7 +124,7 @@ export class BlackjackRoom {
   }
 
   isFull() {
-    return this.players.size >= BLACKJACK_CONFIG.MAX_PLAYERS
+    return this.players.size >= BACCARAT_CONFIG.MAX_PLAYERS
   }
 
   isEmpty() {

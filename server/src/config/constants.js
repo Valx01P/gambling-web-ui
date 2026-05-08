@@ -15,6 +15,15 @@ export const BLACKJACK_CONFIG = {
   BLACKJACK_PAYOUT_DENOMINATOR: 2,
 }
 
+export const BACCARAT_CONFIG = {
+  MAX_PLAYERS: 5,
+  STARTING_CHIPS: 1000,
+  MIN_BET: 10,
+  MAX_DISPLAY_CHIPS: 1000000,
+  BANKER_COMMISSION_PERCENT: 5,
+  TIE_PAYOUT_MULTIPLIER: 8,
+}
+
 export const PROFILE_AVATARS = [
   { id: 'op1', url: 'https://i.ibb.co/Wpf6XVp0/image.png' },
   { id: 'op2', url: 'https://i.ibb.co/XdFhJ7w/image.png' },
@@ -56,6 +65,11 @@ export const MESSAGE_TYPES = {
   BLACKJACK_DOUBLE: 'blackjack_double',
   BLACKJACK_SPLIT: 'blackjack_split',
   BLACKJACK_SURRENDER: 'blackjack_surrender',
+  BLACKJACK_SET_AFK: 'blackjack_set_afk',
+
+  // Baccarat actions
+  BACCARAT_BET: 'baccarat_bet',
+  BACCARAT_SET_AFK: 'baccarat_set_afk',
 
   // Chat
   CHAT: 'chat',
