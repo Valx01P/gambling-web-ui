@@ -1,4 +1,4 @@
-import { POKER_CONFIG } from '../config/constants.js'
+import { DEFAULT_PROFILE_AVATAR, POKER_CONFIG, PROFILE_AVATARS } from '../config/constants.js'
 
 export class Player {
   constructor(id, ws, username = null) {
@@ -6,14 +6,26 @@ export class Player {
     this.ws = ws
     this.username = username || `Player_${id.substring(0, 6)}`
     this.chips = POKER_CONFIG.STARTING_CHIPS
+    this.avatarId = DEFAULT_PROFILE_AVATAR.id
+    this.avatarUrl = DEFAULT_PROFILE_AVATAR.url
     this.currentRoom = null
     this.isSpectator = false
+    this.isVoluntarySpectator = false
     this.isConnected = true
     this.lastActiveTime = Date.now() // Track inactivity
   }
 
   updateActivity() {
     this.lastActiveTime = Date.now()
+  }
+
+  setProfileAvatar(avatarId) {
+    const avatar = PROFILE_AVATARS.find(item => item.id === avatarId)
+    if (!avatar) return false
+
+    this.avatarId = avatar.id
+    this.avatarUrl = avatar.url
+    return true
   }
 
   send(data) {
@@ -26,6 +38,8 @@ export class Player {
     return {
       id: this.id,
       username: this.username,
+      avatarId: this.avatarId,
+      avatarUrl: this.avatarUrl,
       chips: this.chips,
       isSpectator: this.isSpectator,
       isConnected: this.isConnected

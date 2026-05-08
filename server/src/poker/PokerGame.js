@@ -1,5 +1,5 @@
 import { Deck } from './deck.js'
-import { GAME_PHASES, POKER_CONFIG } from '../config/constants.js'
+import { GAME_PHASES, POKER_CONFIG, MESSAGE_TYPES } from '../config/constants.js'
 import { evaluateHand, compareHands, getHandName } from './handEvaluator.js'
 
 export class PokerGame {
@@ -26,6 +26,9 @@ export class PokerGame {
     this.removedPlayers = new Set()
     this.actionStarted = false
     this.aggressionCount = 0 
+    this.currentBetContext = null
+    this.actionSequence = 0
+    this.exposeRunoutHands = false
     this.runOutBoardTimeout = null 
     this.nextHandTimeout = null
     this.onBroadcast = onBroadcast || (() => {})
@@ -103,6 +106,8 @@ export class PokerGame {
     this.waitingNextHand.clear()
     this.removedPlayers.clear()
     this.actionStarted = false
+    this.currentBetContext = null
+    this.exposeRunoutHands = false
     this.broadcastState()
     this.scheduleNextHand()
   }
@@ -230,7 +235,9 @@ export class PokerGame {
     this.playerActions.clear()
     this.roundActed.clear()
     this.aggressionCount = 1
+    this.currentBetContext = null
     this.actionStarted = false
+    this.exposeRunoutHands = false
     clearTimeout(this.runOutBoardTimeout)
 
     this.dealerIndex = this.dealerIndex % this.players.length
@@ -278,6 +285,24 @@ export class PokerGame {
     if (player.chips === 0) this.allInPlayers.add(player.id)
   }
 
+  shouldThrowChipsForCall(playerId) {
+    return Boolean(
+      this.currentBetContext &&
+      this.currentBetContext.playerId !== playerId &&
+      (this.currentBetContext.isReRaise || this.currentBetContext.isAllIn)
+    )
+  }
+
+  createChipThrowEvent(playerId, amount) {
+    this.actionSequence += 1
+    return {
+      playerId,
+      amount,
+      actionId: this.actionSequence,
+      seed: `${Date.now()}-${this.actionSequence}-${Math.floor(Math.random() * 1000000)}`
+    }
+  }
+
   getAggressionLabel(isAllIn) {
     let label = ''
     if (this.aggressionCount === 1) label = 'Bet'
@@ -306,6 +331,7 @@ export class PokerGame {
 
     const playerBet = this.playerBets.get(playerId) || 0
     const toCall = this.currentBet - playerBet
+    let chipThrowEvent = null
 
     switch (action) {
       case 'fold':
@@ -321,12 +347,23 @@ export class PokerGame {
       case 'call': {
         if (toCall <= 0) return { success: false, error: 'Nothing to call' }
         const callAmt = Math.min(toCall, currentPlayer.chips)
+        const shouldThrowChips = this.shouldThrowChipsForCall(playerId)
+        if (shouldThrowChips) {
+          chipThrowEvent = this.createChipThrowEvent(playerId, callAmt)
+        }
         currentPlayer.chips -= callAmt
         this.pot += callAmt
         const newBet = playerBet + callAmt
         this.playerBets.set(playerId, newBet)
         this.playerTotalBets.set(playerId, (this.playerTotalBets.get(playerId) || 0) + callAmt)
-        this.playerActions.set(playerId, { action: 'call', amount: callAmt, text: 'CALL' })
+        this.playerActions.set(playerId, {
+          action: 'call',
+          amount: callAmt,
+          text: 'CALL',
+          chipThrow: shouldThrowChips,
+          chipThrowActionId: chipThrowEvent?.actionId || null,
+          chipThrowSeed: chipThrowEvent?.seed || null
+        })
         if (currentPlayer.chips === 0) this.allInPlayers.add(playerId)
         break
       }
@@ -346,12 +383,20 @@ export class PokerGame {
         const newBet = playerBet + raiseAmt
         this.playerBets.set(playerId, newBet)
         this.playerTotalBets.set(playerId, (this.playerTotalBets.get(playerId) || 0) + raiseAmt)
-        if (newBet > this.currentBet) {
+        const isRaise = newBet > this.currentBet
+        if (isRaise) {
           this.currentBet = newBet
           this.roundActed.clear()
         }
 
         this.aggressionCount++
+        if (isRaise) {
+          this.currentBetContext = {
+            playerId,
+            isReRaise: this.aggressionCount >= 3,
+            isAllIn: false
+          }
+        }
         this.playerActions.set(playerId, { action: 'raise', amount: newBet, text: this.getAggressionLabel(false) })
         if (currentPlayer.chips === 0) this.allInPlayers.add(playerId)
         break
@@ -370,6 +415,11 @@ export class PokerGame {
           this.currentBet = newBet
           this.roundActed.clear()
           this.aggressionCount++
+          this.currentBetContext = {
+            playerId,
+            isReRaise: this.aggressionCount >= 3,
+            isAllIn: true
+          }
         }
 
         const label = isRaise ? this.getAggressionLabel(true) : 'Call All-In'
@@ -386,6 +436,12 @@ export class PokerGame {
 
     this.actionStarted = true
     this.roundActed.add(playerId)
+    if (chipThrowEvent) {
+      this.onBroadcast({
+        type: MESSAGE_TYPES.CHIP_THROW,
+        data: chipThrowEvent
+      })
+    }
     this.afterAction()
     return { success: true }
   }
@@ -490,6 +546,13 @@ export class PokerGame {
       return
     }
 
+    if (!this.exposeRunoutHands && this.shouldExposeRunoutHands()) {
+      this.exposeRunoutHands = true
+      this.broadcastState()
+      this.runOutBoardTimeout = setTimeout(() => this.runOutBoard(), 1200)
+      return
+    }
+
     this.advancePhaseCards()
     this.broadcastState()
 
@@ -526,6 +589,7 @@ export class PokerGame {
     this.roundActed.clear()
     this.currentBet = 0
     this.aggressionCount = 0 
+    this.currentBetContext = null
     for (const p of this.players) {
       this.playerBets.set(p.id, 0)
     }
@@ -551,6 +615,27 @@ export class PokerGame {
     } else if (notFolded.length === 0) {
       this.resetToWaiting()
     }
+  }
+
+  shouldExposeRunoutHands() {
+    const active = this.getActivePlayers()
+    if (active.length <= 1) return false
+
+    const playersWithDecisions = this.getDecisionPlayers()
+    const nonAllInActive = active.filter(p => !this.allInPlayers.has(p.id))
+    if (playersWithDecisions.length > 1) return false
+
+    if (playersWithDecisions.length === 1) {
+      const player = playersWithDecisions[0]
+      const playerBet = this.playerBets.get(player.id) || 0
+      const needsToAct = playerBet < this.currentBet && !this.roundActed.has(player.id)
+      if (needsToAct) return false
+    }
+
+    return this.phase !== GAME_PHASES.WAITING &&
+      this.phase !== GAME_PHASES.SHOWDOWN &&
+      active.some(p => this.allInPlayers.has(p.id)) &&
+      nonAllInActive.length <= 1
   }
 
   calculatePots() {
@@ -688,6 +773,8 @@ export class PokerGame {
       this.roundActed.clear()
       this.waitingNextHand.clear()
       this.actionStarted = false
+      this.currentBetContext = null
+      this.exposeRunoutHands = false
       this.broadcastState()
       this.scheduleNextHand()
     }, 15000)
@@ -749,22 +836,27 @@ export class PokerGame {
       this.roundActed.clear()
       this.waitingNextHand.clear()
       this.actionStarted = false
+      this.currentBetContext = null
+      this.exposeRunoutHands = false
       this.broadcastState()
       this.scheduleNextHand()
     }, 5000)
   }
 
-  getGameState(forPlayerId = null) {
+  getGameState(forPlayerId = null, options = {}) {
     const visiblePlayers = this.getSeatedPlayers()
     const dealerPlayerId = this.players[this.dealerIndex]?.id || null
     const visibleDealerIndex = visiblePlayers.findIndex(p => p.id === dealerPlayerId)
     const activePlayer = this.players[this.activeIndex]
+    const runoutLocked = this.exposeRunoutHands || this.shouldExposeRunoutHands()
+    const revealAllCards = Boolean(options.revealAllCards)
 
     return {
       phase: this.phase,
       pot: this.pot,
       currentBet: this.currentBet,
       communityCards: this.communityCards,
+      runoutLocked,
       dealerIndex: visibleDealerIndex,
       activePlayerId: activePlayer && !this.removedPlayers.has(activePlayer.id) && activePlayer.isConnected
         ? activePlayer.id
@@ -772,6 +864,8 @@ export class PokerGame {
       players: visiblePlayers.map(p => ({
         id: p.id,
         username: p.username,
+        avatarId: p.avatarId || null,
+        avatarUrl: p.avatarUrl || null,
         chips: p.chips,
         bet: this.playerBets.get(p.id) || 0,
         totalBet: this.playerTotalBets.get(p.id) || 0,
@@ -780,7 +874,7 @@ export class PokerGame {
         allIn: this.allInPlayers.has(p.id),
         waitingNextHand: this.waitingNextHand.has(p.id),
         isConnected: p.isConnected,
-        cards: (forPlayerId === p.id || (this.phase === GAME_PHASES.SHOWDOWN && !this.foldedPlayers.has(p.id) && !this.waitingNextHand.has(p.id)))
+        cards: (forPlayerId === p.id || (revealAllCards && !this.waitingNextHand.has(p.id)) || (runoutLocked && !this.foldedPlayers.has(p.id) && !this.waitingNextHand.has(p.id)) || (this.phase === GAME_PHASES.SHOWDOWN && !this.foldedPlayers.has(p.id) && !this.waitingNextHand.has(p.id)))
           ? (this.playerHands.get(p.id) || [])
           : (this.playerHands.has(p.id) && this.playerHands.get(p.id).length > 0 ? [null, null] : [])
       }))

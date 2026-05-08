@@ -1,5 +1,6 @@
 'use client'
 
+import { useMemo } from 'react'
 import PokerChip from './PokerChip'
 
 function chipBreakdown(amount, maxChips) {
@@ -16,9 +17,107 @@ function chipBreakdown(amount, maxChips) {
   return chips
 }
 
-export function BetChips({ amount }) {
+function hashSeed(seed) {
+  const value = String(seed || Date.now())
+  let hash = 2166136261
+
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+
+  return hash >>> 0
+}
+
+function seededRandom(seed) {
+  let state = hashSeed(seed)
+
+  return () => {
+    state += 0x6D2B79F5
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function getThrowOrigin(origin) {
+  const origins = {
+    bottom: { x: 0, y: 62 },
+    left: { x: -68, y: 0 },
+    right: { x: 68, y: 0 },
+    top: { x: 0, y: -58 },
+  }
+
+  return origins[origin] || origins.bottom
+}
+
+function makeThrowLayout(chips, seed, origin) {
+  const random = seededRandom(seed)
+  const start = getThrowOrigin(origin)
+
+  return chips.map((d, i) => {
+    const x = Math.round((random() - 0.5) * 60)
+    const y = Math.round((random() - 0.5) * 38)
+    const arc = 18 + Math.round(random() * 20)
+
+    return {
+      value: d,
+      x,
+      y,
+      startX: start.x + Math.round((random() - 0.5) * 12),
+      startY: start.y + Math.round((random() - 0.5) * 12),
+      midX: Math.round((start.x + x) * 0.45),
+      midY: Math.round((start.y + y) * 0.45) - arc,
+      settleX: Math.round(x * 1.04),
+      settleY: Math.round(y * 1.04),
+      rotation: Math.round((random() - 0.5) * 240),
+      startRotation: Math.round((random() - 0.5) * 180),
+      delay: i * 34 + Math.round(random() * 45),
+    }
+  })
+}
+
+export function BetChips({ amount, thrown = false, animationKey = '', origin = 'bottom' }) {
+  const chips = useMemo(
+    () => (amount > 0 ? chipBreakdown(amount, thrown ? 10 : 8) : []),
+    [amount, thrown]
+  )
+  const throwLayout = useMemo(
+    () => makeThrowLayout(chips, `${animationKey}-${amount}-${origin}`, origin),
+    [animationKey, amount, origin, chips]
+  )
+
   if (amount <= 0) return null
-  const chips = chipBreakdown(amount, 8)
+
+  if (thrown) {
+    return (
+      <div className="relative w-16 h-14 sm:w-20 sm:h-16 pointer-events-none" aria-hidden="true">
+        {throwLayout.map((chip, i) => (
+          <div
+            key={`${animationKey}-${i}`}
+            className="chip-throw-piece absolute left-1/2 top-1/2"
+            style={{
+              '--chip-x': `${chip.x}px`,
+              '--chip-y': `${chip.y}px`,
+              '--chip-start-x': `${chip.startX}px`,
+              '--chip-start-y': `${chip.startY}px`,
+              '--chip-mid-x': `${chip.midX}px`,
+              '--chip-mid-y': `${chip.midY}px`,
+              '--chip-settle-x': `${chip.settleX}px`,
+              '--chip-settle-y': `${chip.settleY}px`,
+              '--chip-rot': `${chip.rotation}deg`,
+              '--chip-start-rot': `${chip.startRotation}deg`,
+              '--chip-delay': `${chip.delay}ms`,
+              zIndex: i + 1,
+            }}
+          >
+            <PokerChip value={chip.value} className="w-5 h-5 sm:w-6 sm:h-6" />
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div className="relative w-5 h-5 sm:w-6 sm:h-6">

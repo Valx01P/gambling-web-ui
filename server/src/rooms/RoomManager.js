@@ -43,7 +43,7 @@ export class RoomManager {
     return this.createRoom(false)
   }
 
-  joinGame(player, mode = 'general', code = null) {
+  joinGame(player, mode = 'general', code = null, roomId = null) {
     if (player.currentRoom) {
       const currentRoom = this.getRoom(player.currentRoom)
       if (currentRoom) {
@@ -69,6 +69,15 @@ export class RoomManager {
       if (!roomId) return { success: false, error: 'Invalid room code' }
       room = this.rooms.get(roomId)
       if (!room) return { success: false, error: 'Room no longer exists' }
+    } else if (mode === 'spectate') {
+      if (!roomId) return { success: false, error: 'Table required' }
+      room = this.rooms.get(roomId)
+      if (!room) return { success: false, error: 'Table no longer exists' }
+      const result = room.addSpectator(player, {
+        voluntary: true,
+        message: 'Joined as spectator.'
+      })
+      return { ...result, room }
     } else {
       return { success: false, error: 'Invalid join mode' }
     }
@@ -111,5 +120,12 @@ export class RoomManager {
       totalRooms: this.rooms.size,
       totalPlayers: [...this.rooms.values()].reduce((sum, r) => sum + r.getTotalOccupants(), 0)
     }
+  }
+
+  getTableList() {
+    return [...this.rooms.values()]
+      .filter(room => room.players.size > 0)
+      .map(room => room.getTableSummary())
+      .sort((a, b) => b.playerCount - a.playerCount || a.roomId.localeCompare(b.roomId))
   }
 }

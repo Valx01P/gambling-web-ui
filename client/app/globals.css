@@ -8,3 +8,91 @@
 body {
   font-family: var(--font-gscode);
 }
+
+.chip-throw-piece {
+  opacity: 0;
+  transform: translate(-50%, -50%) translate(var(--chip-x), var(--chip-y)) rotate(var(--chip-rot));
+  animation: chip-throw 760ms cubic-bezier(0.18, 0.82, 0.25, 1) var(--chip-delay) both;
+  will-change: transform, opacity;
+}
+
+@keyframes chip-throw {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) translate(var(--chip-start-x), var(--chip-start-y)) rotate(var(--chip-start-rot)) scale(0.8);
+  }
+
+  48% {
+    opacity: 1;
+    transform: translate(-50%, -50%) translate(var(--chip-mid-x), var(--chip-mid-y)) rotate(var(--chip-rot)) scale(1.08);
+  }
+
+  78% {
+    transform: translate(-50%, -50%) translate(var(--chip-settle-x), var(--chip-settle-y)) rotate(var(--chip-rot)) scale(0.98);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) translate(var(--chip-x), var(--chip-y)) rotate(var(--chip-rot)) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip-throw-piece {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+.seat-emotes {
+  width: 2.25rem;
+  height: 2.75rem;
+}
+
+.seat-emoji-burst {
+  position: absolute;
+  left: var(--emoji-x);
+  bottom: 0;
+  font-size: 1.05rem;
+  line-height: 1;
+  opacity: 0;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.55));
+  animation: seat-emoji-float 1.75s ease-out var(--emoji-delay) both;
+  will-change: transform, opacity;
+}
+
+@keyframes seat-emoji-float {
+  0% {
+    opacity: 0;
+    transform: translate(-2px, 7px) scale(0.72);
+  }
+
+  14%, 66% {
+    opacity: 1;
+  }
+
+  32% {
+    transform: translate(1px, -9px) scale(1.04);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(8px, -34px) scale(0.92);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seat-emoji-burst {
+    animation: seat-emoji-fade 1.2s ease-out var(--emoji-delay) both;
+  }
+}
+
+@keyframes seat-emoji-fade {
+  0%, 100% {
+    opacity: 0;
+  }
+
+  20%, 70% {
+    opacity: 1;
+  }
+}

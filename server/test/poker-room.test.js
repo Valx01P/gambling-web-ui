@@ -1,12 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PokerRoom } from '../src/rooms/PokerRoom.js'
+import { RoomManager } from '../src/rooms/RoomManager.js'
 import { MESSAGE_TYPES } from '../src/config/constants.js'
 
 function makePlayer(id) {
   return {
     id,
     username: id,
+    avatarId: 'op1',
+    avatarUrl: 'https://i.ibb.co/Wpf6XVp0/image.png',
     chips: 1000,
     currentRoom: null,
     isSpectator: false,
@@ -19,6 +22,8 @@ function makePlayer(id) {
       return {
         id: this.id,
         username: this.username,
+        avatarId: this.avatarId,
+        avatarUrl: this.avatarUrl,
         chips: this.chips,
         isSpectator: this.isSpectator,
         isConnected: this.isConnected
@@ -65,6 +70,76 @@ test('caps a table at five seated players and makes the sixth a spectator', () =
   assert.equal(room.spectators.size, 1)
   assert.deepEqual([...room.players.keys()], players.map(p => p.id))
   assert.equal(sixth.isSpectator, true)
+})
+
+test('voluntary spectators do not count toward seats or auto-promote', () => {
+  const room = new PokerRoom('room')
+  const players = addPlayers(room, 5)
+  const spectator = makePlayer('S')
+
+  const result = room.addSpectator(spectator, { voluntary: true })
+  clearRoomStartTimer(room)
+
+  assert.equal(result.success, true)
+  assert.equal(result.isSpectator, true)
+  assert.equal(room.players.size, 5)
+  assert.equal(room.spectators.size, 1)
+  assert.equal(spectator.isVoluntarySpectator, true)
+
+  room.removePlayer(players[0].id)
+  clearRoomStartTimer(room)
+
+  assert.equal(room.players.size, 4)
+  assert.equal(room.spectators.size, 1)
+  assert.equal(room.spectators.has(spectator.id), true)
+  assert.equal(spectator.isSpectator, true)
+})
+
+test('voluntary spectators receive revealable cards while seated players do not', () => {
+  const room = new PokerRoom('room')
+  const [first, second] = addPlayers(room, 2)
+  startHand(room)
+
+  const spectator = makePlayer('S')
+  room.addSpectator(spectator, { voluntary: true })
+  clearRoomStartTimer(room)
+
+  const firstView = room.getRoomData(first.id).gameState
+  const spectatorView = room.getRoomData(spectator.id).gameState
+  const firstSeesSecond = firstView.players.find(player => player.id === second.id)
+  const spectatorSeesPlayers = spectatorView.players.filter(player => [first.id, second.id].includes(player.id))
+
+  assert.deepEqual(firstSeesSecond.cards, [null, null])
+  assert.equal(spectatorView.players.length, 2)
+  assert.equal(spectatorSeesPlayers.every(player =>
+    player.cards.length === 2 &&
+    player.cards.every(card => card?.rank && card?.suit)
+  ), true)
+})
+
+test('room manager lists occupied tables and joins selected table as voluntary spectator', () => {
+  const manager = new RoomManager()
+  const room = manager.createRoom()
+  const [first, second] = [makePlayer('A'), makePlayer('B')]
+  const spectator = makePlayer('S')
+
+  room.addPlayer(first)
+  room.addPlayer(second)
+  clearRoomStartTimer(room)
+
+  const tables = manager.getTableList()
+  const result = manager.joinGame(spectator, 'spectate', null, room.roomId)
+  clearRoomStartTimer(room)
+
+  assert.equal(tables.length, 1)
+  assert.equal(tables[0].roomId, room.roomId)
+  assert.equal(tables[0].playerCount, 2)
+  assert.equal(result.success, true)
+  assert.equal(result.isSpectator, true)
+  assert.equal(room.players.size, 2)
+  assert.equal(room.spectators.size, 1)
+  assert.equal(spectator.currentRoom, room.roomId)
+  assert.equal(spectator.isVoluntarySpectator, true)
 })
 
 test('lets a preflop joiner enter the current hand before any player action', () => {
@@ -164,4 +239,162 @@ test('leaving a hand removes the table seat without disconnecting the socket pla
   assert.equal(firstRoom.players.has(leaver.id), false)
   assert.equal(firstRoom.game.getGameState().players.some(p => p.id === leaver.id), false)
   assert.equal(secondRoom.players.has(leaver.id), true)
+})
+
+test('does not throw chips when calling the opening raise', () => {
+  const room = new PokerRoom('room')
+  const [first, second] = addPlayers(room, 3)
+  startHand(room)
+
+  assert.equal(room.handlePlayerAction(first.id, MESSAGE_TYPES.POKER_RAISE, { amount: 20 }).success, true)
+  assert.equal(room.handlePlayerAction(second.id, MESSAGE_TYPES.POKER_CALL).success, true)
+
+  const secondState = room.game.getGameState(second.id).players.find(p => p.id === second.id)
+  const chipThrowMessages = second.messages.filter(message => message.type === MESSAGE_TYPES.CHIP_THROW)
+
+  assert.equal(secondState.lastAction.action, 'call')
+  assert.equal(secondState.lastAction.chipThrow, false)
+  assert.equal(chipThrowMessages.length, 0)
+})
+
+test('throws chips when calling a re-raise', () => {
+  const room = new PokerRoom('room')
+  const [first, second, third] = addPlayers(room, 3)
+  startHand(room)
+
+  assert.equal(room.handlePlayerAction(first.id, MESSAGE_TYPES.POKER_RAISE, { amount: 20 }).success, true)
+  assert.equal(room.handlePlayerAction(second.id, MESSAGE_TYPES.POKER_RAISE, { amount: 40 }).success, true)
+  assert.equal(room.handlePlayerAction(third.id, MESSAGE_TYPES.POKER_CALL).success, true)
+
+  const thirdState = room.game.getGameState(third.id).players.find(p => p.id === third.id)
+  const chipThrowMessages = third.messages.filter(message => message.type === MESSAGE_TYPES.CHIP_THROW)
+  const chipThrow = chipThrowMessages.at(-1)
+
+  assert.equal(thirdState.lastAction.action, 'call')
+  assert.equal(thirdState.lastAction.chipThrow, true)
+  assert.equal(chipThrowMessages.length, 1)
+  assert.equal(chipThrow.data.playerId, third.id)
+  assert.equal(chipThrow.data.amount, 30)
+  assert.equal(typeof chipThrow.data.seed, 'string')
+})
+
+test('throws chips when calling an all-in raise', () => {
+  const room = new PokerRoom('room')
+  const [first, second] = addPlayers(room, 3)
+  startHand(room)
+
+  assert.equal(room.handlePlayerAction(first.id, MESSAGE_TYPES.POKER_ALL_IN).success, true)
+  assert.equal(room.handlePlayerAction(second.id, MESSAGE_TYPES.POKER_CALL).success, true)
+
+  const secondState = room.game.getGameState(second.id).players.find(p => p.id === second.id)
+  const chipThrowMessages = second.messages.filter(message => message.type === MESSAGE_TYPES.CHIP_THROW)
+  const chipThrow = chipThrowMessages.at(-1)
+
+  assert.equal(secondState.lastAction.action, 'call')
+  assert.equal(secondState.lastAction.chipThrow, true)
+  assert.equal(chipThrowMessages.length, 1)
+  assert.equal(chipThrow.data.playerId, second.id)
+  assert.equal(chipThrow.data.amount, 995)
+  assert.equal(typeof chipThrow.data.seed, 'string')
+})
+
+test('keeps all-in cards hidden until pending callers have acted', () => {
+  const room = new PokerRoom('room')
+  addPlayers(room, 2)
+  startHand(room)
+
+  const activePlayerId = room.game.getGameState().activePlayerId
+  const caller = room.game.players.find(player => player.id !== activePlayerId)
+
+  assert.equal(room.handlePlayerAction(activePlayerId, MESSAGE_TYPES.POKER_ALL_IN).success, true)
+
+  const callerView = room.game.getGameState(caller.id)
+  const allInPlayer = callerView.players.find(player => player.id === activePlayerId)
+
+  assert.equal(callerView.runoutLocked, false)
+  assert.deepEqual(allInPlayer.cards, [null, null])
+})
+
+test('reveals active hands during an all-in runout', () => {
+  const room = new PokerRoom('room')
+  addPlayers(room, 2)
+  startHand(room)
+
+  const activePlayerId = room.game.getGameState().activePlayerId
+  const caller = room.game.players.find(player => player.id !== activePlayerId)
+
+  assert.equal(room.handlePlayerAction(activePlayerId, MESSAGE_TYPES.POKER_ALL_IN).success, true)
+  assert.equal(room.handlePlayerAction(caller.id, MESSAGE_TYPES.POKER_CALL).success, true)
+  clearTimeout(room.game.runOutBoardTimeout)
+
+  const state = room.game.getGameState(activePlayerId)
+  const activePlayers = state.players.filter(player => !player.folded && !player.waitingNextHand)
+
+  assert.equal(state.runoutLocked, true)
+  assert.equal(state.phase, 'preflop')
+  assert.equal(state.communityCards.length, 0)
+  assert.equal(activePlayers.length, 2)
+  assert.equal(activePlayers.every(player =>
+    player.cards.length === 2 &&
+    player.cards.every(card => card?.rank && card?.suit)
+  ), true)
+})
+
+test('broadcasts player emotes without requiring it to be their turn', () => {
+  const room = new PokerRoom('room')
+  addPlayers(room, 3)
+  startHand(room)
+
+  const activePlayerId = room.game.getGameState().activePlayerId
+  assert.equal(room.handlePlayerEmote(activePlayerId, { emote: 'angry' }).success, true)
+
+  const activePlayer = [...room.players.values()].find(player => player.id === activePlayerId)
+  const emoteMessage = activePlayer.messages
+    .filter(message => message.type === MESSAGE_TYPES.PLAYER_EMOTE)
+    .at(-1)
+
+  assert.equal(emoteMessage.data.playerId, activePlayerId)
+  assert.equal(emoteMessage.data.emote, 'angry')
+  assert.equal(typeof emoteMessage.data.emoteId, 'string')
+})
+
+test('lets seated players emote before a hand starts', () => {
+  const room = new PokerRoom('room')
+  const [player] = addPlayers(room, 2)
+
+  const result = room.handlePlayerEmote(player.id, { emote: 'sad' })
+  const emoteMessage = player.messages
+    .filter(message => message.type === MESSAGE_TYPES.PLAYER_EMOTE)
+    .at(-1)
+
+  assert.equal(result.success, true)
+  assert.equal(emoteMessage.data.playerId, player.id)
+  assert.equal(emoteMessage.data.emote, 'sad')
+})
+
+test('broadcasts every repeated emote with a unique id', () => {
+  const room = new PokerRoom('room')
+  const [player] = addPlayers(room, 3)
+  startHand(room)
+
+  assert.equal(room.handlePlayerEmote(player.id, { emote: 'laugh' }).success, true)
+  assert.equal(room.handlePlayerEmote(player.id, { emote: 'laugh' }).success, true)
+
+  const emoteMessages = player.messages.filter(message =>
+    message.type === MESSAGE_TYPES.PLAYER_EMOTE &&
+    message.data.emote === 'laugh'
+  )
+
+  assert.equal(emoteMessages.length, 2)
+  assert.notEqual(emoteMessages[0].data.emoteId, emoteMessages[1].data.emoteId)
+})
+
+test('rejects unknown emotes', () => {
+  const room = new PokerRoom('room')
+  const [player] = addPlayers(room, 2)
+
+  const result = room.handlePlayerEmote(player.id, { emote: 'not-real' })
+
+  assert.equal(result.success, false)
+  assert.equal(player.messages.some(message => message.type === MESSAGE_TYPES.PLAYER_EMOTE), false)
 })

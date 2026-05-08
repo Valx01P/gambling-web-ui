@@ -23,8 +23,14 @@ export class MessageHandler {
         case MESSAGE_TYPES.LEAVE_GAME:
           return this.handleLeave(player)
 
+        case MESSAGE_TYPES.LIST_TABLES:
+          return this.handleListTables(player)
+
         case MESSAGE_TYPES.CHAT:
           return this.handleChat(player, data)
+
+        case MESSAGE_TYPES.PLAYER_EMOTE:
+          return this.handleEmote(player, data)
 
         case MESSAGE_TYPES.POKER_FOLD:
         case MESSAGE_TYPES.POKER_CHECK:
@@ -44,11 +50,15 @@ export class MessageHandler {
 
   handleJoin(player, data) {
     if (data?.username) player.username = data.username
+    if (data?.avatarId && typeof player.setProfileAvatar === 'function') {
+      player.setProfileAvatar(data.avatarId)
+    }
 
     const mode = data?.mode || 'general'
     const code = data?.code || null
+    const roomId = data?.roomId || null
 
-    const result = this.roomManager.joinGame(player, mode, code)
+    const result = this.roomManager.joinGame(player, mode, code, roomId)
 
     if (result.success) {
       player.send({
@@ -64,6 +74,17 @@ export class MessageHandler {
     }
 
     return result
+  }
+
+  handleListTables(player) {
+    player.send({
+      type: MESSAGE_TYPES.TABLE_LIST,
+      data: {
+        tables: this.roomManager.getTableList()
+      }
+    })
+
+    return { success: true }
   }
 
   handleLeave(player) {
@@ -87,12 +108,27 @@ export class MessageHandler {
       data: {
         playerId: player.id,
         username: player.username,
+        isSpectator: player.isSpectator,
         message: text,
         timestamp: Date.now()
       }
     })
 
     return { success: true }
+  }
+
+  handleEmote(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Not in a room' } })
+      return { success: false }
+    }
+
+    const result = room.handlePlayerEmote(player.id, data)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    }
+    return result
   }
 
   handleAction(player, actionType, data) {
