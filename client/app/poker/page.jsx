@@ -9,7 +9,7 @@ import ProfileSelector, { getProfileAvatar, ProfileAvatar } from '../components/
 import HomeBackLink from '../components/HomeBackLink'
 import StatsPanel from '../components/StatsPanel'
 import SpectatorPanel from '../components/SpectatorPanel'
-import { buildPokerStatistics, buildSpectatorStatistics, formatPercent } from '../lib/pokerOdds'
+import { buildPokerStatistics, buildSpectatorStatistics, evaluateHand, formatCard, formatPercent, getHandName } from '../lib/pokerOdds'
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001'
 const USERNAME_STORAGE_KEY = 'poker_username'
@@ -62,6 +62,119 @@ function ActionBadge({ action }) {
   )
 }
 
+const HOW_TO_HANDS = [
+  {
+    name: 'Royal Flush',
+    cards: [
+      { rank: '10', suit: 'spades' },
+      { rank: 'J', suit: 'spades' },
+      { rank: 'Q', suit: 'spades' },
+      { rank: 'K', suit: 'spades' },
+      { rank: 'A', suit: 'spades' },
+    ],
+    text: 'A-K-Q-J-10 all in one suit.',
+  },
+  {
+    name: 'Straight Flush',
+    cards: [
+      { rank: '5', suit: 'hearts' },
+      { rank: '6', suit: 'hearts' },
+      { rank: '7', suit: 'hearts' },
+      { rank: '8', suit: 'hearts' },
+      { rank: '9', suit: 'hearts' },
+    ],
+    text: 'Five cards in sequence, same suit.',
+  },
+  {
+    name: 'Four of a Kind',
+    cards: [
+      { rank: '9', suit: 'clubs' },
+      { rank: '9', suit: 'diamonds' },
+      { rank: '9', suit: 'hearts' },
+      { rank: '9', suit: 'spades' },
+      { rank: 'K', suit: 'clubs' },
+    ],
+    text: 'Four cards of the same rank.',
+  },
+  {
+    name: 'Full House',
+    cards: [
+      { rank: 'Q', suit: 'clubs' },
+      { rank: 'Q', suit: 'diamonds' },
+      { rank: 'Q', suit: 'spades' },
+      { rank: '4', suit: 'hearts' },
+      { rank: '4', suit: 'clubs' },
+    ],
+    text: 'Three of one rank plus a pair.',
+  },
+  {
+    name: 'Flush',
+    cards: [
+      { rank: 'A', suit: 'diamonds' },
+      { rank: 'J', suit: 'diamonds' },
+      { rank: '8', suit: 'diamonds' },
+      { rank: '5', suit: 'diamonds' },
+      { rank: '2', suit: 'diamonds' },
+    ],
+    text: 'Any five cards of one suit.',
+  },
+  {
+    name: 'Straight',
+    cards: [
+      { rank: '6', suit: 'clubs' },
+      { rank: '7', suit: 'diamonds' },
+      { rank: '8', suit: 'spades' },
+      { rank: '9', suit: 'hearts' },
+      { rank: '10', suit: 'clubs' },
+    ],
+    text: 'Five cards in sequence.',
+  },
+  {
+    name: 'Three of a Kind',
+    cards: [
+      { rank: '7', suit: 'clubs' },
+      { rank: '7', suit: 'diamonds' },
+      { rank: '7', suit: 'hearts' },
+      { rank: 'A', suit: 'spades' },
+      { rank: '3', suit: 'clubs' },
+    ],
+    text: 'Three cards of one rank.',
+  },
+  {
+    name: 'Two Pair',
+    cards: [
+      { rank: 'A', suit: 'clubs' },
+      { rank: 'A', suit: 'hearts' },
+      { rank: '6', suit: 'diamonds' },
+      { rank: '6', suit: 'spades' },
+      { rank: 'Q', suit: 'clubs' },
+    ],
+    text: 'Two different pairs.',
+  },
+  {
+    name: 'Pair',
+    cards: [
+      { rank: 'K', suit: 'clubs' },
+      { rank: 'K', suit: 'diamonds' },
+      { rank: '9', suit: 'spades' },
+      { rank: '5', suit: 'hearts' },
+      { rank: '2', suit: 'clubs' },
+    ],
+    text: 'Two cards of one rank.',
+  },
+  {
+    name: 'High Card',
+    cards: [
+      { rank: 'A', suit: 'clubs' },
+      { rank: 'J', suit: 'diamonds' },
+      { rank: '8', suit: 'spades' },
+      { rank: '5', suit: 'hearts' },
+      { rank: '2', suit: 'clubs' },
+    ],
+    text: 'No pair or better; highest card plays.',
+  },
+]
+
 function PhaseLabel({ phase }) {
   const map = {
     waiting:  'WAITING',
@@ -112,6 +225,10 @@ const getChipThrowOrigin = (posIndex) => {
 export default function PokerPage() {
   const wsRef = useRef(null)
   const chatEndRef = useRef(null)
+  const playerIdRef = useRef('')
+  const gameStateRef = useRef(null)
+  const tableMenuRef = useRef(null)
+  const pokerPanelRef = useRef(null)
   const throwTimersRef = useRef(new Map())
   const emoteTimersRef = useRef(new Map())
   const yellTimersRef = useRef(new Map())
@@ -141,6 +258,9 @@ export default function PokerPage() {
   const [spectatorBlindMode, setSpectatorBlindMode] = useState(false)
   const [spectatorVisiblePlayerId, setSpectatorVisiblePlayerId] = useState(null)
   const [spectatorHoveredPlayerId, setSpectatorHoveredPlayerId] = useState(null)
+  const [tableMenuOpen, setTableMenuOpen] = useState(false)
+  const [activePokerPanel, setActivePokerPanel] = useState(null)
+  const [sessionHands, setSessionHands] = useState([])
   
   // New room feature states
   const [joinMode, setJoinMode] = useState('general') // 'general', 'create_private', 'join_private'
@@ -153,6 +273,7 @@ export default function PokerPage() {
   }, [])
 
   const applyGameState = useCallback((nextGameState) => {
+    gameStateRef.current = nextGameState
     setGameState(nextGameState)
     setGameStateReceivedAt(Date.now())
     setTurnClock(Date.now())
@@ -256,11 +377,40 @@ export default function PokerPage() {
   }, [chatMessages, sysMessages])
 
   useEffect(() => {
+    playerIdRef.current = playerId
+  }, [playerId])
+
+  useEffect(() => {
     if (!joined || !gameState?.activeTurnExpiresAt) return
 
     const timerId = setInterval(() => setTurnClock(Date.now()), 1000)
     return () => clearInterval(timerId)
   }, [joined, gameState?.activeTurnExpiresAt])
+
+  useEffect(() => {
+    if (!tableMenuOpen) return
+
+    function handlePointerDown(event) {
+      if (tableMenuRef.current?.contains(event.target)) return
+      setTableMenuOpen(false)
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [tableMenuOpen])
+
+  useEffect(() => {
+    if (!activePokerPanel) return
+
+    function handlePointerDown(event) {
+      if (pokerPanelRef.current?.contains(event.target)) return
+      if (tableMenuRef.current?.contains(event.target)) return
+      setActivePokerPanel(null)
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [activePokerPanel])
 
   // Parse URL for invite code
   useEffect(() => {
@@ -300,6 +450,9 @@ export default function PokerPage() {
           break
         case 'join_game':
           setJoined(true)
+          setSessionHands([])
+          setActivePokerPanel(null)
+          setTableMenuOpen(false)
           setIsSpectator(msg.data.isSpectator || false)
           applyGameState(msg.data.gameState)
           setIsPrivate(msg.data.isPrivate || false)
@@ -317,6 +470,8 @@ export default function PokerPage() {
           break
         case 'leave_game':
           setJoined(false); applyGameState(null)
+          setActivePokerPanel(null)
+          setTableMenuOpen(false)
           setIsPrivate(false); setInviteCode(null)
           setIsSpectator(false)
           setSpectatorVisiblePlayerId(null)
@@ -362,6 +517,24 @@ export default function PokerPage() {
         case 'showdown':
           if (msg.data) {
             setShowdownData(msg.data)
+            const currentPlayerId = playerIdRef.current
+            const currentGameState = gameStateRef.current
+            const hero = currentGameState?.players?.find(player => player.id === currentPlayerId)
+            if (currentPlayerId && hero && !hero.waitingNextHand) {
+              const winner = msg.data.winners?.find(w => w.playerId === currentPlayerId)
+              const cards = msg.data.hands?.[currentPlayerId] || (hero.cards || []).filter(card => card?.rank && card?.suit)
+              setSessionHands(prev => [{
+                id: `${Date.now()}-${prev.length}`,
+                at: Date.now(),
+                cards,
+                board: currentGameState?.communityCards || [],
+                handName: msg.data.playerHandNames?.[currentPlayerId] || winner?.handName || (hero.folded ? 'Folded' : 'No showdown'),
+                result: winner ? 'Won' : hero.folded ? 'Folded' : 'Lost',
+                won: winner?.chips || 0,
+                profit: hero.profit || 0,
+                split: (msg.data.winners?.length || 0) > 1,
+              }, ...prev].slice(0, 30))
+            }
             if (msg.data.winners?.length) {
               showSplitPotNotice(msg.data.winners)
               msg.data.winners.forEach(w => {
@@ -487,6 +660,27 @@ export default function PokerPage() {
   ), [spectatorVisiblePlayerId])
 
   const minRaise = currentBetAmount === 0 ? 10 : currentBetAmount * 2
+  const myCards = (myPlayer?.cards || []).filter(card => card?.rank && card?.suit)
+  const boardCards = (gameState?.communityCards || []).filter(card => card?.rank && card?.suit)
+  const currentHandEvaluation = myCards.length === 2 && boardCards.length >= 3
+    ? evaluateHand([...myCards, ...boardCards])
+    : null
+  const currentHandName = showdownData?.playerHandNames?.[playerId] ||
+    (currentHandEvaluation ? getHandName(currentHandEvaluation) : myCards.length ? myCards.map(formatCard).join(' ') : 'No cards yet')
+  const sessionSummary = useMemo(() => {
+    const wins = sessionHands.filter(hand => hand.result === 'Won').length
+    const folds = sessionHands.filter(hand => hand.result === 'Folded').length
+    const totalWon = sessionHands.reduce((sum, hand) => sum + (hand.won || 0), 0)
+
+    return {
+      hands: sessionHands.length,
+      wins,
+      folds,
+      losses: Math.max(0, sessionHands.length - wins - folds),
+      totalWon,
+      currentProfit: myPlayer?.profit || 0,
+    }
+  }, [sessionHands, myPlayer?.profit])
 
   function sendEmote(emote) {
     if (!canUseEmotes) return
@@ -500,6 +694,11 @@ export default function PokerPage() {
     if (!message) return
 
     send('player_yell', { message })
+  }
+
+  function openPokerPanel(panel) {
+    setActivePokerPanel(prev => prev === panel ? null : panel)
+    setTableMenuOpen(false)
   }
 
   function toggleStatsMode() {
@@ -650,24 +849,192 @@ export default function PokerPage() {
         </div>
         <div className="flex items-center gap-2">
           <HomeBackLink />
-          {!isSpectator && (
+          <div ref={tableMenuRef} className="relative">
             <button
               type="button"
-              onClick={toggleStatsMode}
-              className={`text-xs sm:text-sm font-bold px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg border shadow-sm transition-colors ${
-                statsMode
-                  ? 'bg-amber-500/20 border-amber-400/50 text-amber-100'
-                  : 'bg-zinc-800/80 hover:bg-zinc-700/80 border-zinc-500/50 text-white'
-              }`}
+              onClick={() => setTableMenuOpen(prev => {
+                const nextOpen = !prev
+                if (nextOpen) setActivePokerPanel(null)
+                return nextOpen
+              })}
+              className="text-xs sm:text-sm font-bold text-white bg-zinc-800/80 hover:bg-zinc-700/80 transition-colors px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg border border-zinc-500/50 shadow-sm"
             >
-              Stats {statsMode ? 'On' : 'Off'}
+              Tools
             </button>
-          )}
+            {tableMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 z-[100] w-56 overflow-hidden rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
+                <button type="button" onClick={() => openPokerPanel('help')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                  How to Play
+                </button>
+                <button type="button" onClick={() => openPokerPanel('hand')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                  Current Hand
+                </button>
+                <button type="button" onClick={() => openPokerPanel('session')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                  Session History
+                </button>
+                {!isSpectator && (
+                  <button type="button" onClick={toggleStatsMode} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                    Table Stats {statsMode ? 'On' : 'Off'}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
           <button onClick={() => send('leave_game')} className="text-xs sm:text-sm font-bold text-white bg-zinc-700/80 hover:bg-zinc-600 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg border border-zinc-500/50 shadow-sm transition-colors">
             Leave Table
           </button>
         </div>
       </div>
+
+      {activePokerPanel && (
+        <div ref={pokerPanelRef} className="fixed right-3 top-16 z-[90] max-h-[calc(100dvh-5rem)] w-[calc(100vw-1.5rem)] max-w-[460px] overflow-y-auto rounded-xl border border-zinc-600/60 bg-zinc-900/95 p-3 text-white shadow-2xl backdrop-blur-md sm:right-4 sm:top-20">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="text-sm font-black">
+              {activePokerPanel === 'help' ? 'How to Play' : activePokerPanel === 'hand' ? 'Current Hand' : 'Session'}
+            </div>
+            <button
+              type="button"
+              onClick={() => setActivePokerPanel(null)}
+              className="rounded-md border border-zinc-600/60 px-2 py-1 text-xs font-black text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
+            >
+              Close
+            </button>
+          </div>
+
+          {activePokerPanel === 'help' && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
+                <div className="mb-2 text-xs font-black text-zinc-300">Table Basics</div>
+                <div className="space-y-2 text-xs font-bold leading-relaxed text-zinc-400">
+                  <p>Make the best five-card poker hand from your two cards and the five community cards.</p>
+                  <p>Pre-flop starts after the blinds. Then the flop deals three cards, turn deals one, and river deals one.</p>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full border border-zinc-300 bg-white text-[11px] font-black text-black">D</span>
+                  <span className="text-xs font-bold text-zinc-400">Dealer button: action order rotates around this seat.</span>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <ActionBadge action={{ action: 'sb', text: 'SB' }} />
+                  <ActionBadge action={{ action: 'bb', text: 'BB' }} />
+                  <span className="text-xs font-bold text-zinc-400">Blinds: forced bets that start the pot.</span>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
+                <div className="mb-2 text-xs font-black text-zinc-300">Actions</div>
+                <div className="grid grid-cols-2 gap-2 text-xs font-bold text-zinc-400">
+                  <div><span className="text-white">Fold</span>: give up the hand.</div>
+                  <div><span className="text-white">Check</span>: pass when no bet is owed.</div>
+                  <div><span className="text-white">Call</span>: match the current bet.</div>
+                  <div><span className="text-white">Raise</span>: increase the price to continue.</div>
+                  <div><span className="text-white">All In</span>: commit all remaining chips.</div>
+                  <div><span className="text-white">Timer</span>: act within one minute or you are removed from the table.</div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs font-black text-zinc-300">Hand Rankings</div>
+                {HOW_TO_HANDS.map(hand => (
+                  <div key={hand.name} className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-2">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <div className="text-xs font-black text-white">{hand.name}</div>
+                      <div className="text-[10px] font-bold text-zinc-500">{hand.text}</div>
+                    </div>
+                    <div className="flex gap-1">
+                      {hand.cards.map((card, index) => (
+                        <CardSprite key={`${hand.name}-${index}`} card={card} className="w-8 sm:w-9" />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {activePokerPanel === 'hand' && (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
+                <div className="mb-2 text-xs font-black text-zinc-300">Your Cards</div>
+                <div className="flex gap-1.5">
+                  {(myCards.length ? myCards : [null, null]).map((card, index) => (
+                    <CardSprite key={index} card={card} className="w-12 sm:w-14" />
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-xs font-black text-zinc-300">Best Right Now</span>
+                  <span className="text-xs font-black text-amber-200">{currentHandName}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs font-bold text-zinc-400">
+                  <div>Pot <span className="text-white">{gameState?.pot || 0}</span></div>
+                  <div>To call <span className="text-white">{Math.max(0, toCall)}</span></div>
+                  <div>Phase <span className="text-white">{phase.toUpperCase()}</span></div>
+                  <div>P/L <span className={profitClass(myPlayer?.profit || 0)}>{formatProfit(myPlayer?.profit || 0)}</span></div>
+                </div>
+              </div>
+              <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
+                <div className="mb-2 text-xs font-black text-zinc-300">Board</div>
+                <div className="flex gap-1">
+                  {Array.from({ length: 5 }).map((_, index) => (
+                    <CardSprite key={index} card={boardCards[index] || null} className="w-9 sm:w-10" />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activePokerPanel === 'session' && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-2 text-center">
+                  <div className="text-[10px] font-black text-zinc-500">Hands</div>
+                  <div className="text-sm font-black text-white">{sessionSummary.hands}</div>
+                </div>
+                <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-2 text-center">
+                  <div className="text-[10px] font-black text-zinc-500">Wins</div>
+                  <div className="text-sm font-black text-white">{sessionSummary.wins}</div>
+                </div>
+                <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-2 text-center">
+                  <div className="text-[10px] font-black text-zinc-500">Match P/L</div>
+                  <div className={`text-sm font-black ${profitClass(sessionSummary.currentProfit)}`}>{formatProfit(sessionSummary.currentProfit)}</div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {sessionHands.length === 0 && (
+                  <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-4 text-center text-xs font-bold text-zinc-500">
+                    No hands recorded yet.
+                  </div>
+                )}
+                {sessionHands.map(hand => (
+                  <div key={hand.id} className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-2">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <div className="truncate text-xs font-black text-white">{hand.handName}</div>
+                      <div className={`shrink-0 text-xs font-black ${hand.result === 'Won' ? 'text-emerald-300' : hand.result === 'Folded' ? 'text-zinc-400' : 'text-red-300'}`}>
+                        {hand.result}{hand.won ? ` +${hand.won}` : ''}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex gap-1">
+                        {(hand.cards || []).slice(0, 2).map((card, index) => (
+                          <CardSprite key={index} card={card} className="w-7" />
+                        ))}
+                      </div>
+                      <div className="truncate text-[10px] font-bold text-zinc-500">
+                        {(hand.board || []).map(formatCard).filter(Boolean).join(' ')}
+                      </div>
+                    </div>
+                    {hand.split && (
+                      <div className="mt-1 text-[10px] font-black uppercase text-amber-200">Split pot</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Main Table Wrapper */}
       <div className="flex-1 flex flex-col justify-center relative w-full mb-4">
@@ -966,13 +1333,17 @@ export default function PokerPage() {
               statistics={statistics}
               expanded={statsExpanded}
               onToggleExpanded={() => setStatsExpanded(prev => !prev)}
+              onClose={() => {
+                setStatsMode(false)
+                setStatsExpanded(false)
+              }}
             />
           )}
         </div>
         )}
 
         {/* Chat Panel */}
-        <div className={`${isSpectator ? 'fixed bottom-3 right-3 z-40 w-[calc(100vw-1.5rem)] max-w-[320px] sm:bottom-4 sm:right-4 md:w-[320px]' : 'w-[92%] max-w-[320px] md:w-[280px] md:max-w-none'} flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
+        <div className={`${isSpectator ? 'fixed bottom-3 right-3 z-40 w-[calc(100vw-1.5rem)] max-w-[320px] sm:bottom-4 sm:right-4 md:w-[320px]' : 'w-[92%] max-w-[360px] md:w-[280px] md:max-w-none'} flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1.5">
             {chatMessages.length === 0 && sysMessages.length === 0 && (
               <div className="text-xs text-zinc-600 italic">No messages...</div>

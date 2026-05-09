@@ -31,7 +31,7 @@ function EmptyLine({ children }) {
   return <div className="text-xs font-bold text-zinc-500">{children}</div>
 }
 
-export default function StatsPanel({ statistics, expanded = false, onToggleExpanded }) {
+export default function StatsPanel({ statistics, expanded = false, onToggleExpanded, onClose }) {
   const hero = statistics?.hero
   const allIn = statistics?.allIn
   const outsCount = hero?.outs?.reduce((sum, out) => sum + out.count, 0) || 0
@@ -44,15 +44,26 @@ export default function StatsPanel({ statistics, expanded = false, onToggleExpan
       <div className="mt-2 w-full rounded-xl border border-zinc-600/50 bg-zinc-800/95 px-4 py-3 shadow-2xl backdrop-blur-md">
         <div className="flex items-center justify-between gap-2">
           <div className="text-sm font-black text-white">Statistics</div>
-          {onToggleExpanded && (
-            <button
-              type="button"
-              onClick={onToggleExpanded}
-              className="rounded-md border border-zinc-600/50 bg-zinc-900/70 px-2 py-1 text-[10px] font-black text-zinc-300 transition-colors hover:bg-zinc-700"
-            >
-              {expanded ? 'Less' : 'Details'}
-            </button>
-          )}
+          <div className="flex items-center gap-1.5">
+            {onToggleExpanded && (
+              <button
+                type="button"
+                onClick={onToggleExpanded}
+                className="rounded-md border border-zinc-600/50 bg-zinc-900/70 px-2 py-1 text-[10px] font-black text-zinc-300 transition-colors hover:bg-zinc-700"
+              >
+                {expanded ? 'Less' : 'Details'}
+              </button>
+            )}
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-md border border-zinc-600/50 bg-zinc-900/70 px-2 py-1 text-[10px] font-black text-zinc-300 transition-colors hover:bg-zinc-700"
+              >
+                Close
+              </button>
+            )}
+          </div>
         </div>
         <EmptyLine>Join a hand to see live odds.</EmptyLine>
       </div>
@@ -73,15 +84,26 @@ export default function StatsPanel({ statistics, expanded = false, onToggleExpan
             {allIn.mode} all-in equity - {allIn.totalRunouts.toLocaleString()} runouts
           </div>
         )}
-        {onToggleExpanded && (
-          <button
-            type="button"
-            onClick={onToggleExpanded}
-            className="rounded-md border border-zinc-600/50 bg-zinc-900/70 px-2.5 py-1.5 text-[10px] sm:text-xs font-black text-zinc-300 transition-colors hover:bg-zinc-700"
-          >
-            {expanded ? 'Less' : 'Details'}
-          </button>
-        )}
+        <div className="flex items-center gap-1.5">
+          {onToggleExpanded && (
+            <button
+              type="button"
+              onClick={onToggleExpanded}
+              className="rounded-md border border-zinc-600/50 bg-zinc-900/70 px-2.5 py-1.5 text-[10px] sm:text-xs font-black text-zinc-300 transition-colors hover:bg-zinc-700"
+            >
+              {expanded ? 'Less' : 'Details'}
+            </button>
+          )}
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md border border-zinc-600/50 bg-zinc-900/70 px-2.5 py-1.5 text-[10px] sm:text-xs font-black text-zinc-300 transition-colors hover:bg-zinc-700"
+            >
+              Close
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="space-y-3">
