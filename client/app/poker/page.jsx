@@ -246,7 +246,7 @@ export default function PokerPage() {
     const timerId = setTimeout(() => {
       setYellEvents(prev => prev.filter(e => e.eventId !== eventId))
       yellTimersRef.current.delete(eventId)
-    }, 2600)
+    }, 3600)
 
     yellTimersRef.current.set(eventId, timerId)
   }, [])
