@@ -275,6 +275,7 @@ test('throws chips when calling a re-raise', () => {
   assert.equal(chipThrowMessages.length, 1)
   assert.equal(chipThrow.data.playerId, third.id)
   assert.equal(chipThrow.data.amount, 30)
+  assert.equal(chipThrow.data.stackAmount, 40)
   assert.equal(typeof chipThrow.data.seed, 'string')
 })
 
@@ -295,7 +296,24 @@ test('throws chips when calling an all-in raise', () => {
   assert.equal(chipThrowMessages.length, 1)
   assert.equal(chipThrow.data.playerId, second.id)
   assert.equal(chipThrow.data.amount, 995)
+  assert.equal(chipThrow.data.stackAmount, 1000)
   assert.equal(typeof chipThrow.data.seed, 'string')
+})
+
+test('tracks poker profit through automatic rebuys', () => {
+  const room = new PokerRoom('room')
+  const [player] = addPlayers(room, 2)
+
+  player.chips = 0
+  assert.equal(player.pokerBuyIn, 1000)
+  assert.equal(room.game.rebuyIfNeeded(player), true)
+
+  const playerState = room.game.getGameState(player.id).players.find(p => p.id === player.id)
+
+  assert.equal(player.chips, 1000)
+  assert.equal(player.pokerBuyIn, 2000)
+  assert.equal(playerState.buyIn, 2000)
+  assert.equal(playerState.profit, -1000)
 })
 
 test('keeps all-in cards hidden until pending callers have acted', () => {

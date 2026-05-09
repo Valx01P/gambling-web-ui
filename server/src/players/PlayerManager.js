@@ -6,6 +6,7 @@ export class Player {
     this.ws = ws
     this.username = username || `Player_${id.substring(0, 6)}`
     this.chips = POKER_CONFIG.STARTING_CHIPS
+    this.pokerBuyIn = POKER_CONFIG.STARTING_CHIPS
     this.avatarId = DEFAULT_PROFILE_AVATAR.id
     this.avatarUrl = DEFAULT_PROFILE_AVATAR.url
     this.currentRoom = null
@@ -41,6 +42,7 @@ export class Player {
       avatarId: this.avatarId,
       avatarUrl: this.avatarUrl,
       chips: this.chips,
+      pokerBuyIn: this.pokerBuyIn,
       isSpectator: this.isSpectator,
       isConnected: this.isConnected
     }

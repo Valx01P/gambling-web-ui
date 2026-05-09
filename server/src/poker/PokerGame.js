@@ -40,6 +40,23 @@ export class PokerGame {
     this.lastTurnChange = Date.now()
   }
 
+  ensurePokerBankroll(player) {
+    if (typeof player.pokerBuyIn !== 'number') player.pokerBuyIn = POKER_CONFIG.STARTING_CHIPS
+  }
+
+  rebuyIfNeeded(player) {
+    this.ensurePokerBankroll(player)
+    if (player.chips > 0) return false
+
+    player.chips = POKER_CONFIG.STARTING_CHIPS
+    player.pokerBuyIn += POKER_CONFIG.STARTING_CHIPS
+    this.onBroadcast({
+      type: 'system_message',
+      data: { message: `${player.username} auto-rebought for ${POKER_CONFIG.STARTING_CHIPS} chips.` }
+    })
+    return true
+  }
+
   getSeatedPlayers() {
     return this.players.filter(p => p.isConnected && !this.removedPlayers.has(p.id))
   }
@@ -120,6 +137,7 @@ export class PokerGame {
     if (!isReturningRemovedPlayer && this.getSeatedPlayers().length >= POKER_CONFIG.MAX_PLAYERS) return false
 
     player.isConnected = true
+    this.ensurePokerBankroll(player)
 
     if (existingIndex === -1) {
       this.players.push(player)
@@ -293,11 +311,12 @@ export class PokerGame {
     )
   }
 
-  createChipThrowEvent(playerId, amount) {
+  createChipThrowEvent(playerId, amount, stackAmount = amount) {
     this.actionSequence += 1
     return {
       playerId,
       amount,
+      stackAmount,
       actionId: this.actionSequence,
       seed: `${Date.now()}-${this.actionSequence}-${Math.floor(Math.random() * 1000000)}`
     }
@@ -348,12 +367,12 @@ export class PokerGame {
         if (toCall <= 0) return { success: false, error: 'Nothing to call' }
         const callAmt = Math.min(toCall, currentPlayer.chips)
         const shouldThrowChips = this.shouldThrowChipsForCall(playerId)
-        if (shouldThrowChips) {
-          chipThrowEvent = this.createChipThrowEvent(playerId, callAmt)
-        }
         currentPlayer.chips -= callAmt
         this.pot += callAmt
         const newBet = playerBet + callAmt
+        if (shouldThrowChips) {
+          chipThrowEvent = this.createChipThrowEvent(playerId, callAmt, newBet)
+        }
         this.playerBets.set(playerId, newBet)
         this.playerTotalBets.set(playerId, (this.playerTotalBets.get(playerId) || 0) + callAmt)
         this.playerActions.set(playerId, {
@@ -735,15 +754,7 @@ export class PokerGame {
     setTimeout(() => {
       const oldDealerId = this.players[this.dealerIndex]?.id;
 
-      this.players.forEach(p => {
-        if (p.chips <= 0) {
-          p.chips = POKER_CONFIG.STARTING_CHIPS;
-          this.onBroadcast({ 
-            type: 'system_message', 
-            data: { message: `${p.username} auto-rebought for ${POKER_CONFIG.STARTING_CHIPS} chips.` } 
-          });
-        }
-      });
+      this.players.forEach(p => this.rebuyIfNeeded(p));
 
       this.players = this.getSeatedPlayers()
       this.removedPlayers.clear()
@@ -798,15 +809,7 @@ export class PokerGame {
     setTimeout(() => {
       const oldDealerId = this.players[this.dealerIndex]?.id;
 
-      this.players.forEach(p => {
-        if (p.chips <= 0) {
-          p.chips = POKER_CONFIG.STARTING_CHIPS;
-          this.onBroadcast({ 
-            type: 'system_message', 
-            data: { message: `${p.username} auto-rebought for ${POKER_CONFIG.STARTING_CHIPS} chips.` } 
-          });
-        }
-      });
+      this.players.forEach(p => this.rebuyIfNeeded(p));
 
       this.players = this.getSeatedPlayers()
       this.removedPlayers.clear()
@@ -880,6 +883,8 @@ export class PokerGame {
         chips: p.chips,
         bet: this.playerBets.get(p.id) || 0,
         totalBet: this.playerTotalBets.get(p.id) || 0,
+        profit: p.chips + (this.playerTotalBets.get(p.id) || 0) - (p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS),
+        buyIn: p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS,
         lastAction: this.playerActions.get(p.id) || null,
         folded: this.foldedPlayers.has(p.id),
         allIn: this.allInPlayers.has(p.id),

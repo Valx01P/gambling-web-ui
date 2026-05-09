@@ -14,6 +14,27 @@ import { buildPokerStatistics, buildSpectatorStatistics, formatPercent } from '.
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001'
 const USERNAME_STORAGE_KEY = 'poker_username'
 const AVATAR_STORAGE_KEY = 'poker_avatar_id'
+const POKER_STARTING_CHIPS = 1000
+
+function formatProfit(value) {
+  const amount = Number(value) || 0
+  if (amount === 0) return '+0'
+  return amount > 0 ? `+${amount}` : String(amount)
+}
+
+function profitClass(value) {
+  if (value > 0) return 'text-emerald-300'
+  if (value < 0) return 'text-red-300'
+  return 'text-zinc-400'
+}
+
+function visibleBetAmount(player) {
+  if (player.lastAction?.chipThrow && player.lastAction.amount > 0) {
+    return player.lastAction.amount
+  }
+
+  return player.bet || 0
+}
 
 function ActionBadge({ action }) {
   if (!action || !action.action) return null
@@ -94,6 +115,7 @@ export default function PokerPage() {
   const throwTimersRef = useRef(new Map())
   const emoteTimersRef = useRef(new Map())
   const yellTimersRef = useRef(new Map())
+  const splitNoticeTimerRef = useRef(null)
   const [connected, setConnected] = useState(false)
   const [playerId, setPlayerId] = useState('')
   const [username, setUsername] = useState('')
@@ -111,6 +133,7 @@ export default function PokerPage() {
   const [chipThrowEvents, setChipThrowEvents] = useState([])
   const [emoteEvents, setEmoteEvents] = useState([])
   const [yellEvents, setYellEvents] = useState([])
+  const [splitPotNotice, setSplitPotNotice] = useState('')
   const [selectedAvatarId, setSelectedAvatarId] = useState('op1')
   const [statsMode, setStatsMode] = useState(false)
   const [statsExpanded, setStatsExpanded] = useState(false)
@@ -183,6 +206,33 @@ export default function PokerPage() {
     yellTimersRef.current.forEach((timerId) => clearTimeout(timerId))
     yellTimersRef.current.clear()
     setYellEvents([])
+  }, [])
+
+  const clearSplitPotNotice = useCallback(() => {
+    if (splitNoticeTimerRef.current) {
+      clearTimeout(splitNoticeTimerRef.current)
+      splitNoticeTimerRef.current = null
+    }
+    setSplitPotNotice('')
+  }, [])
+
+  const showSplitPotNotice = useCallback((winners) => {
+    if (!winners?.length || winners.length < 2) return
+
+    const names = winners
+      .map(w => w.username || w.playerId?.substring(0, 6))
+      .filter(Boolean)
+      .slice(0, 4)
+      .join(' / ')
+
+    if (!names) return
+
+    if (splitNoticeTimerRef.current) clearTimeout(splitNoticeTimerRef.current)
+    setSplitPotNotice(`Split pot: ${names}`)
+    splitNoticeTimerRef.current = setTimeout(() => {
+      setSplitPotNotice('')
+      splitNoticeTimerRef.current = null
+    }, 4500)
   }, [])
 
   const addTableYell = useCallback((event) => {
@@ -263,6 +313,7 @@ export default function PokerPage() {
           clearChipThrows()
           clearEmotes()
           clearYells()
+          clearSplitPotNotice()
           break
         case 'leave_game':
           setJoined(false); applyGameState(null)
@@ -274,6 +325,7 @@ export default function PokerPage() {
           clearChipThrows()
           clearEmotes()
           clearYells()
+          clearSplitPotNotice()
           break
         case 'table_list':
           setTableList(msg.data.tables || [])
@@ -311,6 +363,7 @@ export default function PokerPage() {
           if (msg.data) {
             setShowdownData(msg.data)
             if (msg.data.winners?.length) {
+              showSplitPotNotice(msg.data.winners)
               msg.data.winners.forEach(w => {
                 const name = w.username || w.playerId.substring(0, 6);
                 addSys(`Winner: ${name} (+${w.chips}) — ${w.handName}`)
@@ -330,9 +383,10 @@ export default function PokerPage() {
       clearChipThrows()
       clearEmotes()
       clearYells()
+      clearSplitPotNotice()
       ws.close()
     }
-  }, [addSys, addChipThrow, addTableEmote, addTableYell, applyGameState, clearChipThrows, clearEmotes, clearYells])
+  }, [addSys, addChipThrow, addTableEmote, addTableYell, applyGameState, clearChipThrows, clearEmotes, clearYells, clearSplitPotNotice, showSplitPotNotice])
 
   function send(type, data = {}) {
     wsRef.current?.send(JSON.stringify({ type, data }))
@@ -631,6 +685,12 @@ export default function PokerPage() {
             <div className="font-black text-2xl sm:text-3xl text-white drop-shadow-md">{gameState?.pot || 0}</div>
           </div>
 
+          {splitPotNotice && (
+            <div className="absolute top-[34%] left-1/2 z-50 -translate-x-1/2 rounded-md border border-amber-300/70 bg-zinc-950/90 px-3 py-1.5 text-center text-[10px] sm:text-xs font-black uppercase tracking-wide text-amber-100 shadow-xl">
+              {splitPotNotice}
+            </div>
+          )}
+
           {/* Community Cards */}
           <div className="absolute top-[50%] left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-1 sm:gap-2 z-0">
             {(gameState?.communityCards || []).map((card, i) => (
@@ -658,6 +718,10 @@ export default function PokerPage() {
             const playerEmotes = emoteEvents.filter(event => event.playerId === player.id)
             const playerYells = yellEvents.filter(event => event.playerId === player.id)
             const playerAllInOdds = allInOddsByPlayer.get(player.id)
+            const playerVisibleBet = visibleBetAmount(player)
+            const playerProfit = typeof player.profit === 'number'
+              ? player.profit
+              : (player.chips || 0) + (player.totalBet || 0) - POKER_STARTING_CHIPS
             const spectatorCanRevealCards = isSpectator &&
               !spectatorBlindMode &&
               !isPlayerWaiting &&
@@ -674,9 +738,9 @@ export default function PokerPage() {
                 {/* Bet Stack projected into the table */}
                 {(player.lastAction || playerChipThrowEvents.length > 0) && (
                   <div className={`absolute flex flex-col items-center justify-center gap-1 z-20 ${getBetPosClasses(seatIndex)}`}>
-                    {(player.bet > 0 || playerChipThrowEvents.length > 0) && (
+                    {(playerVisibleBet > 0 || playerChipThrowEvents.length > 0) && (
                       <div className={`relative flex items-center justify-center ${playerChipThrowEvents.length > 0 ? 'w-16 h-14 sm:w-20 sm:h-16' : ''}`}>
-                        {player.bet > 0 && <BetChips amount={player.bet} />}
+                        {playerVisibleBet > 0 && <BetChips amount={playerVisibleBet} />}
                         {playerChipThrowEvents.map(event => (
                           <div key={event.eventId} className="absolute inset-0 flex items-center justify-center pointer-events-none">
                             <BetChips
@@ -742,6 +806,9 @@ export default function PokerPage() {
                       ) : (
                         `${player.chips} chips`
                       )}
+                    </div>
+                    <div className={`mt-0.5 text-[8px] sm:text-[10px] font-black leading-none ${profitClass(playerProfit)}`}>
+                      P/L {formatProfit(playerProfit)}
                     </div>
                     {statsMode && playerAllInOdds && (
                       <div className="mt-0.5 text-[8px] sm:text-[10px] font-black text-amber-200">

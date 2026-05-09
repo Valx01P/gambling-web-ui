@@ -3,6 +3,8 @@
 import { useMemo } from 'react'
 import PokerChip from './PokerChip'
 
+const MAX_BET_CHIPS = 8
+
 function chipBreakdown(amount, maxChips) {
   const denoms = [100000, 25000, 10000, 5000, 2500, 1000, 500, 250, 100, 50, 25, 10, 5]
   const chips = []
@@ -59,8 +61,8 @@ function makeThrowLayout(chips, seed, origin) {
   const start = getThrowOrigin(origin)
 
   return chips.map((d, i) => {
-    const x = Math.round((random() - 0.5) * 60)
-    const y = Math.round((random() - 0.5) * 38)
+    const x = 0
+    const y = -(i * 3)
     const arc = 18 + Math.round(random() * 20)
 
     return {
@@ -71,8 +73,8 @@ function makeThrowLayout(chips, seed, origin) {
       startY: start.y + Math.round((random() - 0.5) * 12),
       midX: Math.round((start.x + x) * 0.45),
       midY: Math.round((start.y + y) * 0.45) - arc,
-      settleX: Math.round(x * 1.04),
-      settleY: Math.round(y * 1.04),
+      settleX: x,
+      settleY: y,
       rotation: Math.round((random() - 0.5) * 240),
       startRotation: Math.round((random() - 0.5) * 180),
       delay: i * 34 + Math.round(random() * 45),
@@ -82,8 +84,8 @@ function makeThrowLayout(chips, seed, origin) {
 
 export function BetChips({ amount, thrown = false, animationKey = '', origin = 'bottom' }) {
   const chips = useMemo(
-    () => (amount > 0 ? chipBreakdown(amount, thrown ? 10 : 8) : []),
-    [amount, thrown]
+    () => (amount > 0 ? chipBreakdown(amount, MAX_BET_CHIPS) : []),
+    [amount]
   )
   const throwLayout = useMemo(
     () => makeThrowLayout(chips, `${animationKey}-${amount}-${origin}`, origin),
