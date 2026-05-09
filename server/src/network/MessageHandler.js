@@ -32,6 +32,9 @@ export class MessageHandler {
         case MESSAGE_TYPES.PLAYER_EMOTE:
           return this.handleEmote(player, data)
 
+        case MESSAGE_TYPES.PLAYER_YELL:
+          return this.handleYell(player, data)
+
         case MESSAGE_TYPES.POKER_FOLD:
         case MESSAGE_TYPES.POKER_CHECK:
         case MESSAGE_TYPES.POKER_CALL:
@@ -135,6 +138,25 @@ export class MessageHandler {
     }
 
     const result = room.handlePlayerEmote(player.id, data)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    }
+    return result
+  }
+
+  handleYell(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Not in a room' } })
+      return { success: false }
+    }
+
+    if (typeof room.handlePlayerYell !== 'function') {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Yells are only available at poker tables' } })
+      return { success: false }
+    }
+
+    const result = room.handlePlayerYell(player.id, data)
     if (!result.success) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
     }

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import PokerChip from '../components/PokerChip'
 import CardSprite from '../components/CardSprite'
 import { BetChips, PotChips } from '../components/ChipStack'
-import { EMOTE_OPTIONS, EmoteIcon, SeatEmotes } from '../components/PokerEmotes'
+import { EMOTE_OPTIONS, EmoteIcon, SeatEmotes, SeatYells } from '../components/PokerEmotes'
 import ProfileSelector, { getProfileAvatar, ProfileAvatar } from '../components/ProfileSelector'
 import HomeBackLink from '../components/HomeBackLink'
 import StatsPanel from '../components/StatsPanel'
@@ -67,7 +67,7 @@ const SEATS = [
 
 const getBetPosClasses = (posIndex) => {
   switch(posIndex) {
-    case 0: return 'bottom-[105%] sm:bottom-[105%] left-1/2 -translate-x-1/2'
+    case 0: return 'bottom-[calc(100%+0.25rem)] lg:bottom-[105%] left-1/2 -translate-x-1/2'
     case 1: case 2: return 'left-[105%] sm:left-[110%] top-1/2 -translate-y-1/2'
     case 3: case 4: return 'right-[105%] sm:right-[110%] top-1/2 -translate-y-1/2'
     default: return ''
@@ -93,19 +93,24 @@ export default function PokerPage() {
   const chatEndRef = useRef(null)
   const throwTimersRef = useRef(new Map())
   const emoteTimersRef = useRef(new Map())
+  const yellTimersRef = useRef(new Map())
   const [connected, setConnected] = useState(false)
   const [playerId, setPlayerId] = useState('')
   const [username, setUsername] = useState('')
   const [joined, setJoined] = useState(false)
   const [isSpectator, setIsSpectator] = useState(false)
   const [gameState, setGameState] = useState(null)
+  const [gameStateReceivedAt, setGameStateReceivedAt] = useState(Date.now())
+  const [turnClock, setTurnClock] = useState(Date.now())
   const [showdownData, setShowdownData] = useState(null)
   const [raiseAmount, setRaiseAmount] = useState(0)
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
+  const [yellInput, setYellInput] = useState('')
   const [sysMessages, setSysMessages] = useState([])
   const [chipThrowEvents, setChipThrowEvents] = useState([])
   const [emoteEvents, setEmoteEvents] = useState([])
+  const [yellEvents, setYellEvents] = useState([])
   const [selectedAvatarId, setSelectedAvatarId] = useState('op1')
   const [statsMode, setStatsMode] = useState(false)
   const [statsExpanded, setStatsExpanded] = useState(false)
@@ -122,6 +127,12 @@ export default function PokerPage() {
 
   const addSys = useCallback((msg) => {
     setSysMessages(prev => [...prev.slice(-30), msg])
+  }, [])
+
+  const applyGameState = useCallback((nextGameState) => {
+    setGameState(nextGameState)
+    setGameStateReceivedAt(Date.now())
+    setTurnClock(Date.now())
   }, [])
 
   const clearChipThrows = useCallback(() => {
@@ -168,9 +179,38 @@ export default function PokerPage() {
     emoteTimersRef.current.set(eventId, timerId)
   }, [])
 
+  const clearYells = useCallback(() => {
+    yellTimersRef.current.forEach((timerId) => clearTimeout(timerId))
+    yellTimersRef.current.clear()
+    setYellEvents([])
+  }, [])
+
+  const addTableYell = useCallback((event) => {
+    if (!event?.playerId || !event?.message) return
+
+    const eventId = `${event.playerId}-${event.yellId || Date.now()}`
+    const nextEvent = { ...event, eventId }
+
+    setYellEvents(prev => [...prev.slice(-14), nextEvent])
+
+    const timerId = setTimeout(() => {
+      setYellEvents(prev => prev.filter(e => e.eventId !== eventId))
+      yellTimersRef.current.delete(eventId)
+    }, 2600)
+
+    yellTimersRef.current.set(eventId, timerId)
+  }, [])
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages, sysMessages])
+
+  useEffect(() => {
+    if (!joined || !gameState?.activeTurnExpiresAt) return
+
+    const timerId = setInterval(() => setTurnClock(Date.now()), 1000)
+    return () => clearInterval(timerId)
+  }, [joined, gameState?.activeTurnExpiresAt])
 
   // Parse URL for invite code
   useEffect(() => {
@@ -211,7 +251,7 @@ export default function PokerPage() {
         case 'join_game':
           setJoined(true)
           setIsSpectator(msg.data.isSpectator || false)
-          setGameState(msg.data.gameState)
+          applyGameState(msg.data.gameState)
           setIsPrivate(msg.data.isPrivate || false)
           setInviteCode(msg.data.inviteCode || null)
           if (msg.data.isSpectator) {
@@ -222,9 +262,10 @@ export default function PokerPage() {
           setSpectatorHoveredPlayerId(null)
           clearChipThrows()
           clearEmotes()
+          clearYells()
           break
         case 'leave_game':
-          setJoined(false); setGameState(null)
+          setJoined(false); applyGameState(null)
           setIsPrivate(false); setInviteCode(null)
           setIsSpectator(false)
           setSpectatorVisiblePlayerId(null)
@@ -232,18 +273,19 @@ export default function PokerPage() {
           setSpectatorBlindMode(false)
           clearChipThrows()
           clearEmotes()
+          clearYells()
           break
         case 'table_list':
           setTableList(msg.data.tables || [])
           break
         case 'game_state':
-          setGameState(msg.data)
+          applyGameState(msg.data)
           if (msg.data.phase !== 'showdown') {
             setShowdownData(null) 
           }
           break
         case 'room_update':
-          if (msg.data.gameState) setGameState(msg.data.gameState)
+          if (msg.data.gameState) applyGameState(msg.data.gameState)
           if (msg.data.isSpectator !== undefined) setIsSpectator(msg.data.isSpectator)
           if (msg.data.isPrivate !== undefined) setIsPrivate(msg.data.isPrivate)
           if (msg.data.inviteCode !== undefined) setInviteCode(msg.data.inviteCode)
@@ -254,9 +296,12 @@ export default function PokerPage() {
         case 'player_emote':
           addTableEmote(msg.data)
           break
+        case 'player_yell':
+          addTableYell(msg.data)
+          break
         case 'spectator_update':
           setIsSpectator(true)
-          if (msg.data.gameState) setGameState(msg.data.gameState)
+          if (msg.data.gameState) applyGameState(msg.data.gameState)
           if (msg.data.message) addSys(msg.data.message)
           break
         case 'system_message':
@@ -284,9 +329,10 @@ export default function PokerPage() {
     return () => {
       clearChipThrows()
       clearEmotes()
+      clearYells()
       ws.close()
     }
-  }, [addSys, addChipThrow, addTableEmote, clearChipThrows, clearEmotes])
+  }, [addSys, addChipThrow, addTableEmote, addTableYell, applyGameState, clearChipThrows, clearEmotes, clearYells])
 
   function send(type, data = {}) {
     wsRef.current?.send(JSON.stringify({ type, data }))
@@ -356,6 +402,16 @@ export default function PokerPage() {
   const phase = gameState?.phase || 'waiting'
   const isWaitingNextHand = myPlayer?.waitingNextHand
   const canUseEmotes = !isSpectator && Boolean(myPlayer)
+  const estimatedServerTime = gameState?.serverTime
+    ? gameState.serverTime + (turnClock - gameStateReceivedAt)
+    : turnClock
+  const activeTurnTimeRemaining = gameState?.activeTurnExpiresAt
+    ? gameState.activeTurnExpiresAt - estimatedServerTime
+    : null
+  const isActiveTurnWarning = activeTurnTimeRemaining !== null &&
+    activeTurnTimeRemaining <= (gameState?.activeTurnWarningMs || 10000) &&
+    phase !== 'waiting' &&
+    phase !== 'showdown'
   const statistics = useMemo(
     () => statsMode ? buildPokerStatistics(gameState, playerId, { includeDetails: statsExpanded }) : null,
     [statsMode, statsExpanded, gameState, playerId]
@@ -381,6 +437,15 @@ export default function PokerPage() {
   function sendEmote(emote) {
     if (!canUseEmotes) return
     send('player_emote', { emote })
+  }
+
+  function sendYell() {
+    if (!canUseEmotes) return
+
+    const message = yellInput.trim()
+    if (!message) return
+
+    send('player_yell', { message })
   }
 
   function toggleStatsMode() {
@@ -582,6 +647,7 @@ export default function PokerPage() {
             if (!pos) return null
             const isMe = player.id === playerId
             const isActive = gameState?.activePlayerId === player.id
+            const isTurnWarning = isActive && isActiveTurnWarning
             const isDealer = getOriginalIndex(player) === gameState?.dealerIndex
             const isPlayerWaiting = player.waitingNextHand
 
@@ -590,6 +656,7 @@ export default function PokerPage() {
             const handName = showdownData?.playerHandNames?.[player.id]
             const playerChipThrowEvents = chipThrowEvents.filter(event => event.playerId === player.id)
             const playerEmotes = emoteEvents.filter(event => event.playerId === player.id)
+            const playerYells = yellEvents.filter(event => event.playerId === player.id)
             const playerAllInOdds = allInOddsByPlayer.get(player.id)
             const spectatorCanRevealCards = isSpectator &&
               !spectatorBlindMode &&
@@ -602,7 +669,7 @@ export default function PokerPage() {
               : player.cards
 
             return (
-              <div key={player.id} className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center" style={{ top: pos.top, left: pos.left }}>
+              <div key={player.id} className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center ${seatIndex === 0 ? 'mt-8 lg:mt-0' : ''}`} style={{ top: pos.top, left: pos.left }}>
                 
                 {/* Bet Stack projected into the table */}
                 {(player.lastAction || playerChipThrowEvents.length > 0) && (
@@ -628,6 +695,11 @@ export default function PokerPage() {
 
                 {/* Info & Cards Wrapper */}
                 <div className="relative flex flex-col items-center gap-1">
+                  <SeatYells
+                    yells={playerYells}
+                    className="absolute -top-16 left-1/2 -translate-x-1/2 z-[9999]"
+                  />
+
                   {/* Dealer Button Badge */}
                   {isDealer && (
                     <div className="absolute -right-3 sm:-right-4 -top-2 w-4 h-4 sm:w-5 sm:h-5 bg-white rounded-full flex items-center justify-center text-black font-black text-[9px] sm:text-[10px] shadow-md border border-zinc-300 z-30">
@@ -641,14 +713,18 @@ export default function PokerPage() {
                     transition-all border z-10 relative bg-zinc-800/95 border-zinc-600/50
                     ${player.folded && !isPlayerWaiting ? 'opacity-40' : ''}
                     ${isPlayerWaiting ? 'opacity-60' : ''}
-                    ${isActive ? 'ring-2 ring-amber-400 shadow-[0_0_20px_rgba(251,191,36,0.4)]' : ''}
+                    ${isActive
+                      ? isTurnWarning
+                        ? 'ring-2 ring-red-500 shadow-[0_0_22px_rgba(239,68,68,0.55)]'
+                        : 'ring-2 ring-amber-400 shadow-[0_0_20px_rgba(251,191,36,0.4)]'
+                      : ''}
                   `}>
                     <SeatEmotes
                       emotes={playerEmotes}
                       className="absolute -top-3 -left-2 sm:-top-3.5 sm:-left-2.5 z-40"
                     />
                     {isActive && (
-                      <div className="absolute -top-4 sm:-top-5 left-1/2 -translate-x-1/2 text-amber-400 text-xs sm:text-sm animate-bounce">▼</div>
+                      <div className={`absolute -top-4 sm:-top-5 left-1/2 -translate-x-1/2 text-xs sm:text-sm animate-bounce ${isTurnWarning ? 'text-red-500' : 'text-amber-400'}`}>▼</div>
                     )}
                     <div className="text-[10px] sm:text-sm font-bold truncate max-w-[70px] sm:max-w-[100px] text-white">
                       {isMe ? 'You' : player.username}
@@ -782,20 +858,41 @@ export default function PokerPage() {
             </div>
           )}
           {canUseEmotes && (
-            <div className="grid grid-cols-5 gap-1.5 mt-2 py-2 px-2 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md">
-              {EMOTE_OPTIONS.map((emote) => (
+            <>
+              <div className="grid grid-cols-6 gap-1.5 mt-2 py-2 px-2 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md">
+                {EMOTE_OPTIONS.map((emote) => (
+                  <button
+                    key={emote.id}
+                    type="button"
+                    title={emote.label}
+                    aria-label={emote.label}
+                    onClick={() => sendEmote(emote.id)}
+                    className="h-10 rounded-md border flex items-center justify-center transition-all active:scale-95 bg-zinc-700 hover:bg-zinc-600 border-zinc-500/50 text-zinc-200"
+                  >
+                    <EmoteIcon emote={emote.id} />
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 flex overflow-hidden rounded-xl border border-zinc-600/50 bg-zinc-800/95 shadow-2xl backdrop-blur-md">
+                <input
+                  className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-white placeholder-zinc-400 outline-none"
+                  placeholder="Yell..."
+                  aria-label="Yell"
+                  value={yellInput}
+                  onChange={e => setYellInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && sendYell()}
+                  maxLength={80}
+                />
                 <button
-                  key={emote.id}
                   type="button"
-                  title={emote.label}
-                  aria-label={emote.label}
-                  onClick={() => sendEmote(emote.id)}
-                  className="h-10 rounded-md border flex items-center justify-center transition-all active:scale-95 bg-zinc-700 hover:bg-zinc-600 border-zinc-500/50 text-zinc-200"
+                  onClick={sendYell}
+                  disabled={!yellInput.trim()}
+                  className="shrink-0 px-4 text-sm font-black text-amber-100 transition-colors hover:bg-zinc-700 disabled:text-zinc-500"
                 >
-                  <EmoteIcon emote={emote.id} />
+                  Yell
                 </button>
-              ))}
-            </div>
+              </div>
+            </>
           )}
           {statsMode && (
             <StatsPanel

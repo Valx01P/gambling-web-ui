@@ -4,7 +4,9 @@ export const POKER_CONFIG = {
   STARTING_CHIPS: 1000,
   SMALL_BLIND: 5,
   BIG_BLIND: 10,
-  MIN_RAISE: 10
+  MIN_RAISE: 10,
+  TURN_LIMIT_MS: 60 * 1000,
+  TURN_WARNING_MS: 10 * 1000
 }
 
 export const BLACKJACK_CONFIG = {
@@ -75,6 +77,7 @@ export const MESSAGE_TYPES = {
   CHAT: 'chat',
   SYSTEM_MESSAGE: 'system_message',
   PLAYER_EMOTE: 'player_emote',
+  PLAYER_YELL: 'player_yell',
 
   // State
   GAME_STATE: 'game_state',

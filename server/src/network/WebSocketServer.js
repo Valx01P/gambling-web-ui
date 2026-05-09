@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { PlayerManager } from '../players/PlayerManager.js'
 import { RoomManager } from '../rooms/RoomManager.js'
 import { MessageHandler } from './MessageHandler.js'
-import { MESSAGE_TYPES } from '../config/constants.js'
+import { MESSAGE_TYPES, POKER_CONFIG } from '../config/constants.js'
 
 export class WebSocketServer {
   constructor(httpServer) {
@@ -46,16 +46,16 @@ export class WebSocketServer {
 
     // Heartbeat
     this.heartbeat = setInterval(() => {
-      const now = Date.now()
-      const TURN_LIMIT = 1 * 60 * 1000 // 1 minute turn inactivity limit
-
       this.wss.clients.forEach((ws) => {
         if (!ws.isAlive) return ws.terminate()
         ws.isAlive = false
         ws.ping()
       })
+    }, 30000)
 
-      // Turn-based inactivity check
+    this.turnInactivityCheck = setInterval(() => {
+      const now = Date.now()
+
       for (const room of this.roomManager.rooms.values()) {
         if (room.roomType !== 'poker') continue
         const game = room.game
@@ -63,7 +63,7 @@ export class WebSocketServer {
         if (game.phase !== 'waiting' && game.phase !== 'showdown') {
           const activePlayerId = game.players[game.activeIndex]?.id
           
-          if (activePlayerId && game.lastTurnChange && (now - game.lastTurnChange > TURN_LIMIT)) {
+          if (activePlayerId && game.lastTurnChange && (now - game.lastTurnChange > POKER_CONFIG.TURN_LIMIT_MS)) {
             const player = this.playerManager.getPlayer(activePlayerId)
             
             if (player) {
@@ -84,7 +84,7 @@ export class WebSocketServer {
           }
         }
       }
-    }, 30000)
+    }, 1000)
   }
 
   handleDisconnect(playerId) {
@@ -97,6 +97,7 @@ export class WebSocketServer {
 
   close() {
     clearInterval(this.heartbeat)
+    clearInterval(this.turnInactivityCheck)
     this.wss.close()
   }
 }

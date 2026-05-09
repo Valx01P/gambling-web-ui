@@ -6,6 +6,7 @@ export const EMOTE_OPTIONS = [
   { id: 'sad', label: 'Sad', emoji: '😭' },
   { id: 'shush', label: 'Shush', emoji: '🤫' },
   { id: 'sunglasses', label: 'Sunglasses', emoji: '😎' },
+  { id: 'eggplant', label: 'Eggplant', emoji: '🍆' },
 ]
 
 const EMOTE_BY_ID = Object.fromEntries(EMOTE_OPTIONS.map((emote) => [emote.id, emote]))
@@ -41,6 +42,28 @@ export function SeatEmotes({ emotes = [], className = '' }) {
           </span>
         )
       })}
+    </div>
+  )
+}
+
+export function SeatYells({ yells = [], className = '' }) {
+  if (yells.length === 0) return null
+
+  return (
+    <div className={`seat-yells pointer-events-none ${className}`} aria-hidden="true">
+      {yells.map((yell, index) => (
+        <span
+          key={yell.eventId}
+          className="seat-yell-burst"
+          style={{
+            '--yell-x': `${((index % 3) - 1) * 16}px`,
+            '--yell-y': `${(index % 3) * 12}px`,
+            '--yell-delay': `${(index % 2) * 30}ms`,
+          }}
+        >
+          {yell.message}
+        </span>
+      ))}
     </div>
   )
 }

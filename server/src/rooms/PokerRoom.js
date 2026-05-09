@@ -1,7 +1,7 @@
 import { PokerGame } from '../poker/PokerGame.js'
 import { POKER_CONFIG, MESSAGE_TYPES } from '../config/constants.js'
 
-const TABLE_EMOTES = new Set(['angry', 'laugh', 'sad', 'shush', 'sunglasses'])
+const TABLE_EMOTES = new Set(['angry', 'laugh', 'sad', 'shush', 'sunglasses', 'eggplant'])
 
 export class PokerRoom {
   constructor(roomId, isPrivate = false) {
@@ -12,6 +12,7 @@ export class PokerRoom {
     this.players = new Map()    // playerId -> player (seated)
     this.spectators = new Map() // playerId -> player (watching)
     this.emoteSequence = 0
+    this.yellSequence = 0
     this.startHandTimeout = null
     this.game = new PokerGame(
       (msg) => this.broadcast(msg),
@@ -158,6 +159,34 @@ export class PokerRoom {
         playerId,
         emote,
         emoteId: `${timestamp}-${this.emoteSequence}`,
+        timestamp
+      }
+    })
+
+    return { success: true }
+  }
+
+  handlePlayerYell(playerId, data) {
+    const player = this.players.get(playerId)
+    if (!player) {
+      return { success: false, error: 'Only seated players can yell' }
+    }
+
+    const message = String(data?.message || '').trim().substring(0, 80)
+    const timestamp = Date.now()
+
+    if (!message) {
+      return { success: false, error: 'Yell cannot be empty' }
+    }
+
+    this.yellSequence += 1
+    this.broadcast({
+      type: MESSAGE_TYPES.PLAYER_YELL,
+      data: {
+        playerId,
+        username: player.username,
+        message,
+        yellId: `${timestamp}-${this.yellSequence}`,
         timestamp
       }
     })

@@ -4,15 +4,17 @@ import { useMemo } from 'react'
 import PokerChip from './PokerChip'
 
 function chipBreakdown(amount, maxChips) {
-  const denoms = [100, 25, 5]
+  const denoms = [100000, 25000, 10000, 5000, 2500, 1000, 500, 250, 100, 50, 25, 10, 5]
   const chips = []
   let remaining = amount
+
   for (const d of denoms) {
     while (remaining >= d && chips.length < maxChips) {
       chips.push(d)
       remaining -= d
     }
   }
+
   if (remaining > 0 && chips.length < maxChips) chips.push(5)
   return chips
 }

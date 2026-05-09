@@ -389,6 +389,20 @@ test('broadcasts every repeated emote with a unique id', () => {
   assert.notEqual(emoteMessages[0].data.emoteId, emoteMessages[1].data.emoteId)
 })
 
+test('accepts the eggplant table emote', () => {
+  const room = new PokerRoom('room')
+  const [player] = addPlayers(room, 2)
+
+  const result = room.handlePlayerEmote(player.id, { emote: 'eggplant' })
+  const emoteMessage = player.messages
+    .filter(message => message.type === MESSAGE_TYPES.PLAYER_EMOTE)
+    .at(-1)
+
+  assert.equal(result.success, true)
+  assert.equal(emoteMessage.data.playerId, player.id)
+  assert.equal(emoteMessage.data.emote, 'eggplant')
+})
+
 test('rejects unknown emotes', () => {
   const room = new PokerRoom('room')
   const [player] = addPlayers(room, 2)
@@ -397,4 +411,33 @@ test('rejects unknown emotes', () => {
 
   assert.equal(result.success, false)
   assert.equal(player.messages.some(message => message.type === MESSAGE_TYPES.PLAYER_EMOTE), false)
+})
+
+test('broadcasts every repeated yell with a unique id', () => {
+  const room = new PokerRoom('room')
+  const [player] = addPlayers(room, 3)
+  startHand(room)
+
+  assert.equal(room.handlePlayerYell(player.id, { message: 'run it twice' }).success, true)
+  assert.equal(room.handlePlayerYell(player.id, { message: 'run it twice' }).success, true)
+
+  const yellMessages = player.messages.filter(message =>
+    message.type === MESSAGE_TYPES.PLAYER_YELL &&
+    message.data.message === 'run it twice'
+  )
+
+  assert.equal(yellMessages.length, 2)
+  assert.equal(yellMessages[0].data.playerId, player.id)
+  assert.equal(yellMessages[0].data.username, player.username)
+  assert.notEqual(yellMessages[0].data.yellId, yellMessages[1].data.yellId)
+})
+
+test('rejects empty yells', () => {
+  const room = new PokerRoom('room')
+  const [player] = addPlayers(room, 2)
+
+  const result = room.handlePlayerYell(player.id, { message: '   ' })
+
+  assert.equal(result.success, false)
+  assert.equal(player.messages.some(message => message.type === MESSAGE_TYPES.PLAYER_YELL), false)
 })

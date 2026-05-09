@@ -7,6 +7,7 @@ const chipConfig = {
   50: { color: '#EA580C', edgeColor: '#FFFFFF' },
   100: { color: '#18181B', edgeColor: '#FFFFFF' },
   250: { color: '#9333EA', edgeColor: '#FFFFFF' },
+  500: { color: '#0F766E', edgeColor: '#FFFFFF' },
   1000: { color: '#EAB308', edgeColor: '#18181B' },
   2500: { color: '#EC4899', edgeColor: '#FFFFFF' },
   5000: { color: '#6366F1', edgeColor: '#FFFFFF' },

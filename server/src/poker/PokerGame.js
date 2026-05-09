@@ -850,6 +850,14 @@ export class PokerGame {
     const activePlayer = this.players[this.activeIndex]
     const runoutLocked = this.exposeRunoutHands || this.shouldExposeRunoutHands()
     const revealAllCards = Boolean(options.revealAllCards)
+    const activePlayerId = activePlayer && !this.removedPlayers.has(activePlayer.id) && activePlayer.isConnected
+      ? activePlayer.id
+      : null
+    const hasTimedActiveTurn = Boolean(
+      activePlayerId &&
+      this.phase !== GAME_PHASES.WAITING &&
+      this.phase !== GAME_PHASES.SHOWDOWN
+    )
 
     return {
       phase: this.phase,
@@ -858,9 +866,12 @@ export class PokerGame {
       communityCards: this.communityCards,
       runoutLocked,
       dealerIndex: visibleDealerIndex,
-      activePlayerId: activePlayer && !this.removedPlayers.has(activePlayer.id) && activePlayer.isConnected
-        ? activePlayer.id
-        : null,
+      activePlayerId,
+      activeTurnStartedAt: hasTimedActiveTurn ? this.lastTurnChange : null,
+      activeTurnExpiresAt: hasTimedActiveTurn ? this.lastTurnChange + POKER_CONFIG.TURN_LIMIT_MS : null,
+      activeTurnLimitMs: POKER_CONFIG.TURN_LIMIT_MS,
+      activeTurnWarningMs: POKER_CONFIG.TURN_WARNING_MS,
+      serverTime: Date.now(),
       players: visiblePlayers.map(p => ({
         id: p.id,
         username: p.username,
