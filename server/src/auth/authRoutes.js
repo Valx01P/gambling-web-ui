@@ -24,10 +24,12 @@ export function authRoutes() {
       console.warn(`[auth] google verify failed (${code}):`, err.message)
       // Audience mismatch is the #1 deploy footgun — log explicit IDs so
       // the operator can compare them in Render's log against their Vercel
-      // setting without redeploying.
+      // setting without redeploying. Lengths + JSON-quoted tail catch the
+      // case where the strings *look* identical but the env var has stray
+      // whitespace / control characters at the end.
       if (err.tokenAud || err.serverAud) {
-        console.warn(`[auth]   token aud  = ${err.tokenAud}`)
-        console.warn(`[auth]   server aud = ${err.serverAud}`)
+        console.warn(`[auth]   token aud  = ${err.tokenAud}  (len=${err.tokenAudLen}, tail=${err.tokenAudTail})`)
+        console.warn(`[auth]   server aud = ${err.serverAud}  (len=${err.serverAudLen}, tail=${err.serverAudTail})`)
       }
       return res.status(401).json({
         error: code,

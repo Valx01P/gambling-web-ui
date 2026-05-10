@@ -2,8 +2,18 @@ import { OAuth2Client } from 'google-auth-library'
 
 let client = null
 
+// Trimmed-and-validated audience reader. Render's env-var UI happily preserves
+// trailing newlines and spaces when you paste a value, which produces an
+// audience-mismatch even when the string LOOKS identical to the token's
+// aud claim. Trimming on read makes this class of footgun impossible.
+function getAudience() {
+  const raw = process.env.GOOGLE_CLIENT_ID
+  if (!raw) return ''
+  return raw.trim()
+}
+
 function getClient() {
-  const audience = process.env.GOOGLE_CLIENT_ID
+  const audience = getAudience()
   if (!audience) throw new Error('GOOGLE_CLIENT_ID is not set.')
   if (!client) client = new OAuth2Client(audience)
   return client
@@ -23,7 +33,7 @@ function peekPayload(idToken) {
 }
 
 export async function verifyGoogleIdToken(idToken) {
-  const audience = process.env.GOOGLE_CLIENT_ID
+  const audience = getAudience()
   if (!audience) {
     const err = new Error('Server GOOGLE_CLIENT_ID is not set')
     err.code = 'server_misconfigured'
@@ -39,11 +49,21 @@ export async function verifyGoogleIdToken(idToken) {
     err.code = 'audience_mismatch'
     err.tokenAud = peek.aud
     err.serverAud = audience
+    // Hidden-character forensics: if the strings look identical but `!==`
+    // fires, the cause is almost always trailing whitespace or stray
+    // control characters in the env var. Surface the lengths + the last
+    // few char codes so the operator can see at a glance.
+    err.tokenAudLen = peek.aud.length
+    err.serverAudLen = audience.length
+    err.serverAudTail = JSON.stringify(audience.slice(-4))
+    err.tokenAudTail = JSON.stringify(peek.aud.slice(-4))
     throw err
   }
 
   let ticket
   try {
+    // Pass the trimmed audience explicitly so google-auth-library compares
+    // against the cleaned value, not whatever was in the original env.
     ticket = await getClient().verifyIdToken({ idToken, audience })
   } catch (err) {
     const wrapped = new Error(`Google verifyIdToken failed: ${err.message}`)
