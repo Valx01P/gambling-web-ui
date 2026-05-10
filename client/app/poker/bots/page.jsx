@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import HomeBackLink from '../../components/HomeBackLink'
 import AccountMenu from '../../components/AccountMenu'
 import AuthGateModal from '../../components/AuthGateModal'
@@ -457,7 +457,20 @@ function BotList({ bots, mine, onDeleted, emptyText }) {
 // limit before the user even tries to create one.
 const MAX_BOTS_PER_USER = 10
 
+// Next 13+/14+/16 requires any component that calls useSearchParams() to
+// be rendered inside a <Suspense> boundary, otherwise the production build
+// errors out with "useSearchParams() should be wrapped in a suspense
+// boundary at page /poker/bots". We render an empty fallback because the
+// page below has its own loading states once the search params resolve.
 export default function BotsPage() {
+  return (
+    <Suspense fallback={null}>
+      <BotsPageInner />
+    </Suspense>
+  )
+}
+
+function BotsPageInner() {
   const { user, loading: authLoading } = useAuth()
   const searchParams = useSearchParams()
   // Honor /poker/bots?build=tierN — auto-fires that specific tier's build
