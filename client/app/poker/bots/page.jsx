@@ -1,15 +1,232 @@
 'use client'
 
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import HomeBackLink from '../../components/HomeBackLink'
 import AccountMenu from '../../components/AccountMenu'
 import AuthGateModal from '../../components/AuthGateModal'
+import ConfirmPopoverButton from '../../components/ConfirmPopoverButton'
 import BotAvatar from '../../components/BotAvatar'
 import { useAuth } from '../../lib/useAuth'
 import { api } from '../../lib/api'
 import { BOT_COLOR_PRESETS, isValidHex } from '../../lib/botColors'
+
+// Renders a single clone tier's slot in the My Bots shelf. Three states:
+//   * built: existing bot — links to editor, shows ELO badge
+//   * unlocked but not built: shows derived stats + Build button
+//   * locked: progress meter ("3 more hands until v2")
+function CloneSlot({ slot, onBuilt, onUpdated, autoBuild = false }) {
+  const router = useRouter()
+  const [busy, setBusy] = useState(false)
+  const [recalcBusy, setRecalcBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [recalcOk, setRecalcOk] = useState(false)
+  const [autoTriggered, setAutoTriggered] = useState(false)
+
+  async function build() {
+    setBusy(true)
+    setError(null)
+    try {
+      const { bot } = await api.buildMyBot(slot.tier)
+      onBuilt?.(bot)
+      router.push(`/poker/bots/${bot.id}`)
+    } catch (err) {
+      setError(err.detail || err.message || 'Failed to build')
+      setBusy(false)
+    }
+  }
+
+  // In-place refresh for an existing clone. Same endpoint as the editor's
+  // "Recalculate" button — surfaced here so users don't have to open the
+  // bot to update it. The ConfirmPopoverButton wrapping it owns the
+  // open/close + persist-skip flow; this is just the action it fires.
+  async function recalc() {
+    if (!slot.built) return
+    setRecalcBusy(true)
+    setError(null)
+    try {
+      const { bot } = await api.recalculateClone(slot.botId)
+      onUpdated?.(bot)
+      setRecalcOk(true)
+      setTimeout(() => setRecalcOk(false), 2000)
+    } catch (err) {
+      setError(err.detail || err.message || 'Failed to recalculate')
+    } finally {
+      setRecalcBusy(false)
+    }
+  }
+
+  // Auto-build when the user lands here from the achievement toast
+  // (?build=tierN). Guarded so a refresh doesn't re-fire.
+  useEffect(() => {
+    if (!autoBuild || autoTriggered) return
+    if (slot.built || !slot.unlocked) return
+    setAutoTriggered(true)
+    build()
+  }, [autoBuild, autoTriggered, slot])
+
+  // --- Built clone — short row, links to editor + inline Recalc button.
+  if (slot.built) {
+    return (
+      <div className="rounded-lg border border-amber-300/40 bg-amber-500/5 transition-colors hover:bg-amber-500/15">
+        <div className="flex items-center gap-2 px-3 py-2">
+          <Link href={`/poker/bots/${slot.botId}`} className="flex flex-1 items-center gap-2 min-w-0">
+            <BotAvatar name={slot.name} color={slot.color} size={28} />
+            <div className="min-w-0">
+              <div className="truncate text-xs font-black text-white">{slot.name}</div>
+              <div className="truncate text-[10px] font-bold text-zinc-400">
+                v{slot.tier} · {slot.hands} hands · {slot.isPublic ? 'public' : 'private'}
+              </div>
+            </div>
+          </Link>
+          <div className="shrink-0 flex items-center gap-2">
+            <div className="text-right">
+              <div className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">ELO</div>
+              <div className="text-sm font-black text-amber-200 tabular-nums">{slot.elo}</div>
+            </div>
+            <ConfirmPopoverButton
+              triggerLabel={recalcBusy ? 'Recalculating…' : recalcOk ? 'Recalculated ✓' : '↻ Recalculate'}
+              triggerClassName="rounded-md border border-amber-400/50 bg-amber-500/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-amber-100 transition-colors hover:bg-amber-500/30 disabled:opacity-50"
+              description={`Re-derives this clone's code, color, and ELO from your last ${slot.hands} hands. Overwrites your code edits; bot id stays the same.`}
+              confirmLabel="Recalculate"
+              align="right"
+              persistKey="pokerxyz:confirm:clone-recalculate:skip"
+              busy={recalcBusy}
+              onConfirm={recalc}
+            />
+          </div>
+        </div>
+        {error && (
+          <div className="mx-3 mb-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] font-bold text-red-200">
+            {error}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // --- Unlocked but not built — show preview stats + Build button.
+  if (slot.unlocked && slot.draft) {
+    const p = slot.draft.profile || {}
+    const pct = (n) => `${Math.round((n || 0) * 100)}%`
+    return (
+      <div className="rounded-lg border border-amber-300/60 bg-amber-500/10 px-3 py-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-[9px] font-black uppercase tracking-[0.2em] text-amber-300">Available</div>
+            <div className="text-xs font-black text-white">v{slot.tier} · {slot.draft.name}</div>
+            <div className="text-[10px] font-bold text-zinc-300">
+              {slot.draft.seedHandsAnalyzed} hands · {p.vpipStyle}/{p.aggStyle} · ELO {slot.draft.elo}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={build}
+            disabled={busy}
+            className="shrink-0 rounded-md border border-amber-400/60 bg-amber-500/20 px-2.5 py-1.5 text-[11px] font-black uppercase tracking-widest text-amber-100 hover:bg-amber-500/30 disabled:opacity-50"
+          >
+            {busy ? 'Building…' : `Build v${slot.tier}`}
+          </button>
+        </div>
+        <div className="mt-1.5 grid grid-cols-4 gap-1 text-[9px] font-bold text-zinc-300">
+          <span>VPIP {pct(p.vpipRate)}</span>
+          <span>PFR {pct(p.pfrRate)}</span>
+          <span>cBet {pct(p.cBetFreq)}</span>
+          <span>Open {Number(p.avgOpenSizeBB || 0).toFixed(1)}bb</span>
+        </div>
+        {error && (
+          <div className="mt-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] font-bold text-red-200">
+            {error}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // --- Locked — show progress to next threshold.
+  const remaining = slot.handsRemaining ?? slot.hands
+  return (
+    <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/40 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-500">Locked</div>
+          <div className="text-xs font-black text-zinc-300">Clone v{slot.tier}</div>
+          <div className="text-[10px] font-bold text-zinc-500">
+            Play {remaining} more hand{remaining === 1 ? '' : 's'} to unlock ({slot.hands} total)
+          </div>
+        </div>
+        <div className="shrink-0 text-[10px] font-bold text-zinc-500">v{slot.tier}</div>
+      </div>
+    </div>
+  )
+}
+
+// 5-slot shelf at the top of the My Bots tab.
+function PlayerCloneShelf({ user, onCreated, autoBuildTier = null }) {
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  async function reload() {
+    setLoading(true)
+    setError(null)
+    try {
+      const data = await api.previewMyBot()
+      setPreview(data)
+    } catch (err) {
+      setError(err.detail || err.message || 'Failed to load')
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => { if (user) reload() }, [user?.id])
+
+  if (loading) {
+    return (
+      <div className="w-full rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 shadow-lg">
+        <div className="text-xs font-bold text-amber-100">Reading your play data…</div>
+      </div>
+    )
+  }
+  if (!preview) return null
+
+  return (
+    <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/90 p-3 shadow-lg">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-black text-white">Your clone bots</div>
+          <div className="text-[10px] font-bold text-zinc-300">
+            Five reserved slots. Each new one is more accurate — built from more of your hands. Played: <span className="text-amber-200">{preview.handsSeated ?? 0}</span> hands.
+          </div>
+        </div>
+      </div>
+      {error && (
+        <div className="mb-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] font-bold text-red-200">
+          {error}
+        </div>
+      )}
+      <div className="space-y-1.5">
+        {(preview.tiers || []).map((slot) => (
+          <CloneSlot
+            key={slot.tier}
+            slot={slot}
+            autoBuild={autoBuildTier === slot.tier}
+            onBuilt={(bot) => {
+              onCreated?.(bot)
+              reload()
+            }}
+            onUpdated={() => {
+              // Re-fetch the preview so the slot's ELO / name / public flag
+              // reflect what the recalc returned. Cheap; preview is small.
+              reload()
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function ColorReel({ value, onChange }) {
   const idx = Math.max(0, BOT_COLOR_PRESETS.findIndex(c => c.hex === value?.toLowerCase()))
@@ -193,7 +410,17 @@ function BotRow({ bot, mine, onDeleted }) {
           >
             {mine ? 'Edit →' : 'Open →'}
           </Link>
-          {mine && (
+          {/* Clones are permanent slots and can't be deleted; show a small
+              lock indicator so the missing button isn't confusing. */}
+          {mine && bot.isClone && (
+            <span
+              title="Clone bots can't be deleted — recalculate or edit instead"
+              className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-amber-200"
+            >
+              v{bot.cloneTier}
+            </span>
+          )}
+          {mine && !bot.isClone && (
             <button
               type="button"
               onClick={destroy}
@@ -232,7 +459,16 @@ const MAX_BOTS_PER_USER = 10
 
 export default function BotsPage() {
   const { user, loading: authLoading } = useAuth()
-  const [tab, setTab] = useState('public')
+  const searchParams = useSearchParams()
+  // Honor /poker/bots?build=tierN — auto-fires that specific tier's build
+  // once the preview confirms it's unlocked. Comes from the achievement
+  // toast's CTA. Legacy `?build=me` maps to tier 1.
+  const buildParam = searchParams.get('build') || ''
+  const tierMatch = buildParam.match(/^tier(\d)$/)
+  const autoBuildTier = tierMatch ? Number(tierMatch[1])
+                       : buildParam === 'me' ? 1
+                       : null
+  const [tab, setTab] = useState(autoBuildTier ? 'mine' : 'public')
   const [myBots, setMyBots] = useState([])
   const [publicBots, setPublicBots] = useState([])
   const [botLimit, setBotLimit] = useState(MAX_BOTS_PER_USER)
@@ -325,17 +561,30 @@ export default function BotsPage() {
         )}
 
         {user && tab === 'mine' && (
+          <PlayerCloneShelf
+            user={user}
+            autoBuildTier={autoBuildTier}
+            onCreated={(bot) => setMyBots(prev => [bot, ...prev])}
+          />
+        )}
+
+        {user && tab === 'mine' && (() => {
+          // Clones live in the shelf above; this list is for manual bots
+          // only so the user sees one count (manual / 10) that matches the
+          // server-side cap.
+          const manualBots = myBots.filter(b => !b.isClone)
+          return (
           <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/90 p-3 shadow-lg">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div>
-                <div className="text-sm font-black text-white">My Bots <span className="text-zinc-400 font-bold">({myBots.length}/{botLimit})</span></div>
-                <div className="text-xs font-bold text-zinc-300">Tap a bot to open the editor — code or visual rules.</div>
+                <div className="text-sm font-black text-white">My Bots <span className="text-zinc-400 font-bold">({manualBots.length}/{botLimit})</span></div>
+                <div className="text-xs font-bold text-zinc-300">Manual bots — edit code, share publicly, or sit them at a table.</div>
               </div>
               <button
                 type="button"
                 onClick={() => {
-                  if (myBots.length >= botLimit) {
-                    setError(`You can only have up to ${botLimit} bots per account. Delete one to make room.`)
+                  if (manualBots.length >= botLimit) {
+                    setError(`You can only have up to ${botLimit} manual bots per account. Delete one to make room. (Clone slots don't count.)`)
                     return
                   }
                   setTab('create')
@@ -351,9 +600,9 @@ export default function BotsPage() {
               </div>
             ) : (
               <BotList
-                bots={myBots}
+                bots={manualBots}
                 mine
-                emptyText="No bots yet. Tap Create to build one."
+                emptyText="No manual bots yet. Tap Create to build one."
                 onDeleted={(id) => {
                   setMyBots(prev => prev.filter(x => x.id !== id))
                   setPublicBots(prev => prev.filter(x => x.id !== id))
@@ -361,7 +610,8 @@ export default function BotsPage() {
               />
             )}
           </div>
-        )}
+          )
+        })()}
 
         {user && tab === 'create' && (
           <CreatePanel

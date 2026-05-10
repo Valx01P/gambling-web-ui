@@ -1,6 +1,4 @@
 import { PokerRoom } from './PokerRoom.js'
-import { BlackjackRoom } from './BlackjackRoom.js'
-import { BaccaratRoom } from './BaccaratRoom.js'
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -38,48 +36,18 @@ export class RoomManager {
     return room
   }
 
-  createBlackjackRoom() {
-    this.roomCounter++
-    const roomId = `blackjack_${this.roomCounter}`
-    const room = new BlackjackRoom(roomId)
-    this.rooms.set(roomId, room)
-    return room
-  }
-
-  createBaccaratRoom() {
-    this.roomCounter++
-    const roomId = `baccarat_${this.roomCounter}`
-    const room = new BaccaratRoom(roomId)
-    this.rooms.set(roomId, room)
-    return room
-  }
-
   getRoom(roomId) {
     return this.rooms.get(roomId)
   }
 
   findAvailableRoom() {
     for (const room of this.rooms.values()) {
-      if (room.roomType === 'poker' && !room.isPrivate && !room.isFull()) return room
+      if (room.roomType === 'poker' && !room.isPrivate && !room.isFull() && !room.isArena) return room
     }
     return this.createRoom(false)
   }
 
-  findAvailableBlackjackRoom() {
-    for (const room of this.rooms.values()) {
-      if (room.roomType === 'blackjack' && !room.isFull()) return room
-    }
-    return this.createBlackjackRoom()
-  }
-
-  findAvailableBaccaratRoom() {
-    for (const room of this.rooms.values()) {
-      if (room.roomType === 'baccarat' && !room.isFull()) return room
-    }
-    return this.createBaccaratRoom()
-  }
-
-  joinGame(player, mode = 'general', code = null, roomId = null, game = 'poker') {
+  joinGame(player, mode = 'general', code = null, roomId = null) {
     if (player.currentRoom) {
       const currentRoom = this.getRoom(player.currentRoom)
       if (currentRoom) {
@@ -95,21 +63,15 @@ export class RoomManager {
 
     let room
 
-    if (game === 'blackjack') {
-      if (mode !== 'general') return { success: false, error: 'Invalid blackjack join mode' }
-      room = this.findAvailableBlackjackRoom()
-    } else if (game === 'baccarat') {
-      if (mode !== 'general') return { success: false, error: 'Invalid baccarat join mode' }
-      room = this.findAvailableBaccaratRoom()
-    } else if (mode === 'general') {
+    if (mode === 'general') {
       room = this.findAvailableRoom()
     } else if (mode === 'create_private') {
       room = this.createRoom(true)
     } else if (mode === 'join_private') {
       if (!code) return { success: false, error: 'Room code required' }
-      const roomId = this.privateRooms.get(code.toUpperCase())
-      if (!roomId) return { success: false, error: 'Invalid room code' }
-      room = this.rooms.get(roomId)
+      const lookupId = this.privateRooms.get(code.toUpperCase())
+      if (!lookupId) return { success: false, error: 'Invalid room code' }
+      room = this.rooms.get(lookupId)
       if (!room) return { success: false, error: 'Room no longer exists' }
     } else if (mode === 'spectate') {
       if (!roomId) return { success: false, error: 'Table required' }
@@ -126,8 +88,6 @@ export class RoomManager {
       if (!player.userId) {
         return { success: false, error: 'Sign in to create a Bot Arena.', code: 'auth_required' }
       }
-      // Spawn a fresh public arena room and seat the user as a spectator.
-      // No human players seat in arenas — they're a bots-only sandbox.
       room = this.createRoom(false, { isArena: true, ownerUserId: player.userId })
       const result = room.addSpectator(player, {
         voluntary: true,

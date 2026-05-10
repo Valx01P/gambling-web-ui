@@ -33,23 +33,6 @@ export const BLIND_PROPOSAL_TIMEOUT_MS = 60_000
 // Contest mode bumps blinds every N hands at the table.
 export const CONTEST_MODE_HANDS_PER_LEVEL = 10
 
-export const BLACKJACK_CONFIG = {
-  MAX_PLAYERS: 5,
-  STARTING_CHIPS: 1000,
-  MIN_BET: 10,
-  BLACKJACK_PAYOUT_NUMERATOR: 3,
-  BLACKJACK_PAYOUT_DENOMINATOR: 2,
-}
-
-export const BACCARAT_CONFIG = {
-  MAX_PLAYERS: 5,
-  STARTING_CHIPS: 1000,
-  MIN_BET: 10,
-  MAX_DISPLAY_CHIPS: 1000000,
-  BANKER_COMMISSION_PERCENT: 5,
-  TIE_PAYOUT_MULTIPLIER: 8,
-}
-
 export const PROFILE_AVATARS = [
   { id: 'op1', url: 'https://i.ibb.co/Wpf6XVp0/image.png' },
   { id: 'op2', url: 'https://i.ibb.co/XdFhJ7w/image.png' },
@@ -114,21 +97,13 @@ export const MESSAGE_TYPES = {
   // which signed-in user this socket belongs to (needed for arena creation).
   AUTH_HELLO: 'auth_hello',
 
+  // Achievement events — fired when a signed-in user crosses a milestone
+  // (e.g., the 12-hand "your bot is unlocked" trigger). Renders as a toast
+  // on the client.
+  ACHIEVEMENT: 'achievement',
+
   UPDATE_PROFILE: 'update_profile',
   RESET_MONEY: 'reset_money',
-
-  // Blackjack actions
-  BLACKJACK_BET: 'blackjack_bet',
-  BLACKJACK_HIT: 'blackjack_hit',
-  BLACKJACK_STAND: 'blackjack_stand',
-  BLACKJACK_DOUBLE: 'blackjack_double',
-  BLACKJACK_SPLIT: 'blackjack_split',
-  BLACKJACK_SURRENDER: 'blackjack_surrender',
-  BLACKJACK_SET_AFK: 'blackjack_set_afk',
-
-  // Baccarat actions
-  BACCARAT_BET: 'baccarat_bet',
-  BACCARAT_SET_AFK: 'baccarat_set_afk',
 
   // Chat
   CHAT: 'chat',

@@ -1,6 +1,12 @@
 import { GAME_PHASES } from '../../config/constants.js'
 import { strengthFor, tierIndex } from './handStrength.js'
 import { evaluateHand, getHandName } from '../../poker/handEvaluator.js'
+import {
+  preflopHandScore,
+  postflopStrengthScore,
+  calculateRangeEquity,
+  inferRangesForOpponents
+} from './equity.js'
 
 const ROUND_INDEX = {
   [GAME_PHASES.PREFLOP]: 0,
@@ -75,6 +81,16 @@ function computeDraws(holeCards, communityCards) {
   return { hasFlushDraw, hasOpenEnded, hasGutshot, outs }
 }
 
+// Cosmetic label for an inferred opponent range, surfaced in the bot context
+// so user code can log/reason about it without doing the bucket math itself.
+function labelForTopPct(pct) {
+  if (pct <= 0.06) return 'premium'
+  if (pct <= 0.15) return 'tight'
+  if (pct <= 0.30) return 'standard'
+  if (pct <= 0.55) return 'loose'
+  return 'wide'
+}
+
 function classifyPreflopAction(handActions) {
   let raises = 0
   for (const a of handActions) {
@@ -119,6 +135,12 @@ export function buildContext(game, bot) {
       }
     } catch {}
   }
+
+  // Numeric strength independent of the categorical bucket. Preflop uses the
+  // Chen-style score (0-1), postflop uses an equity-baseline by hand rank.
+  const handStrengthScore = communityCards.length >= 3
+    ? (postflopStrengthScore(holeCards, communityCards) ?? 0)
+    : (holeCards.length === 2 ? preflopHandScore(holeCards[0], holeCards[1]) : 0)
 
   const bigBlind = game.bigBlind || 10
   const smallBlind = game.smallBlind || Math.floor(bigBlind / 2)
@@ -173,6 +195,49 @@ export function buildContext(game, bot) {
   const activeOpps = opponents.filter(o => !o.folded)
   let lastOpponentAction = ''
   for (const o of opponents) if (o.lastAction?.action) lastOpponentAction = o.lastAction.action
+
+  // --- Equity vs estimated ranges ---------------------------------------
+  // Range inference uses each opponent's preflop profile + postflop bet
+  // sizing. Equity is a Monte Carlo against those ranges. Both numbers are
+  // exposed to the bot so it can make calls/folds based on actual win rate
+  // instead of a coarse "premium/strong/medium" bucket.
+  const activeOpponentRaw = opponentsRaw.filter(p =>
+    !game.foldedPlayers.has(p.id) && !game.allInPlayers.has(p.id) && !game.removedPlayers.has(p.id)
+  )
+  const oppRanges = (holeCards.length === 2)
+    ? inferRangesForOpponents(game, activeOpponentRaw)
+    : []
+  const opponentRangesById = new Map(oppRanges.map(r => [r.id, r]))
+  // Annotate the public opponents array with the inferred range info.
+  for (const o of opponents) {
+    const r = opponentRangesById.get(o.id)
+    o.estimatedTopPct = r?.topPct ?? null
+    o.estimatedRangeLabel = r ? labelForTopPct(r.topPct) : null
+  }
+
+  let equity = null
+  let equityVsRandom = null
+  if (holeCards.length === 2 && oppRanges.length > 0) {
+    const equityResult = calculateRangeEquity({
+      holeCards,
+      communityCards,
+      opponents: oppRanges.map(r => ({ id: r.id, _topPct: r.topPct })),
+      iterations: 600
+    })
+    equity = equityResult.equity
+    // Vs-random: same MC but with topPct = 1 for everyone. Useful baseline
+    // for "how strong is my hand on this board period" without modeling.
+    const randomResult = calculateRangeEquity({
+      holeCards,
+      communityCards,
+      opponents: oppRanges.map(r => ({ id: r.id, _topPct: 1 })),
+      iterations: 400
+    })
+    equityVsRandom = randomResult.equity
+  } else if (holeCards.length === 2 && activeOpponentRaw.length === 0) {
+    equity = 1
+    equityVsRandom = 1
+  }
 
   const facingBet = toCall > 0
   const facingRaise = facingBet && game.aggressionCount >= 2
@@ -290,6 +355,16 @@ export function buildContext(game, bot) {
     handStrength,
     handStrengthIndex: tierIndex(handStrength),
     handCategory: handStrength,
+    // Numeric strength (0-1) for bots that want a sharper signal than the
+    // 5-bucket category. Preflop = Chen-style score; postflop = made-hand
+    // baseline by rank class.
+    handStrengthScore,
+    // Range-aware equity (0-1) vs each unfolded opponent's estimated range.
+    // Null when there's no opponent action yet (e.g., we're first to act
+    // preflop with no information). Bots SHOULD use this to size bets and
+    // make calling decisions instead of relying on the categorical bucket.
+    equity,
+    equityVsRandom,
     potOdds,
     potSize: game.pot,
     currentBet: game.currentBet,

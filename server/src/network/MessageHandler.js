@@ -84,15 +84,6 @@ export class MessageHandler {
         case MESSAGE_TYPES.POKER_CALL:
         case MESSAGE_TYPES.POKER_RAISE:
         case MESSAGE_TYPES.POKER_ALL_IN:
-        case MESSAGE_TYPES.BLACKJACK_BET:
-        case MESSAGE_TYPES.BLACKJACK_HIT:
-        case MESSAGE_TYPES.BLACKJACK_STAND:
-        case MESSAGE_TYPES.BLACKJACK_DOUBLE:
-        case MESSAGE_TYPES.BLACKJACK_SPLIT:
-        case MESSAGE_TYPES.BLACKJACK_SURRENDER:
-        case MESSAGE_TYPES.BLACKJACK_SET_AFK:
-        case MESSAGE_TYPES.BACCARAT_BET:
-        case MESSAGE_TYPES.BACCARAT_SET_AFK:
           return this.handleAction(player, type, data)
 
         default:
@@ -241,7 +232,11 @@ export class MessageHandler {
 
     let bot
     try {
-      bot = await getBotById(botId)
+      // Pass the WS player's userId so private bots are visible to their
+      // owner — they can sit their own private clone bots at any table.
+      // Other users' private bots resolve to null and get the same
+      // "not found" response so we don't leak that the bot exists.
+      bot = await getBotById(botId, { viewerUserId: player.userId || null })
     } catch (err) {
       console.error('[bots] lookup failed:', err.message)
       return this.error('Bot lookup failed', player)

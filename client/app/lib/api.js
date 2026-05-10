@@ -69,5 +69,11 @@ export const api = {
   getBot: (id) => apiFetch(`/api/bots/${id}`, { auth: true }),
   createBot: (data) => apiFetch('/api/bots', { method: 'POST', auth: true, body: data }),
   updateBot: (id, patch) => apiFetch(`/api/bots/${id}`, { method: 'PATCH', auth: true, body: patch }),
-  deleteBot: (id) => apiFetch(`/api/bots/${id}`, { method: 'DELETE', auth: true })
+  deleteBot: (id) => apiFetch(`/api/bots/${id}`, { method: 'DELETE', auth: true }),
+  // Player-clone bot — 5 tiers (12/25/50/75/100 hands). Preview returns
+  // every tier's state; buildMyBot accepts a tier id; recalculate replaces
+  // an existing tier's code in place.
+  previewMyBot: () => apiFetch('/api/bots/from-me/preview', { auth: true }),
+  buildMyBot: (tier = 1) => apiFetch('/api/bots/from-me', { method: 'POST', auth: true, body: { tier } }),
+  recalculateClone: (id) => apiFetch(`/api/bots/${id}/recalculate-clone`, { method: 'POST', auth: true })
 }

@@ -16,8 +16,21 @@ export const googleSansCode = localFont({
 })
 
 export const metadata = {
-  title: "Stat Study — Poker",
-  description: "Study game theory and adversarial analysis through poker",
+  metadataBase: new URL('https://pokerxyz.vercel.app'),
+  title: "pokerxyz — No-limit hold'em with bots you can program",
+  description: "Multiplayer poker tables, JavaScript bots, bot-vs-bot arenas, ELO rankings, and a full banking system. Fake chips, real strategy.",
+  openGraph: {
+    title: "pokerxyz",
+    description: "No-limit hold'em with bots you can program.",
+    url: "https://pokerxyz.vercel.app",
+    siteName: "pokerxyz",
+    type: "website",
+  },
+  twitter: {
+    card: "summary",
+    title: "pokerxyz",
+    description: "No-limit hold'em with bots you can program.",
+  },
 }
 
 export default function RootLayout({ children }) {

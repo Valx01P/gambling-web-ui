@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { formatPercent } from '../lib/pokerOdds'
 import { ProfileAvatar } from './ProfileSelector'
 import BotAvatar from './BotAvatar'
@@ -78,7 +78,7 @@ function PlayerAvatar({ player, sizeClass = 'h-[42px] w-[42px]', size = 42 }) {
   )
 }
 
-export default function SpectatorPanel({
+function SpectatorPanelImpl({
   players = [],
   oddsByPlayer,
   blindMode,
@@ -278,3 +278,10 @@ export default function SpectatorPanel({
     </div>
   )
 }
+
+// Memoized — the panel is the most expensive thing on screen during arena
+// matches (one row per seat with its own equity bar + card thumbs), and its
+// props change far less often than the parent re-renders. Prop reference
+// stability comes from useMemo/useCallback in PokerPage.
+const SpectatorPanel = memo(SpectatorPanelImpl)
+export default SpectatorPanel

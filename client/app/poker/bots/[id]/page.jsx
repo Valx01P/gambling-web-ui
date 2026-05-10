@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import HomeBackLink from '../../../components/HomeBackLink'
 import AccountMenu from '../../../components/AccountMenu'
+import ConfirmPopoverButton from '../../../components/ConfirmPopoverButton'
 import BotAvatar from '../../../components/BotAvatar'
 import JsCodeEditor, { STARTER_CODE } from '../../../components/JsCodeEditor'
 import Simulator from '../../../components/Simulator'
@@ -129,12 +130,61 @@ export default function BotDetailPage({ params }) {
 
   async function destroy() {
     if (!bot) return
+    if (bot.isClone) {
+      setSaveError('Clone bots are permanent — recalculate or edit them instead.')
+      return
+    }
     if (!confirm(`Delete bot "${bot.name}"? This cannot be undone.`)) return
     try {
       await api.deleteBot(id)
       window.location.href = '/poker/bots'
     } catch (err) {
-      setSaveError(err.message || 'Failed to delete')
+      setSaveError(err.detail || err.message || 'Failed to delete')
+    }
+  }
+
+  // Toggle public/private without leaving the page. Saves immediately —
+  // visibility isn't part of the dirty-tracking flow because it's a single
+  // boolean and the user expects the click to take effect.
+  async function setPublic(next) {
+    if (!bot) return
+    try {
+      const { bot: updated } = await api.updateBot(id, { isPublic: !!next })
+      setBot(updated)
+    } catch (err) {
+      setSaveError(err.detail || err.message || 'Failed to update visibility')
+    }
+  }
+
+  // Replace the clone's code/ELO using the user's most-recent N hands (where
+  // N is locked by the clone's tier). The bot id stays stable. The
+  // ConfirmPopoverButton wrapping each Recalculate trigger handles the
+  // open/cancel/persist-skip flow — this is just the action that runs on
+  // confirm (or directly, once the user has opted out of the prompt).
+  const [recalcBusy, setRecalcBusy] = useState(false)
+  async function recalculate() {
+    if (!bot?.isClone) return
+    setRecalcBusy(true)
+    setSaveError(null)
+    try {
+      const { bot: updated } = await api.recalculateClone(id)
+      const initialCode = updated.code && updated.code.trim() ? updated.code : STARTER_CODE
+      setBot(updated)
+      setDraftName(updated.name)
+      setDraftColor(updated.color)
+      setDraftCode(initialCode)
+      baselineRef.current = {
+        name: updated.name,
+        color: updated.color,
+        textColor: updated.textColor || 'auto',
+        code: initialCode
+      }
+      setSaveOk(true)
+      setTimeout(() => setSaveOk(false), 2000)
+    } catch (err) {
+      setSaveError(err.detail || err.message || 'Failed to recalculate')
+    } finally {
+      setRecalcBusy(false)
     }
   }
 
@@ -219,6 +269,36 @@ export default function BotDetailPage({ params }) {
               <StatTile label="Wins" value={bot.stats.handsWon} />
               <StatTile label="Showdowns" value={bot.stats.showdownsPlayed} />
             </div>
+
+            {/* Clone-only banner — surfaces "Recalculate from your last N hands"
+                up top so users don't have to dig into Settings to find it. */}
+            {isMine && bot.isClone && (
+              <div className="w-full rounded-xl border border-amber-300/50 bg-amber-500/8 p-3 shadow-sm">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-200">
+                      Clone v{bot.cloneTier} · {bot.cloneHandsUsed}-hand window
+                    </div>
+                    <div className="mt-0.5 text-xs font-bold text-zinc-200">
+                      Update this clone with your latest play style — re-derives code, color, and starting ELO from your most recent <span className="text-amber-200">{bot.cloneHandsUsed}</span> hands.
+                    </div>
+                    <div className="mt-1 text-[10px] font-bold text-zinc-400">
+                      Your edits to the code will be overwritten. The bot id stays the same so any saved references keep working.
+                    </div>
+                  </div>
+                  <ConfirmPopoverButton
+                    triggerLabel={recalcBusy ? 'Recalculating…' : `Recalculate from last ${bot.cloneHandsUsed} hands`}
+                    triggerClassName="shrink-0 rounded-md border border-amber-400/60 bg-amber-500/20 px-4 py-2 text-xs font-black uppercase tracking-widest text-amber-100 transition-colors hover:bg-amber-500/30 disabled:opacity-50"
+                    description={`Re-derives this clone's code, color, and ELO from your last ${bot.cloneHandsUsed} hands. Overwrites your code edits; bot id stays the same.`}
+                    confirmLabel="Recalculate"
+                    align="right"
+                    persistKey="pokerxyz:confirm:clone-recalculate:skip"
+                    busy={recalcBusy}
+                    onConfirm={recalculate}
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="grid w-full grid-cols-2 gap-2 bg-zinc-800/80 p-2 rounded-xl border border-zinc-600/50 shadow-md">
               {[
@@ -345,16 +425,88 @@ export default function BotDetailPage({ params }) {
                     </div>
                   </div>
 
-                  <div className="rounded-xl border border-red-500/50 bg-red-500/10 p-3 shadow-sm">
-                    <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-red-200">Danger zone</div>
-                    <button
-                      type="button"
-                      onClick={destroy}
-                      className="rounded-md border border-red-500/60 bg-red-500/25 px-3 py-1.5 text-xs font-bold text-red-100 hover:bg-red-500/40"
-                    >
-                      Delete bot
-                    </button>
+                  {/* Visibility toggle — clones default private, manual bots
+                      default public. Either can be flipped freely. */}
+                  <div className="rounded-xl border border-zinc-600/50 bg-zinc-800/95 p-3 shadow-sm">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Visibility</div>
+                        <div className="text-[11px] font-bold text-zinc-400">
+                          {bot.isPublic
+                            ? 'Public — listed in the public roster, anyone can sit it.'
+                            : 'Private — only you can see this bot or seat it.'}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPublic(!bot.isPublic)}
+                        className={`shrink-0 rounded-md border px-3 py-1.5 text-[11px] font-black uppercase tracking-widest transition-colors ${
+                          bot.isPublic
+                            ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25'
+                            : 'border-zinc-500/60 bg-zinc-700 text-white hover:bg-zinc-600'
+                        }`}
+                      >
+                        {bot.isPublic ? 'Public ✓' : 'Make Public'}
+                      </button>
+                    </div>
+                    {bot.isPublic && (
+                      <button
+                        type="button"
+                        onClick={() => setPublic(false)}
+                        className="text-[10px] font-bold text-zinc-400 hover:text-white"
+                      >
+                        Make private
+                      </button>
+                    )}
                   </div>
+
+                  {/* Clones: recalculate from last N hands. Tier-locked sample
+                      size — recalc just runs the generator again with fresh
+                      data. The bot id stays stable so any saved references
+                      keep pointing at the same bot. */}
+                  {bot.isClone && (
+                    <div className="rounded-xl border border-amber-300/50 bg-amber-500/5 p-3 shadow-sm">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div>
+                          <div className="text-[10px] font-black uppercase tracking-widest text-amber-200">
+                            Clone v{bot.cloneTier} · {bot.cloneHandsUsed} hands
+                          </div>
+                          <div className="text-[11px] font-bold text-zinc-300">
+                            Re-derives the code, color, and starting ELO from your most recent {bot.cloneHandsUsed} hands. Your edits will be overwritten.
+                          </div>
+                        </div>
+                        <ConfirmPopoverButton
+                          triggerLabel={recalcBusy ? 'Recalculating…' : 'Recalculate'}
+                          triggerClassName="shrink-0 rounded-md border border-amber-400/60 bg-amber-500/20 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-amber-100 hover:bg-amber-500/30 disabled:opacity-50"
+                          description={`Re-derives this clone's code, color, and ELO from your last ${bot.cloneHandsUsed} hands. Overwrites your code edits; bot id stays the same.`}
+                          confirmLabel="Recalculate"
+                          align="right"
+                          persistKey="pokerxyz:confirm:clone-recalculate:skip"
+                          busy={recalcBusy}
+                          onConfirm={recalculate}
+                        />
+                      </div>
+                      <div className="mt-2 rounded-md border border-zinc-700/70 bg-zinc-950/40 px-2 py-1 text-[10px] font-bold text-zinc-400">
+                        Clones can't be deleted — they're permanent slots tied to your play data.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Danger zone — only renders for non-clone bots. Clones
+                      are gated server-side too, but hiding the button keeps
+                      the UI honest. */}
+                  {!bot.isClone && (
+                    <div className="rounded-xl border border-red-500/50 bg-red-500/10 p-3 shadow-sm">
+                      <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-red-200">Danger zone</div>
+                      <button
+                        type="button"
+                        onClick={destroy}
+                        className="rounded-md border border-red-500/60 bg-red-500/25 px-3 py-1.5 text-xs font-bold text-red-100 hover:bg-red-500/40"
+                      >
+                        Delete bot
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="w-full rounded-lg border border-zinc-700/70 bg-zinc-950/35 px-3 py-6 text-center text-xs font-bold text-zinc-500">
@@ -365,6 +517,7 @@ export default function BotDetailPage({ params }) {
           </>
         )}
       </div>
+
     </div>
   )
 }

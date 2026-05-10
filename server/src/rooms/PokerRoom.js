@@ -11,21 +11,82 @@ import {
 } from '../config/constants.js'
 import { BotPlayer } from '../bots/runtime/BotPlayer.js'
 import { recordHandResult } from '../bots/botRepository.js'
+import {
+  recordHumanHand,
+  markBotUnlocked,
+  tierCrossedByHand
+} from '../users/playHistoryRepository.js'
+import {
+  performanceScore,
+  eloDelta,
+  isBluffWin,
+  STARTING_RATING,
+  RATING_FLOOR
+} from '../bots/runtime/eloEngine.js'
+import { preflopHandScore } from '../bots/runtime/equity.js'
 
-const HUMAN_DEFAULT_RATING = 1200
-const ELO_K = 24
-
-function eloDelta(botRating, opponentRatings, won) {
-  if (opponentRatings.length === 0) return 0
-  const avg = opponentRatings.reduce((a, b) => a + b, 0) / opponentRatings.length
-  const expected = 1 / (1 + Math.pow(10, (avg - botRating) / 400))
-  const actual = won ? 1 : 0
-  return Math.round(ELO_K * (actual - expected))
-}
+// Default rating to assume for any seat that isn't a bot when calculating
+// per-hand ELO updates. Aligned with the new STARTING_RATING so a bot
+// playing humans isn't matched against a phantom 1200 elo.
+const HUMAN_DEFAULT_RATING = STARTING_RATING
 
 const TABLE_EMOTES = new Set(['angry', 'laugh', 'sad', 'shush', 'sunglasses', 'eggplant'])
 const BIG_YAHU_EMOTES = new Set(['star_of_david', 'israel_flag'])
-const MAX_BOTS_PER_PLAYER = 3
+// Tables seat 5. With one human there's room for 4 bots before the table is
+// full. Anything tighter just gates a feature for no reason.
+const MAX_BOTS_PER_PLAYER = 4
+
+// --- Helpers used by _recordHumanHandResults ------------------------------
+
+// Coarse positional label from the seat order. Six-handed positions are an
+// abstraction; with 2-5 seats we map down to btn / sb / bb / mp / utg-ish.
+function positionLabel(room, playerId) {
+  const players = room.game.players
+  const idx = players.findIndex(p => p.id === playerId)
+  if (idx === -1) return 'middle'
+  const total = players.length
+  const dealer = room.game.dealerIndex
+  if (total === 2) return idx === dealer ? 'btn' : 'bb'
+  const offset = (idx - dealer + total) % total
+  if (offset === 0) return 'btn'
+  if (offset === 1) return 'sb'
+  if (offset === 2) return 'bb'
+  if (offset === total - 1) return 'co'
+  return 'mp'
+}
+
+// Compact picture of how aggressive the opponents were across the hand.
+// We don't store per-opponent action history — the generator only needs an
+// aggregate "did we face heat" signal.
+function summarizeOpponentAggression(allActions, selfId) {
+  let pfRaises = 0
+  let postRaises = 0
+  let maxBet = 0
+  for (const a of allActions) {
+    if (a.playerId === selfId) continue
+    if (a.action === 'raise' || a.action === 'all_in') {
+      if (a.phase === 'preflop') pfRaises += 1
+      else postRaises += 1
+      if (a.amount > maxBet) maxBet = a.amount
+    }
+  }
+  return { pfR: pfRaises, plR: postRaises, mxB: maxBet }
+}
+
+// A reduced form of eloEngine.performanceScore — we don't have all the
+// signals (no bot stats, no vpipRate yet), so we keep just the outcome +
+// chip-magnitude + bluff axes. Used to seed the player-clone bot's ELO.
+function computeHumanPerformanceScore({ won, chipsDelta, bigBlind, foldedPreflop, voluntarilyIn, wentToShowdown }) {
+  let s
+  if (foldedPreflop && !voluntarilyIn) s = 0.50
+  else if (won) s = wentToShowdown ? 1.0 : 0.85
+  else if (voluntarilyIn) s = 0.30
+  else s = 0.45
+  const bb = Math.max(1, bigBlind || 10)
+  const norm = Math.max(-1, Math.min(1, (chipsDelta || 0) / (50 * bb)))
+  s += 0.20 * norm
+  return Math.max(0, Math.min(1, s))
+}
 
 export class PokerRoom {
   constructor(roomId, isPrivate = false, options = {}) {
@@ -67,6 +128,11 @@ export class PokerRoom {
         if (msg?.type === 'showdown') {
           this._recordBotHandResults(msg.data).catch(err =>
             console.error('[bot-elo] hand result update failed:', err.message)
+          )
+          // Mirror for signed-in humans — drives the player-clone bot
+          // generator and the 12-hand achievement toast.
+          this._recordHumanHandResults(msg.data).catch(err =>
+            console.error('[user-play] hand result update failed:', err.message)
           )
         }
       },
@@ -492,24 +558,81 @@ export class PokerRoom {
     const winnerIds = new Set((broadcastData?.winners || []).map(w => w.playerId))
     const allSeats = [...this.players.values()]
     const ratingFor = (p) => p.isBot ? (p.bot?.elo ?? HUMAN_DEFAULT_RATING) : HUMAN_DEFAULT_RATING
+    const bigBlind = this.game.bigBlind || 10
 
     for (const seat of allSeats) {
       if (!seat.isBot || !seat.bot?.id) continue
 
-      const opponents = allSeats.filter(s => s.id !== seat.id).map(ratingFor)
+      // Outcome basics from the recorded hand summary.
+      const opponentRatings = allSeats.filter(s => s.id !== seat.id).map(ratingFor)
       const won = winnerIds.has(seat.id)
-      const change = eloDelta(seat.bot.elo ?? HUMAN_DEFAULT_RATING, opponents, won)
-
       const chipsDelta = handSummary.profitsByPlayer?.[seat.id] ?? 0
       const seatActions = handSummary.actionsByPlayer?.[seat.id] ?? []
-      const preflop = seatActions.filter(a => a.phase === 'preflop')
-      const foldedPreflop = preflop.some(a => a.action === 'fold')
-      const voluntarilyIn = preflop.some(a => a.action === 'call' || a.action === 'raise' || a.action === 'all_in')
-      const wentToShowdown = handSummary.type === 'showdown' && Array.isArray(handSummary.cards?.[seat.id])
+      const preflopActions = seatActions.filter(a => a.phase === GAME_PHASES.PREFLOP)
+      const postflopActions = seatActions.filter(a => a.phase !== GAME_PHASES.PREFLOP)
+      const foldedPreflop = preflopActions.some(a => a.action === 'fold')
+      const voluntarilyIn = seatActions.some(a => a.action === 'call' || a.action === 'raise' || a.action === 'all_in')
+      const postflopRaises = postflopActions.filter(a => a.action === 'raise' || a.action === 'all_in').length
+      const wentToShowdown = handSummary.type === 'showdown' &&
+        !this.game.foldedPlayers.has(seat.id) &&
+        !this.game.removedPlayers.has(seat.id)
+
+      // The hole cards are still on game.playerHands at this point — the
+      // post-showdown 15s reset hasn't fired yet. Used for bluff-win detection
+      // and stored on the audit row for offline recompute.
+      const holeCards = (this.game.playerHands.get(seat.id) || []).map(c => ({ ...c }))
+      const preflopScore = holeCards.length === 2
+        ? preflopHandScore(holeCards[0], holeCards[1])
+        : null
+      const bluffWin = isBluffWin({ won, wentToShowdown, voluntarilyIn, postflopRaises, holeCards })
+
+      // Lifetime style/variety stats. Driven from the running counters on
+      // bots; we add this hand's contribution before computing the rate so
+      // a bot earns the bonus immediately.
+      const stats = seat.bot.stats || {}
+      const liveHandsPlayed = (stats.handsPlayed || 0) + 1
+      const liveHandsVoluntary = (stats.handsVoluntary || 0) + (voluntarilyIn ? 1 : 0)
+      const liveBluffWins = (stats.bluffWins || 0) + (bluffWin ? 1 : 0)
+      const liveFoldOutWins = liveBluffWins + ((stats.handsWon || 0) - (stats.showdownsWon || 0)) // approx
+      const vpipRate = liveHandsPlayed > 0 ? liveHandsVoluntary / liveHandsPlayed : 0
+      const bluffSuccessRate = liveFoldOutWins > 0 ? liveBluffWins / liveFoldOutWins : 0
+
+      const score = performanceScore({
+        won,
+        chipsDelta,
+        bigBlind,
+        foldedPreflop,
+        voluntarilyIn,
+        wentToShowdown,
+        bluffWin,
+        postflopRaises,
+        vpipRate,
+        bluffSuccessRate
+      })
+      const change = eloDelta({
+        rating: seat.bot.elo ?? HUMAN_DEFAULT_RATING,
+        opponentRatings,
+        score,
+        handsPlayed: liveHandsPlayed
+      })
 
       // Update in-memory rating immediately so subsequent hands at this same
-      // table compute against the bot's new strength.
-      if (typeof seat.bot.elo === 'number') seat.bot.elo = Math.max(100, seat.bot.elo + change)
+      // table compute against the bot's new strength. Floor at the engine's
+      // RATING_FLOOR so we don't drop below the new minimum.
+      if (typeof seat.bot.elo === 'number') {
+        seat.bot.elo = Math.max(RATING_FLOOR, seat.bot.elo + change)
+      }
+      // Also keep the in-memory stats in sync — next hand's vpipRate /
+      // bluffSuccessRate read from here.
+      seat.bot.stats = {
+        ...stats,
+        handsPlayed: liveHandsPlayed,
+        handsVoluntary: liveHandsVoluntary,
+        handsWon: (stats.handsWon || 0) + (won ? 1 : 0),
+        showdownsPlayed: (stats.showdownsPlayed || 0) + (wentToShowdown ? 1 : 0),
+        showdownsWon: (stats.showdownsWon || 0) + (wentToShowdown && won ? 1 : 0),
+        bluffWins: liveBluffWins
+      }
 
       try {
         await recordHandResult({
@@ -520,10 +643,154 @@ export class PokerRoom {
           won,
           foldedPreflop,
           voluntarilyIn,
-          eloChange: change
+          eloChange: change,
+          bluffWin,
+          preflopScore,
+          performanceScore: score
         })
       } catch (err) {
         console.error(`[bot-elo] persist failed for ${seat.bot.name}:`, err.message)
+      }
+    }
+  }
+
+  // Same idea as _recordBotHandResults but for signed-in humans. Captures a
+  // compressed hand record + bumps user_play_stats so the player-clone bot
+  // generator has data to learn from. Crossing the BOT_UNLOCK_THRESHOLD
+  // emits a one-shot ACHIEVEMENT message to that user's WS.
+  async _recordHumanHandResults(broadcastData) {
+    const handSummary = this.game.handHistory[this.game.handHistory.length - 1]
+    if (!handSummary) return
+    const winnerIds = new Set((broadcastData?.winners || []).map(w => w.playerId))
+    const bigBlind = this.game.bigBlind || 10
+
+    for (const seat of this.players.values()) {
+      // Bots have their own recording path; we only handle signed-in humans.
+      if (seat.isBot) continue
+      if (!seat.userId) continue
+
+      const seatActions = handSummary.actionsByPlayer?.[seat.id] ?? []
+      const preflopActions = seatActions.filter(a => a.phase === GAME_PHASES.PREFLOP)
+      const postflopActions = seatActions.filter(a => a.phase !== GAME_PHASES.PREFLOP)
+      const foldedPreflop = preflopActions.some(a => a.action === 'fold')
+      const voluntarilyIn = seatActions.some(a => a.action === 'call' || a.action === 'raise' || a.action === 'all_in')
+      const won = winnerIds.has(seat.id)
+      const wentToShowdown = handSummary.type === 'showdown' &&
+        !this.game.foldedPlayers.has(seat.id) &&
+        !this.game.removedPlayers.has(seat.id)
+      const chipsDelta = handSummary.profitsByPlayer?.[seat.id] ?? 0
+
+      // --- Action-derived counters ----------------------------------------
+      const preflopRaises = preflopActions.filter(a => a.action === 'raise' || a.action === 'all_in')
+      const isOpen = preflopRaises.length > 0 && (handSummary.actions || [])
+        .filter(a => a.phase === GAME_PHASES.PREFLOP && (a.action === 'raise' || a.action === 'all_in'))
+        .findIndex(a => a.playerId === seat.id) === 0
+      const isThreeBet = preflopRaises.length > 0 && !isOpen
+      const preflopCalls = preflopActions.filter(a => a.action === 'call').length
+      const postflopRaises = postflopActions.filter(a => a.action === 'raise' || a.action === 'all_in').length
+      const postflopBetsCount = postflopActions.filter(a => a.action === 'raise' || a.action === 'all_in').length
+      const postflopCallsCount = postflopActions.filter(a => a.action === 'call').length
+
+      // c-bet detection: was the preflop aggressor and bet/raised on the flop.
+      const myFirstFlopAction = postflopActions.find(a => a.phase === GAME_PHASES.FLOP)
+      const wasPreflopAggressor = preflopRaises.length > 0
+      const cBetAttempted = wasPreflopAggressor &&
+        (myFirstFlopAction?.action === 'raise' || myFirstFlopAction?.action === 'all_in')
+      const cBetWon = cBetAttempted && won
+
+      // Average open size in big blinds — used so the generated bot's open
+      // size matches the user's tendency.
+      const firstOpen = preflopRaises[0]
+      const openSizeBB = firstOpen ? Math.max(2, firstOpen.amount / bigBlind) : 0
+
+      // --- Hand snapshot (compressed) -------------------------------------
+      // We deliberately strip suit information for non-showdown opponents
+      // and don't store anyone else's hole cards. The user's own cards are
+      // included so the generator has hand-strength context.
+      const compressed = {
+        v: 1,
+        bb: bigBlind,
+        pos: positionLabel(this, seat.id),
+        pot: handSummary.pot,
+        d: chipsDelta,
+        w: won ? 1 : 0,
+        sd: wentToShowdown ? 1 : 0,
+        vp: voluntarilyIn ? 1 : 0,
+        o: this.game.players.length - 1,
+        hc: (this.game.playerHands.get(seat.id) || []).map(c => `${c.rank}${c.suit?.[0] || ''}`),
+        bd: (handSummary.communityCards || []).map(c => `${c.rank}${c.suit?.[0] || ''}`),
+        a: seatActions.map(a => [a.phase[0], a.action[0], a.amount || 0]),
+        oa: summarizeOpponentAggression(handSummary.actions || [], seat.id)
+      }
+
+      // --- Performance score for ELO seeding ------------------------------
+      // Ratings get derived from rolling avg of this number — same engine
+      // the bot-rating system uses. Imported lazily inside the function so
+      // the file doesn't pull eloEngine at module top.
+      const performanceScore = computeHumanPerformanceScore({
+        won,
+        chipsDelta,
+        bigBlind,
+        foldedPreflop,
+        voluntarilyIn,
+        wentToShowdown
+      })
+
+      try {
+        const stats = await recordHumanHand({
+          userId: seat.userId,
+          delta: {
+            handsVoluntary: voluntarilyIn ? 1 : 0,
+            handsWon: won ? 1 : 0,
+            showdownsSeen: wentToShowdown ? 1 : 0,
+            showdownsWon: (wentToShowdown && won) ? 1 : 0,
+            bluffWins: (won && !wentToShowdown && voluntarilyIn && postflopRaises >= 1) ? 1 : 0,
+            preflopOpens: isOpen ? 1 : 0,
+            preflopThreeBets: isThreeBet ? 1 : 0,
+            preflopCalls: preflopCalls > 0 ? 1 : 0,
+            postflopBets: postflopBetsCount > 0 ? 1 : 0,
+            postflopRaises,
+            postflopCalls: postflopCallsCount,
+            cBetsAttempted: cBetAttempted ? 1 : 0,
+            cBetsWon: cBetWon ? 1 : 0,
+            chipsDelta,
+            bigBlindsPlayed: bigBlind > 0 ? Math.round(handSummary.pot / bigBlind) : 0,
+            openSizeBB,
+            performanceScore
+          },
+          compressed
+        })
+
+        // Tier crossover detection — fires exactly when *this hand* pushed
+        // the user from below the tier's hand-count threshold to at-or-above.
+        // The 5 tiers (12 / 25 / 50 / 75 / 100) each get their own one-shot
+        // toast. The first time also stamps `bot_unlocked_at` so legacy
+        // checks still work.
+        if (stats) {
+          const previousHandsSeated = stats.handsSeated - 1
+          const tierJustCrossed = tierCrossedByHand(previousHandsSeated, stats.handsSeated)
+          if (tierJustCrossed && typeof seat.send === 'function') {
+            // First crossover ever: stamp the unlock timestamp.
+            if (tierJustCrossed === 1 && !stats.botUnlockedAt) {
+              await markBotUnlocked(seat.userId)
+            }
+            const handsAtThisTier = [12, 25, 50, 75, 100][tierJustCrossed - 1]
+            const firstName = (seat.username || 'Your').split(/\s+/)[0]
+            seat.send({
+              type: MESSAGE_TYPES.ACHIEVEMENT,
+              data: {
+                key: `player_clone_tier_${tierJustCrossed}`,
+                tier: tierJustCrossed,
+                title: `${firstName} v${tierJustCrossed} unlocked`,
+                body: `${handsAtThisTier} hands of your play data is enough to build a more accurate version of your clone bot. Build it now or play more for the next tier.`,
+                cta: `Build v${tierJustCrossed}`,
+                ctaHref: `/poker/bots?build=tier${tierJustCrossed}`
+              }
+            })
+          }
+        }
+      } catch (err) {
+        console.error(`[user-play] persist failed for ${seat.username}:`, err.message)
       }
     }
   }

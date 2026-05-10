@@ -9,6 +9,7 @@ import ProfileSelector, { getProfileAvatar, ProfileAvatar } from '../components/
 import HomeBackLink from '../components/HomeBackLink'
 import AccountMenu from '../components/AccountMenu'
 import AuthGateModal from '../components/AuthGateModal'
+import AchievementToast from '../components/AchievementToast'
 import BotAvatar from '../components/BotAvatar'
 import { useAuth } from '../lib/useAuth'
 import { api } from '../lib/api'
@@ -27,6 +28,10 @@ import Link from 'next/link'
 import StatsPanel from '../components/StatsPanel'
 import SpectatorPanel from '../components/SpectatorPanel'
 import { buildPokerStatistics, buildSpectatorStatistics, evaluateHand, formatCard, formatPercent, getHandName } from '../lib/pokerOdds'
+// Seat geometry lives in ./lib/seatLayout — shared by spectator view, the
+// table render, and the chip-throw animation. Pure data + helpers, no state.
+import { SEATS, getBetPosClasses, getChipThrowOrigin } from './lib/seatLayout'
+import LobbyView from './components/LobbyView'
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001'
 const USERNAME_STORAGE_KEY = 'poker_username'
@@ -222,36 +227,6 @@ function PhaseLabel({ phase }) {
   )
 }
 
-const SEATS = [
-  { top: '100%', left: '50%' }, // 0: Bottom Center (Me)
-  { top: '65%', left: '5%' },   // 1: Bottom Left
-  { top: '15%', left: '20%' },  // 2: Top Left (Pushed down to avoid header overlap)
-  { top: '15%', left: '80%' },  // 3: Top Right (Pushed down to avoid header overlap)
-  { top: '65%', left: '95%' },  // 4: Bottom Right
-]
-
-const getBetPosClasses = (posIndex) => {
-  switch(posIndex) {
-    case 0: return 'bottom-[calc(100%+0.25rem)] lg:bottom-[105%] left-1/2 -translate-x-1/2'
-    case 1: case 2: return 'left-[105%] sm:left-[110%] top-1/2 -translate-y-1/2'
-    case 3: case 4: return 'right-[105%] sm:right-[110%] top-1/2 -translate-y-1/2'
-    default: return ''
-  }
-}
-
-const getChipThrowOrigin = (posIndex) => {
-  switch(posIndex) {
-    case 1:
-    case 2:
-      return 'left'
-    case 3:
-    case 4:
-      return 'right'
-    case 0:
-    default:
-      return 'bottom'
-  }
-}
 
 function ArenaStartingChipsInput({ value, onCommit }) {
   const [draft, setDraft] = useState(String(value ?? 1000))
@@ -414,6 +389,10 @@ export default function PokerPage() {
   const [contestMode, setContestMode] = useState({ enabled: false, currentLevelIndex: 0, handsUntilNextLevel: null, currentLevel: null, nextLevel: null, handsPerLevel: 10 })
   const [isArena, setIsArena] = useState(false)
   const [arenaRunning, setArenaRunning] = useState(false)
+  // Live ref of arenaRunning so stable useCallbacks can read the latest value
+  // without taking a dependency on it (which would invalidate React.memo).
+  const arenaRunningRef = useRef(false)
+  useEffect(() => { arenaRunningRef.current = arenaRunning }, [arenaRunning])
   const [arenaStartingChips, setArenaStartingChips] = useState(1000)
   const [pageZoom, setPageZoom] = useState(100)
   const [myBotsExpanded, setMyBotsExpanded] = useState(false)
@@ -424,6 +403,9 @@ export default function PokerPage() {
   const [joinMode, setJoinMode] = useState('general')
   // String message shown in the auth-gate modal (Sign in to ...). null hides.
   const [authGateMessage, setAuthGateMessage] = useState(null)
+  // Most recent achievement payload from the server. Renders as a toast
+  // overlay; null = hidden. The toast handles its own auto-dismiss timer.
+  const [achievement, setAchievement] = useState(null)
   const [inputCode, setInputCode] = useState('')
   const [isPrivate, setIsPrivate] = useState(false)
   const [inviteCode, setInviteCode] = useState(null)
@@ -731,6 +713,12 @@ export default function PokerPage() {
         case 'system_message':
           if (msg.data.message) addSys(msg.data.message)
           break
+        case 'achievement':
+          // Server-driven milestone toast. Currently the only one is the
+          // 12-hand player-clone unlock. Future achievements can dispatch
+          // through the same channel.
+          setAchievement(msg.data || null)
+          break
         case 'showdown':
           if (msg.data) {
             setShowdownData(msg.data)
@@ -860,14 +848,6 @@ export default function PokerPage() {
     setChatInput('')
   }
   
-  function getOrderedPlayers() {
-    if (!gameState?.players) return []
-    const ps = gameState.players
-    const mi = ps.findIndex((p) => p.id === playerId)
-    if (mi <= 0) return ps
-    return [...ps.slice(mi), ...ps.slice(0, mi)]
-  }
-  
   function getOriginalIndex(player) {
     return gameState?.players?.findIndex((p) => p.id === player.id) ?? -1
   }
@@ -878,7 +858,15 @@ export default function PokerPage() {
     addSys(`Invite link copied to clipboard!`);
   }
 
-  const orderedPlayers = getOrderedPlayers()
+  // Memoized so React.memo'd children (SpectatorPanel, etc.) see a stable
+  // array reference between renders that don't change the player list.
+  const orderedPlayers = useMemo(() => {
+    if (!gameState?.players) return []
+    const ps = gameState.players
+    const mi = ps.findIndex((p) => p.id === playerId)
+    if (mi <= 0) return ps
+    return [...ps.slice(mi), ...ps.slice(0, mi)]
+  }, [gameState?.players, playerId])
   const myPlayer = gameState?.players?.find((p) => p.id === playerId)
   const isMyTurn = gameState?.activePlayerId === playerId
   const myBet = myPlayer?.bet || 0
@@ -1189,7 +1177,9 @@ export default function PokerPage() {
     return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [statsMode, statsExpansion])
 
-  function toggleSpectatorPlayer(playerIdToToggle) {
+  // useCallback so the SpectatorPanel's React.memo can actually skip renders
+  // when the parent re-renders for unrelated reasons (chat msg, sys msg, etc).
+  const toggleSpectatorPlayer = useCallback((playerIdToToggle) => {
     // Toggling a single player turns off "reveal all" first, so the explicit
     // pick takes precedence over the master switch.
     setSpectatorRevealAll(false)
@@ -1199,9 +1189,9 @@ export default function PokerPage() {
       else next.add(playerIdToToggle)
       return next
     })
-  }
+  }, [])
 
-  function toggleSpectatorRevealAll() {
+  const toggleSpectatorRevealAll = useCallback(() => {
     setSpectatorRevealAll(prev => {
       const next = !prev
       // Clear any per-player picks when flipping to "show all" so the UI
@@ -1209,7 +1199,20 @@ export default function PokerPage() {
       if (next) setSpectatorVisibleIdSet(new Set())
       return next
     })
-  }
+  }, [])
+
+  const toggleSpectatorBlind = useCallback(() => {
+    setSpectatorBlindMode(prev => !prev)
+    setSpectatorHoveredPlayerId(null)
+  }, [])
+
+  // Stable handler for the spectator-panel pause/start button. Reads the live
+  // arenaRunning via a ref so this callback's identity never flips and
+  // SpectatorPanel's memo can skip renders.
+  const toggleArenaRunning = useCallback(() => {
+    send('poker_arena_set_running', { running: !arenaRunningRef.current })
+  }, [])
+
 
   const isWinningCard = (card, specificPlayerId = null) => {
     if (phase !== 'showdown' || !showdownData?.winners) return false
@@ -1226,167 +1229,23 @@ export default function PokerPage() {
 
   if (!joined) {
     return (
-      <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4">
-        <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
-          <HomeBackLink />
-          <Link
-            href="/poker/bots"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
-          >
-            Bots
-          </Link>
-          <AccountMenu />
-        </div>
-        <div className="flex flex-col items-center gap-6 w-full max-w-[620px]">
-          <div className={`text-sm sm:text-base px-6 py-2.5 rounded-full font-bold shadow-sm ${connected ? 'bg-emerald-800/80 text-emerald-100 border border-emerald-600/50' : 'bg-red-800/80 text-red-100 border border-red-600/50'}`}>
-            {connected ? '● Connected' : '○ Connecting...'}
-          </div>
-
-          <div className="grid grid-cols-3 w-full bg-zinc-800/80 p-2 gap-2 rounded-xl border border-zinc-600/50 shadow-md">
-             <button onClick={() => setJoinMode('general')} className={`min-h-12 px-3 py-3 rounded-lg text-sm font-bold leading-tight transition-all ${joinMode === 'general' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>General</button>
-             <button onClick={() => setJoinMode('private')} className={`min-h-12 px-3 py-3 rounded-lg text-sm font-bold leading-tight transition-all ${joinMode === 'private' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>Private</button>
-             <button onClick={() => setJoinMode('spectate')} className={`min-h-12 px-3 py-3 rounded-lg text-sm font-bold leading-tight transition-all ${joinMode === 'spectate' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>Spectate</button>
-          </div>
-
-          {(joinMode === 'general' || joinMode === 'private') && (
-            <ProfileSelector value={selectedAvatarId} onChange={selectAvatar} />
-          )}
-
-          {joinMode !== 'spectate' && (
-            <input
-              className="w-full bg-zinc-800/90 border border-zinc-500/50 rounded-xl px-5 py-4 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-lg"
-              placeholder="Username (optional)"
-              value={username}
-              onChange={e => persistUsername(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && connected && joinMode === 'general' && send('join_game', joinPayload('general'))}
-            />
-          )}
-
-          {joinMode === 'general' && (
-            <button
-              onClick={() => send('join_game', joinPayload('general'))}
-              disabled={!connected}
-              className="w-full bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 py-4 rounded-xl text-base font-bold text-white transition-colors border border-zinc-500/50 shadow-lg"
-            >
-              Find Table
-            </button>
-          )}
-
-          {joinMode === 'private' && (
-            <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/90 p-4 shadow-lg space-y-4">
-              <div>
-                <div className="mb-2 text-sm font-black text-white">Create a private room</div>
-                <button
-                  type="button"
-                  onClick={() => send('join_game', joinPayload('create_private'))}
-                  disabled={!connected}
-                  className="w-full rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 py-3 text-sm font-black text-white border border-zinc-500/50"
-                >
-                  Create Private Room
-                </button>
-              </div>
-              <div className="border-t border-zinc-700/70 pt-4">
-                <div className="mb-2 text-sm font-black text-white">Have a code? Join one</div>
-                <input
-                  className="w-full bg-zinc-900/90 border border-zinc-500/50 rounded-lg px-4 py-3 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center uppercase tracking-widest font-black"
-                  placeholder="5-LETTER CODE"
-                  maxLength={5}
-                  value={inputCode}
-                  onChange={e => setInputCode(e.target.value.toUpperCase())}
-                  onKeyDown={e => e.key === 'Enter' && connected && inputCode.length === 5 && send('join_game', joinPayload('join_private', { code: inputCode }))}
-                />
-                <button
-                  type="button"
-                  onClick={() => send('join_game', joinPayload('join_private', { code: inputCode }))}
-                  disabled={!connected || inputCode.length !== 5}
-                  className="mt-2 w-full rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 py-3 text-sm font-black text-white border border-zinc-500/50"
-                >
-                  Join Private Room
-                </button>
-              </div>
-            </div>
-          )}
-
-          {joinMode === 'spectate' && (
-            <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/90 p-3 shadow-lg">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-sm font-black text-white">Live Tables & Arenas</div>
-                  <div className="text-xs font-bold text-zinc-500">Watch any open table or bot arena.</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!authUser) { setAuthGateMessage('Sign in to create a Bot Arena.'); return }
-                      send('join_game', joinPayload('bot_arena'))
-                    }}
-                    disabled={!connected}
-                    className="rounded-md border border-emerald-500/50 bg-emerald-600/20 px-3 py-1.5 text-xs font-black text-emerald-100 transition-colors hover:bg-emerald-600/30 disabled:opacity-50"
-                    title={authUser ? 'Create a fresh bot-vs-bot arena' : 'Sign in to create a Bot Arena'}
-                  >
-                    + Bot Arena
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => send('list_tables')}
-                    disabled={!connected}
-                    className="rounded-md border border-zinc-500/50 bg-zinc-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-zinc-600 disabled:opacity-50"
-                  >
-                    Refresh
-                  </button>
-                </div>
-              </div>
-
-              <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
-                {tableList.map((table) => (
-                  <div key={table.roomId} className="rounded-lg border border-zinc-700/70 bg-zinc-950/35 px-3 py-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-black text-white">
-                          {table.isArena
-                            ? `Arena ${table.roomId.replace('arena_', '#')}`
-                            : `Table ${table.roomId.replace('poker_', '#')}`}
-                        </div>
-                        <div className="truncate text-[10px] font-bold text-zinc-500">
-                          {table.isArena
-                            ? `BOT ARENA · ${table.arenaRunning ? 'LIVE' : 'PAUSED'} · ${table.playerCount} bots · ${table.spectatorCount} watching`
-                            : `${table.phase?.toUpperCase()} - ${table.playerCount}/${table.maxPlayers} seated - ${table.spectatorCount} watching`}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => send('join_game', joinPayload('spectate', { roomId: table.roomId }))}
-                        disabled={!connected}
-                        className={`shrink-0 rounded-md px-3 py-2 text-xs font-black transition-colors disabled:opacity-50 ${table.isArena ? 'border border-emerald-400/50 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25' : 'border border-amber-400/50 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25'}`}
-                      >
-                        Watch
-                      </button>
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {table.players.slice(0, 5).map((player) => (
-                        <span key={player.id} className="rounded-md bg-zinc-800 px-2 py-1 text-[10px] font-bold text-zinc-300">
-                          {player.username}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-                {tableList.length === 0 && (
-                  <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/35 px-3 py-6 text-center text-xs font-bold text-zinc-500">
-                    No live tables or arenas yet.
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-        <AuthGateModal
-          open={!!authGateMessage}
-          message={authGateMessage}
-          onClose={() => setAuthGateMessage(null)}
-        />
-      </div>
+      <LobbyView
+        connected={connected}
+        joinMode={joinMode}
+        setJoinMode={setJoinMode}
+        inputCode={inputCode}
+        setInputCode={setInputCode}
+        username={username}
+        persistUsername={persistUsername}
+        selectedAvatarId={selectedAvatarId}
+        selectAvatar={selectAvatar}
+        tableList={tableList}
+        authUser={authUser}
+        authGateMessage={authGateMessage}
+        setAuthGateMessage={setAuthGateMessage}
+        send={send}
+        joinPayload={joinPayload}
+      />
     )
   }
 
@@ -2473,7 +2332,10 @@ export default function PokerPage() {
             if (!pos) return null
             const isMe = player.id === playerId
             const isActive = gameState?.activePlayerId === player.id
-            const isTurnWarning = isActive && isActiveTurnWarning
+            // Arenas don't enforce a turn timer (bots can't be kicked), so the
+            // red "running out of time" pulse never makes sense there — keep
+            // the active highlight amber.
+            const isTurnWarning = isActive && isActiveTurnWarning && !isArena
             const isDealer = getOriginalIndex(player) === gameState?.dealerIndex
             const isPlayerWaiting = player.waitingNextHand
 
@@ -2642,15 +2504,17 @@ export default function PokerPage() {
           activePlayerId={gameState?.activePlayerId || null}
           isArena={isArena}
           arenaRunning={arenaRunning}
-          onToggleArenaRunning={() => setArenaRunningState(!arenaRunning)}
-          onToggleBlind={() => {
-            setSpectatorBlindMode(prev => !prev)
-            setSpectatorHoveredPlayerId(null)
-          }}
+          onToggleArenaRunning={toggleArenaRunning}
+          onToggleBlind={toggleSpectatorBlind}
           onToggleRevealAll={toggleSpectatorRevealAll}
           onTogglePlayer={toggleSpectatorPlayer}
         />
       )}
+
+      <AchievementToast
+        achievement={achievement}
+        onDismiss={() => setAchievement(null)}
+      />
 
       {/* Natural Flow Bottom UI */}
       <div className={`w-full flex flex-col md:flex-row justify-center md:justify-between items-center md:items-end gap-3 sm:gap-4 shrink-0 mt-auto ${isSpectator ? 'pb-[310px] md:pb-0 md:min-h-[210px]' : 'pb-4 md:pb-0'}`}>
