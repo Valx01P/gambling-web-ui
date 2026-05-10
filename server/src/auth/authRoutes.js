@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { asyncRouter as Router } from '../api/asyncRouter.js'
 import { verifyGoogleIdToken } from './googleVerify.js'
 import { sign } from './jwt.js'
 import { authRequired } from './middleware.js'

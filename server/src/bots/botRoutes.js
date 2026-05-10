@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { asyncRouter as Router } from '../api/asyncRouter.js'
 import { authRequired, authOptional } from '../auth/middleware.js'
 import {
   createBot,
