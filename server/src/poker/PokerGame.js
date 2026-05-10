@@ -25,14 +25,108 @@ export class PokerGame {
     this.waitingNextHand = new Set()
     this.removedPlayers = new Set()
     this.actionStarted = false
-    this.aggressionCount = 0 
+    this.aggressionCount = 0
     this.currentBetContext = null
     this.actionSequence = 0
     this.exposeRunoutHands = false
-    this.runOutBoardTimeout = null 
+    this.runOutBoardTimeout = null
     this.nextHandTimeout = null
+    // Arena pause: when true, every auto-advance setTimeout used by the game
+    // (runout, post-showdown reset, post-fold reset, schedule-next-hand) is
+    // halted. Pending callbacks are stashed in `_pausedDeferred` and replayed
+    // when pause is released. Bots also gate on this via the room flag.
+    this.paused = false
+    this._pausedDeferred = []
+    // Every active game-driven setTimeout we've started, keyed by its handle
+    // so we can cancel and defer them when paused mid-flight (post-showdown
+    // 15s reset, between-runout 2.2s deals, etc.).
+    this._activeGameTimers = new Map()
     this.onBroadcast = onBroadcast || (() => {})
     this.onStateBroadcast = onStateBroadcast
+
+    // Bot/strategy intelligence: history of actions in the current hand and a
+    // ring buffer of recent completed hands. Per-player aggregated stats live
+    // here too so bots can reason about opponent tendencies across many hands.
+    this.handIndex = 0
+    this.handStartChips = new Map()
+    this.handActionHistory = []
+    this.handHistory = []
+    this.playerStats = new Map() // playerId -> { handsPlayed, vpip, aggressive, foldedToBet, profit }
+  }
+
+  // Toggle the pause flag. When pausing we cancel every game-driven timer and
+  // remember the callbacks so we can re-fire them on resume. When un-pausing
+  // we replay them in the order they were registered.
+  setPaused(paused) {
+    const next = !!paused
+    if (next === this.paused) return
+    this.paused = next
+    if (next) {
+      // Cancel every in-flight game timer, stashing each callback for replay.
+      // Covers runout deals, post-showdown reset, post-fold reset, schedule-
+      // next-hand — anything that went through `_gameTimeout`.
+      for (const [id, cb] of this._activeGameTimers) {
+        clearTimeout(id)
+        this._pausedDeferred.push(cb)
+      }
+      this._activeGameTimers.clear()
+      this.runOutBoardTimeout = null
+      this.nextHandTimeout = null
+    } else {
+      // Resume: drain everything we deferred. Each entry is a thunk that
+      // re-runs the original auto-advance call. We fire them serially in
+      // registration order.
+      const drained = this._pausedDeferred
+      this._pausedDeferred = []
+      for (const fn of drained) {
+        try { fn() } catch (err) { console.error('[poker-pause] resume error:', err) }
+      }
+    }
+  }
+
+  // Either schedule a real timeout, or — if paused — stash the callback for
+  // replay on resume. Tracks the live handle so setPaused can cancel and
+  // defer in-flight timers, not just the ones registered after pause.
+  _gameTimeout(callback, delay) {
+    if (this.paused) {
+      this._pausedDeferred.push(callback)
+      return null
+    }
+    let handle = null
+    const wrapped = () => {
+      if (handle !== null) this._activeGameTimers.delete(handle)
+      callback()
+    }
+    handle = setTimeout(wrapped, delay)
+    this._activeGameTimers.set(handle, callback)
+    return handle
+  }
+
+  // Update blind levels. Safe to call mid-hand — current hand keeps its own
+  // posted blinds and the new values take effect on startHand().
+  setBlinds(small, big) {
+    this.smallBlind = Math.max(1, Math.floor(small))
+    this.bigBlind = Math.max(this.smallBlind + 1, Math.floor(big))
+  }
+
+  ensurePlayerStats(playerId) {
+    let s = this.playerStats.get(playerId)
+    if (!s) {
+      s = {
+        handsObserved: 0,
+        handsPlayed: 0,
+        vpipHands: 0,
+        aggressiveActions: 0,
+        foldsToBet: 0,
+        profit: 0,
+        showdownsSeen: 0,
+        showdownsWon: 0,
+        recentBetSizes: [],
+        lastHandIndex: -1
+      }
+      this.playerStats.set(playerId, s)
+    }
+    return s
   }
 
   setActiveIndex(index) {
@@ -47,6 +141,7 @@ export class PokerGame {
   rebuyIfNeeded(player) {
     this.ensurePokerBankroll(player)
     if (player.chips > 0) return false
+    if (player.isBot) return false
 
     player.chips = POKER_CONFIG.STARTING_CHIPS
     player.pokerBuyIn += POKER_CONFIG.STARTING_CHIPS
@@ -99,10 +194,14 @@ export class PokerGame {
   scheduleNextHand(delay = 1500) {
     if (this.nextHandTimeout || !this.canStart()) return
 
-    this.nextHandTimeout = setTimeout(() => {
+    const fire = () => {
       this.nextHandTimeout = null
       this.startHand()
-    }, delay)
+    }
+    // _gameTimeout returns null when paused (it stashes the callback) so the
+    // nextHandTimeout assignment naturally stays null in that case, which
+    // matches the "no pending timer" sentinel.
+    this.nextHandTimeout = this._gameTimeout(fire, delay)
   }
 
   resetToWaiting() {
@@ -264,6 +363,15 @@ export class PokerGame {
       this.playerHands.set(player.id, this.deck.drawMultiple(2))
       this.playerBets.set(player.id, 0)
       this.playerTotalBets.set(player.id, 0)
+    }
+
+    this.handIndex += 1
+    this.handActionHistory = []
+    this.handStartChips = new Map(this.players.map(p => [p.id, p.chips]))
+    for (const p of this.players) {
+      const s = this.ensurePlayerStats(p.id)
+      s.handsObserved += 1
+      s.lastHandIndex = this.handIndex
     }
 
     let sbIdx, bbIdx
@@ -461,6 +569,40 @@ export class PokerGame {
         data: chipThrowEvent
       })
     }
+
+    // Record into the hand's action log so bots can reason about what's happened
+    // so far. We keep this small and append-only.
+    this.handActionHistory.push({
+      seq: ++this.actionSequence,
+      phase: this.phase,
+      playerId,
+      playerName: currentPlayer.username,
+      action,
+      amount: action === 'fold' || action === 'check' ? 0 : (this.playerBets.get(playerId) || 0),
+      toCallBefore: toCall,
+      potBefore: this.pot - (action === 'fold' || action === 'check' ? 0 : (this.playerBets.get(playerId) - playerBet))
+    })
+
+    // Per-player aggregated stats
+    const stats = this.ensurePlayerStats(playerId)
+    if (action === 'call' || action === 'raise' || action === 'all_in') {
+      // VPIP = voluntarily put money in pot. Blinds aren't voluntary.
+      if (this.phase === GAME_PHASES.PREFLOP && stats.vpipHands < this.handIndex) {
+        const last = this.handActionHistory[this.handActionHistory.length - 2]
+        const isBlind = last && (last.action === 'sb' || last.action === 'bb')
+        // crude but workable: any preflop call/raise outside blind posting counts
+        stats.vpipHands += 1
+        stats.handsPlayed = stats.vpipHands
+      }
+      if (action === 'raise' || action === 'all_in') stats.aggressiveActions += 1
+    }
+    if (action === 'fold' && toCall > 0) stats.foldsToBet += 1
+    // Track recent raise sizes for opponent profiling.
+    if (action === 'raise' || action === 'all_in') {
+      stats.recentBetSizes.push(this.playerBets.get(playerId) || 0)
+      if (stats.recentBetSizes.length > 10) stats.recentBetSizes.shift()
+    }
+
     this.afterAction()
     return { success: true }
   }
@@ -568,7 +710,9 @@ export class PokerGame {
     if (!this.exposeRunoutHands && this.shouldExposeRunoutHands()) {
       this.exposeRunoutHands = true
       this.broadcastState()
-      this.runOutBoardTimeout = setTimeout(() => this.runOutBoard(), 1200)
+      // Bumped 1200 → 2200ms so spectators can register the reveal before
+      // the first runout card lands.
+      this.runOutBoardTimeout = this._gameTimeout(() => this.runOutBoard(), 2200)
       return
     }
 
@@ -578,7 +722,7 @@ export class PokerGame {
     if (this.phase === GAME_PHASES.SHOWDOWN) {
       this.resolveShowdown()
     } else {
-      this.runOutBoardTimeout = setTimeout(() => this.runOutBoard(), 1200)
+      this.runOutBoardTimeout = this._gameTimeout(() => this.runOutBoard(), 2200)
     }
   }
 
@@ -741,7 +885,12 @@ export class PokerGame {
     }
 
     this.phase = GAME_PHASES.SHOWDOWN
-    this.broadcastState() 
+    this.recordCompletedHand({
+      type: 'showdown',
+      winners: Array.from(winnersOutput.values()),
+      playerHandNames
+    })
+    this.broadcastState()
     this.onBroadcast({
       type: 'showdown',
       data: {
@@ -751,14 +900,14 @@ export class PokerGame {
       }
     })
 
-    setTimeout(() => {
+    this._gameTimeout(() => {
       const oldDealerId = this.players[this.dealerIndex]?.id;
 
       this.players.forEach(p => this.rebuyIfNeeded(p));
 
       this.players = this.getSeatedPlayers()
       this.removedPlayers.clear()
-      
+
       if (this.players.length > 0) {
         const prevIdx = this.players.findIndex(p => p.id === oldDealerId)
         if (prevIdx !== -1) {
@@ -796,7 +945,12 @@ export class PokerGame {
     if (winner) winner.chips += this.pot
 
     this.phase = GAME_PHASES.SHOWDOWN
-    this.broadcastState() 
+    this.recordCompletedHand({
+      type: 'fold_out',
+      winners: [{ playerId: winnerId, username: winner?.username, chips: this.pot, handName: 'Won by fold' }],
+      playerHandNames: { [winnerId]: 'Won by fold' }
+    })
+    this.broadcastState()
     this.onBroadcast({
       type: 'showdown',
       data: {
@@ -806,14 +960,14 @@ export class PokerGame {
       }
     })
 
-    setTimeout(() => {
+    this._gameTimeout(() => {
       const oldDealerId = this.players[this.dealerIndex]?.id;
 
       this.players.forEach(p => this.rebuyIfNeeded(p));
 
       this.players = this.getSeatedPlayers()
       this.removedPlayers.clear()
-      
+
       if (this.players.length > 0) {
         const prevIdx = this.players.findIndex(p => p.id === oldDealerId)
         if (prevIdx !== -1) {
@@ -846,6 +1000,59 @@ export class PokerGame {
     }, 5000)
   }
 
+  recordCompletedHand({ type, winners, playerHandNames }) {
+    // Cards-by-player map: at showdown, the engine reveals cards for everyone
+    // who didn't fold. On a fold-out, only the lone non-folded player is
+    // technically "active" — we don't force-reveal them, so cards stays null.
+    const cardsByPlayer = {}
+    const actionsByPlayer = {}
+    const winnerIds = new Set(winners.map(w => w.playerId))
+
+    for (const p of this.players) {
+      actionsByPlayer[p.id] = this.handActionHistory.filter(a => a.playerId === p.id)
+      const folded = this.foldedPlayers.has(p.id)
+      const removed = this.removedPlayers.has(p.id)
+      if (type === 'showdown' && !folded && !removed) {
+        cardsByPlayer[p.id] = (this.playerHands.get(p.id) || []).map(c => ({ ...c }))
+      } else {
+        cardsByPlayer[p.id] = null
+      }
+    }
+
+    const summary = {
+      handIndex: this.handIndex,
+      phaseEnded: this.phase,
+      type, // 'showdown' | 'fold_out'
+      pot: this.pot,
+      communityCards: [...this.communityCards],
+      actions: this.handActionHistory.slice(),
+      actionsByPlayer,
+      cards: cardsByPlayer,
+      winners: winners.map(w => ({
+        playerId: w.playerId,
+        username: w.username,
+        chips: w.chips,
+        handName: w.handName || playerHandNames?.[w.playerId] || null
+      })),
+      profitsByPlayer: {}
+    }
+
+    for (const p of this.players) {
+      const start = this.handStartChips.get(p.id) ?? p.chips
+      summary.profitsByPlayer[p.id] = p.chips - start
+      const stats = this.ensurePlayerStats(p.id)
+      stats.profit += (p.chips - start)
+
+      // Showdown counters: anyone who didn't fold made it to a showdown.
+      if (type === 'showdown' && !this.foldedPlayers.has(p.id) && !this.removedPlayers.has(p.id)) {
+        stats.showdownsSeen += 1
+        if (winnerIds.has(p.id)) stats.showdownsWon += 1
+      }
+    }
+    this.handHistory.push(summary)
+    if (this.handHistory.length > 50) this.handHistory.shift()
+  }
+
   getGameState(forPlayerId = null, options = {}) {
     const visiblePlayers = this.getSeatedPlayers()
     const dealerPlayerId = this.players[this.dealerIndex]?.id || null
@@ -866,6 +1073,8 @@ export class PokerGame {
       phase: this.phase,
       pot: this.pot,
       currentBet: this.currentBet,
+      smallBlind: this.smallBlind,
+      bigBlind: this.bigBlind,
       communityCards: this.communityCards,
       runoutLocked,
       dealerIndex: visibleDealerIndex,
@@ -880,6 +1089,12 @@ export class PokerGame {
         username: p.username,
         avatarId: p.avatarId || null,
         avatarUrl: p.avatarUrl || null,
+        isBot: Boolean(p.isBot),
+        botId: p.botId || null,
+        botColor: p.botColor || null,
+        botTextColor: p.botTextColor || null,
+        addedByPlayerId: p.addedByPlayerId || null,
+        ownerDisplayName: p.ownerDisplayName || null,
         chips: p.chips,
         bet: this.playerBets.get(p.id) || 0,
         totalBet: this.playerTotalBets.get(p.id) || 0,

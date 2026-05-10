@@ -16,10 +16,14 @@ export class RoomManager {
     this.privateRooms = new Map() // code -> roomId
   }
 
-  createRoom(isPrivate = false) {
+  createRoom(isPrivate = false, options = {}) {
     this.roomCounter++
-    const roomId = `poker_${this.roomCounter}`
-    const room = new PokerRoom(roomId, isPrivate)
+    const roomId = `${options.isArena ? 'arena' : 'poker'}_${this.roomCounter}`
+    const room = new PokerRoom(roomId, isPrivate, {
+      isArena: !!options.isArena,
+      ownerUserId: options.ownerUserId || null,
+      onArenaExpire: (expiredRoom) => this._destroyRoom(expiredRoom)
+    })
 
     if (isPrivate) {
       let code
@@ -116,6 +120,20 @@ export class RoomManager {
         message: 'Joined as spectator.'
       })
       return { ...result, room }
+    } else if (mode === 'bot_arena') {
+      // Creating an arena requires a signed-in account — anonymous WS sockets
+      // never get player.userId set, which is the gate.
+      if (!player.userId) {
+        return { success: false, error: 'Sign in to create a Bot Arena.', code: 'auth_required' }
+      }
+      // Spawn a fresh public arena room and seat the user as a spectator.
+      // No human players seat in arenas — they're a bots-only sandbox.
+      room = this.createRoom(false, { isArena: true, ownerUserId: player.userId })
+      const result = room.addSpectator(player, {
+        voluntary: true,
+        message: 'Bot Arena ready. Add bots, then press Start.'
+      })
+      return { ...result, room }
     } else {
       return { success: false, error: 'Invalid join mode' }
     }
@@ -153,6 +171,20 @@ export class RoomManager {
     return this.getRoom(player.currentRoom)
   }
 
+  // Tear down a room from outside the request flow. Arenas use this when their
+  // empty-spectator timer fires — bots need to be cleared and the private code
+  // (if any) released back into the pool.
+  _destroyRoom(room) {
+    if (!room || !this.rooms.has(room.roomId)) return
+    if (typeof room.shutdown === 'function') {
+      try { room.shutdown() } catch {}
+    }
+    this.rooms.delete(room.roomId)
+    if (room.isPrivate && room.inviteCode) {
+      this.privateRooms.delete(room.inviteCode)
+    }
+  }
+
   getRoomStats() {
     return {
       totalRooms: this.rooms.size,
@@ -162,7 +194,7 @@ export class RoomManager {
 
   getTableList() {
     return [...this.rooms.values()]
-      .filter(room => room.roomType === 'poker' && room.players.size > 0)
+      .filter(room => room.roomType === 'poker' && (room.players.size > 0 || (room.isArena && room.spectators.size > 0)))
       .map(room => room.getTableSummary())
       .sort((a, b) => b.playerCount - a.playerCount || a.roomId.localeCompare(b.roomId))
   }

@@ -12,6 +12,7 @@
     "@tailwindcss/typography": "^0.5.19",
     "next": "16.1.4",
     "react": "19.2.3",
+    "react-colorful": "^5.7.0",
     "react-dom": "19.2.3"
   },
   "devDependencies": {

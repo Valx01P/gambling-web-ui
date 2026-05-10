@@ -58,24 +58,36 @@ export class WebSocketServer {
 
       for (const room of this.roomManager.rooms.values()) {
         if (room.roomType !== 'poker') continue
+        // Bot Arena: bots are spectator-controlled, can be paused for arbitrary
+        // stretches, and a misbehaving bot is the spectator's problem to remove
+        // — never auto-fold or boot from an arena.
+        if (room.isArena) continue
         const game = room.game
-        
+
         if (game.phase !== 'waiting' && game.phase !== 'showdown') {
           const activePlayerId = game.players[game.activeIndex]?.id
-          
+
           if (activePlayerId && game.lastTurnChange && (now - game.lastTurnChange > POKER_CONFIG.TURN_LIMIT_MS)) {
             const player = this.playerManager.getPlayer(activePlayerId)
-            
+            const seated = room.players.get(activePlayerId)
+
+            // Bot got stuck somehow — force-fold/check it but don't kick from table.
+            if (!player && seated?.isBot) {
+              console.log(`[bot] timing out stuck bot ${seated.username}`)
+              seated.cancelPending()
+              const toCall = game.currentBet - (game.playerBets.get(activePlayerId) || 0)
+              game.handleAction(activePlayerId, toCall === 0 ? 'check' : 'fold')
+              continue
+            }
+
             if (player) {
               console.log(`Booting ${player.username} for turn inactivity.`)
-              
-              // Auto-check or fold the inactive player
+
               const toCall = game.currentBet - (game.playerBets.get(activePlayerId) || 0)
               game.handleAction(activePlayerId, toCall === 0 ? 'check' : 'fold')
 
               player.send({ type: 'error', data: { message: 'You were removed from the room for taking too long to act.' } })
-              
-              // Disconnect them from the room
+
               const result = this.roomManager.leaveGame(player)
               if (result.success) {
                 player.send({ type: MESSAGE_TYPES.LEAVE_GAME, data: result })

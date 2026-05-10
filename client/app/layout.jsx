@@ -1,5 +1,6 @@
 import localFont from "next/font/local"
 import FuzzyBackground from "./components/FuzzyBackground"
+import ZoomLayer from "./components/ZoomLayer"
 import "./globals.css"
 
 export const googleSansCode = localFont({
@@ -24,7 +25,7 @@ export default function RootLayout({ children }) {
     <html lang="en">
       <body className={`${googleSansCode.variable} antialiased text-white`}>
         <FuzzyBackground />
-        {children}
+        <ZoomLayer>{children}</ZoomLayer>
       </body>
     </html>
   )

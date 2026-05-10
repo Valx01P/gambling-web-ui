@@ -1,4 +1,6 @@
-import { MESSAGE_TYPES } from "../config/constants.js"
+import { BANKS, GAME_PHASES, MESSAGE_TYPES, POKER_CONFIG } from "../config/constants.js"
+import { getBotById } from "../bots/botRepository.js"
+import { verify as verifyJwt } from "../auth/jwt.js"
 
 export class MessageHandler {
   constructor(playerManager, roomManager) {
@@ -34,6 +36,48 @@ export class MessageHandler {
 
         case MESSAGE_TYPES.PLAYER_YELL:
           return this.handleYell(player, data)
+
+        case MESSAGE_TYPES.ADD_BOT:
+          return this.handleAddBot(player, data)
+
+        case MESSAGE_TYPES.REMOVE_BOT:
+          return this.handleRemoveBot(player, data)
+
+        case MESSAGE_TYPES.POKER_LOAN:
+          return this.handleLoan(player, data)
+
+        case MESSAGE_TYPES.POKER_REPAY_LOAN:
+          return this.handleRepayLoan(player, data)
+
+        case MESSAGE_TYPES.POKER_SET_AUTOPAY:
+          return this.handleSetAutoPay(player, data)
+
+        case MESSAGE_TYPES.POKER_BIG_YAHU:
+          return this.handleBigYahu(player)
+
+        case MESSAGE_TYPES.POKER_PROPOSE_BLINDS:
+          return this.handleProposeBlinds(player, data)
+
+        case MESSAGE_TYPES.POKER_BLINDS_VOTE:
+          return this.handleBlindsVote(player, data)
+
+        case MESSAGE_TYPES.POKER_TOGGLE_CONTEST_MODE:
+          return this.handleToggleContestMode(player, data)
+
+        case MESSAGE_TYPES.POKER_ARENA_SET_RUNNING:
+          return this.handleArenaSetRunning(player, data)
+
+        case MESSAGE_TYPES.POKER_ARENA_SET_STARTING_CHIPS:
+          return this.handleArenaSetStartingChips(player, data)
+
+        case MESSAGE_TYPES.AUTH_HELLO:
+          return this.handleAuthHello(player, data)
+
+        case MESSAGE_TYPES.UPDATE_PROFILE:
+          return this.handleUpdateProfile(player, data)
+
+        case MESSAGE_TYPES.RESET_MONEY:
+          return this.handleResetMoney(player)
 
         case MESSAGE_TYPES.POKER_FOLD:
         case MESSAGE_TYPES.POKER_CHECK:
@@ -106,10 +150,34 @@ export class MessageHandler {
     return result
   }
 
+  handleAuthHello(player, data) {
+    // Verify the JWT and tag the WS player with the signed-in user's id.
+    // Anonymous tokens are silently dropped — features that need auth will
+    // simply remain locked.
+    const token = data?.token
+    if (!token || typeof token !== 'string') return { success: false }
+    try {
+      const payload = verifyJwt(token)
+      player.userId = payload.sub
+      player.userEmail = payload.email || null
+      return { success: true }
+    } catch {
+      player.userId = null
+      return { success: false }
+    }
+  }
+
   handleChat(player, data) {
     const room = this.roomManager.getPlayerRoom(player)
     if (!room) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Not in a room' } })
+      return { success: false }
+    }
+
+    // Spectators on regular tables can't chat — keeps live games quiet.
+    // Arenas allow it, since spectators are the only humans there.
+    if (player.isSpectator && !room.isArena) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Spectators cannot chat at live tables.' } })
       return { success: false }
     }
 
@@ -161,6 +229,257 @@ export class MessageHandler {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
     }
     return result
+  }
+
+  async handleAddBot(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') {
+      return this.error('Bots can only be added at poker tables', player)
+    }
+    const botId = typeof data?.botId === 'string' ? data.botId : null
+    if (!botId) return this.error('Missing botId', player)
+
+    let bot
+    try {
+      bot = await getBotById(botId)
+    } catch (err) {
+      console.error('[bots] lookup failed:', err.message)
+      return this.error('Bot lookup failed', player)
+    }
+    if (!bot) return this.error('Bot not found or not public', player)
+
+    // Arena spectators have their own bot-add path that uses the arena's
+    // configured starting chips and skips the seated-adder check.
+    const result = room.isArena
+      ? room.addBotForArenaSpectator(player.id, bot)
+      : room.addBotForPlayer(player.id, bot)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+      return result
+    }
+    return result
+  }
+
+  handleRemoveBot(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') {
+      return this.error('Not at a poker table', player)
+    }
+    const botSeatId = typeof data?.botSeatId === 'string' ? data.botSeatId : null
+    if (!botSeatId) return this.error('Missing botSeatId', player)
+
+    const result = room.isArena
+      ? room.removeBotForArenaSpectator(player.id, botSeatId)
+      : room.removeBotForPlayer(player.id, botSeatId)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    }
+    return result
+  }
+
+  handleLoan(player, data) {
+    const bankId = typeof data?.bankId === 'string' ? data.bankId : null
+    if (!bankId) return this.error('Missing bankId', player)
+
+    const result = player.takeLoan(bankId)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+      return result
+    }
+
+    const room = this.roomManager.getPlayerRoom(player)
+    if (room) {
+      room.broadcast({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `${player.username} pulled $${result.loan.principal.toLocaleString()} from ${result.bank.name} at ${(result.loan.interestRate * 100).toFixed(1)}%.` }
+      })
+      if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    }
+    return { success: true }
+  }
+
+  handleRepayLoan(player, data) {
+    const bankId = typeof data?.bankId === 'string' ? data.bankId : null
+    if (!bankId) return this.error('Missing bankId', player)
+
+    const room = this.roomManager.getPlayerRoom(player)
+    // Block mid-hand repay so we don't pull chips out of an active bet.
+    if (room && room.roomType === 'poker' && room.game) {
+      const inHand = room.game.phase !== GAME_PHASES.WAITING && room.game.phase !== GAME_PHASES.SHOWDOWN
+      const seated = room.players?.has?.(player.id)
+      const folded = room.game.foldedPlayers?.has?.(player.id)
+      if (seated && inHand && !folded) {
+        return this.error('Repay blocked: finish or fold the current hand first.', player)
+      }
+    }
+
+    const result = player.repayLoan(bankId)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+      return result
+    }
+
+    if (room) {
+      room.broadcast({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `${player.username} paid back $${result.repaid.toLocaleString()} to ${result.loan.bankName}.` }
+      })
+      if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    }
+    return { success: true }
+  }
+
+  handleProposeBlinds(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') return this.error('Not at a poker table', player)
+    const small = Number(data?.small)
+    const big = Number(data?.big)
+    if (!Number.isFinite(small) || !Number.isFinite(big)) return this.error('Invalid blind values', player)
+    const result = room.proposeBlinds(player.id, small, big)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    }
+    return result
+  }
+
+  handleBlindsVote(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') return this.error('Not at a poker table', player)
+    const proposalId = typeof data?.proposalId === 'string' ? data.proposalId : null
+    const vote = data?.vote === 'reject' ? 'reject' : 'approve'
+    if (!proposalId) return this.error('Missing proposalId', player)
+    const result = room.voteBlinds(player.id, proposalId, vote)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    }
+    return result
+  }
+
+  handleArenaSetRunning(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker' || !room.isArena) return this.error('Not in an arena', player)
+    const result = room.setArenaRunning(player.id, Boolean(data?.running))
+    if (!result.success) player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    return result
+  }
+
+  handleArenaSetStartingChips(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker' || !room.isArena) return this.error('Not in an arena', player)
+    const result = room.setArenaStartingChips(player.id, data?.chips)
+    if (!result.success) player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    return result
+  }
+
+  handleToggleContestMode(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') return this.error('Not at a poker table', player)
+    const enabled = Boolean(data?.enabled)
+    const startingLevelId = typeof data?.startingLevelId === 'string' ? data.startingLevelId : null
+    const result = room.toggleContestMode(player.id, { enabled, startingLevelId })
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    }
+    return result
+  }
+
+  handleSetAutoPay(player, data) {
+    const bankId = typeof data?.bankId === 'string' ? data.bankId : null
+    const amount = Number(data?.amount)
+    if (!bankId) return this.error('Missing bankId', player)
+    if (!Number.isFinite(amount) || amount < 0) return this.error('Invalid amount', player)
+
+    const result = player.setAutoPay(bankId, amount)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+      return result
+    }
+    const room = this.roomManager.getPlayerRoom(player)
+    if (room && typeof room.broadcastRoomUpdate === 'function') {
+      room.broadcastRoomUpdate()
+    }
+    return { success: true }
+  }
+
+  handleBigYahu(player) {
+    // Big Yahu picks up anytime — even mid-hand. The forgiveness is purely a
+    // P/L + loan-state operation; chip stack stays put, so calling during a
+    // live hand doesn't corrupt bookkeeping.
+    const room = this.roomManager.getPlayerRoom(player)
+    const before = { loans: player.loans.length, profit: player.getProfit() }
+    const result = player.bigYahu()
+
+    if (room) {
+      room.broadcast({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: {
+          message: `${player.username} called Big Yahu. ${before.loans} loan${before.loans === 1 ? '' : 's'} forgiven, P/L wiped, credit restored.`
+        }
+      })
+      if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    }
+    return { success: true, ...result }
+  }
+
+  handleUpdateProfile(player, data) {
+    const nextUsername = typeof data?.username === 'string'
+      ? data.username.trim().slice(0, 24)
+      : null
+    const nextAvatarId = typeof data?.avatarId === 'string' ? data.avatarId : null
+
+    if (!nextUsername && !nextAvatarId) {
+      return this.error('Nothing to update', player)
+    }
+
+    if (nextUsername) player.username = nextUsername || player.username
+    if (nextAvatarId && typeof player.setProfileAvatar === 'function') {
+      player.setProfileAvatar(nextAvatarId)
+    }
+
+    const room = this.roomManager.getPlayerRoom(player)
+    if (room && typeof room.broadcastRoomUpdate === 'function') {
+      room.broadcastRoomUpdate()
+    }
+    if (room && typeof room.broadcastGameState === 'function') {
+      room.broadcastGameState()
+    }
+
+    player.send({
+      type: MESSAGE_TYPES.UPDATE_PROFILE,
+      data: { success: true, username: player.username, avatarId: player.avatarId, avatarUrl: player.avatarUrl }
+    })
+    return { success: true }
+  }
+
+  handleResetMoney(player) {
+    const room = this.roomManager.getPlayerRoom(player)
+    // Block while you're actually contesting a hand — resetting chips mid-hand
+    // would corrupt the engine's in-flight bookkeeping.
+    if (room && room.roomType === 'poker' && room.game) {
+      const inHand = room.game.phase !== GAME_PHASES.WAITING && room.game.phase !== GAME_PHASES.SHOWDOWN
+      const seated = room.players?.has?.(player.id)
+      const folded = room.game.foldedPlayers?.has?.(player.id)
+      if (seated && inHand && !folded) {
+        return this.error('Reset blocked: finish or fold the current hand first.', player)
+      }
+    }
+
+    player.resetMoney()
+
+    if (room) {
+      room.broadcast({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `${player.username} reset their bank back to $${POKER_CONFIG.STARTING_CHIPS.toLocaleString()}.` }
+      })
+      if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+      if (typeof room.broadcastGameState === 'function') room.broadcastGameState()
+    }
+
+    player.send({
+      type: MESSAGE_TYPES.RESET_MONEY,
+      data: { success: true, chips: player.chips, loans: player.loans, loanedTotal: player.loanedTotal }
+    })
+    return { success: true }
   }
 
   handleAction(player, actionType, data) {

@@ -9,7 +9,21 @@ export const EMOTE_OPTIONS = [
   { id: 'eggplant', label: 'Eggplant', emoji: '🍆' },
 ]
 
-const EMOTE_BY_ID = Object.fromEntries(EMOTE_OPTIONS.map((emote) => [emote.id, emote]))
+// Emotes earned by calling Bigyahu. Only rendered in the picker when the
+// player's bigYahuCalls > 0; the server-side validator only accepts these
+// from players that have actually unlocked them.
+export const BIG_YAHU_EMOTES = [
+  { id: 'star_of_david', label: 'Star of David', emoji: '✡️' },
+  { id: 'israel_flag',   label: 'Israel',         emoji: '🇮🇱' },
+]
+
+export function getEmoteOptions({ bigYahuUnlocked = false } = {}) {
+  return bigYahuUnlocked ? [...EMOTE_OPTIONS, ...BIG_YAHU_EMOTES] : EMOTE_OPTIONS
+}
+
+const EMOTE_BY_ID = Object.fromEntries(
+  [...EMOTE_OPTIONS, ...BIG_YAHU_EMOTES].map((emote) => [emote.id, emote])
+)
 
 export function EmoteIcon({ emote, className = '' }) {
   const item = EMOTE_BY_ID[emote] || EMOTE_BY_ID.angry
