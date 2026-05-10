@@ -12,8 +12,33 @@ export function authRoutes() {
     if (typeof credential !== 'string' || credential.length < 20) {
       return res.status(400).json({ error: 'missing_credential' })
     }
+    // Split the verify vs upsert paths so we can distinguish "bad token"
+    // (401, client's fault) from "couldn't persist user" (5xx, our fault).
+    // Both used to collapse into `invalid_credential`, which made the
+    // production deploy diagnosis annoying.
+    let profile
     try {
-      const profile = await verifyGoogleIdToken(credential)
+      profile = await verifyGoogleIdToken(credential)
+    } catch (err) {
+      const code = err.code || 'verify_failed'
+      console.warn(`[auth] google verify failed (${code}):`, err.message)
+      // Audience mismatch is the #1 deploy footgun — log explicit IDs so
+      // the operator can compare them in Render's log against their Vercel
+      // setting without redeploying.
+      if (err.tokenAud || err.serverAud) {
+        console.warn(`[auth]   token aud  = ${err.tokenAud}`)
+        console.warn(`[auth]   server aud = ${err.serverAud}`)
+      }
+      return res.status(401).json({
+        error: code,
+        // Surface the reason in non-prod so the client can show something
+        // useful. In prod we keep the message generic to avoid leaking the
+        // configured client_id.
+        detail: process.env.NODE_ENV === 'production' ? undefined : err.message
+      })
+    }
+
+    try {
       const user = await upsertGoogleUser(profile)
       const token = sign({ sub: user.id, email: user.email, name: user.display_name })
       res.json({
@@ -26,8 +51,11 @@ export function authRoutes() {
         }
       })
     } catch (err) {
-      console.warn('[auth] google verify failed:', err.message)
-      res.status(401).json({ error: 'invalid_credential' })
+      console.error('[auth] upsert/sign failed:', err)
+      res.status(500).json({
+        error: 'user_persist_failed',
+        detail: process.env.NODE_ENV === 'production' ? undefined : err.message
+      })
     }
   })
 
