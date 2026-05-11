@@ -38,6 +38,24 @@ export default function AuthGateModal({ open, message, onClose }) {
   const [error, setError] = useState(null)
   const initialized = useRef(false)
 
+  // Body scroll lock + ESC-to-close while the modal is open. Without the
+  // lock, iOS lets a touch-drag on the backdrop scroll the page behind
+  // the modal, which reflows the fixed-position card because 100vh in
+  // iOS Safari includes the URL bar's reclaimable area.
+  useEffect(() => {
+    if (!open) return
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    function onKeyDown(e) {
+      if (e.key === 'Escape') onClose?.()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.body.style.overflow = prevOverflow
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open, onClose])
+
   useEffect(() => {
     if (!open) return
     if (user) { onClose?.(); return }
@@ -77,12 +95,19 @@ export default function AuthGateModal({ open, message, onClose }) {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="auth-gate-title"
+    >
       <div
         className="w-full max-w-sm rounded-xl border border-zinc-600/60 bg-zinc-900/98 p-5 shadow-2xl"
+        style={{ paddingBottom: 'max(1.25rem, env(safe-area-inset-bottom))' }}
         onClick={e => e.stopPropagation()}
       >
-        <div className="mb-2 text-sm font-black text-white">Sign in required</div>
+        <div id="auth-gate-title" className="mb-2 text-sm font-black text-white">Sign in required</div>
         <div className="mb-4 text-xs font-bold text-zinc-300">
           {message || 'Sign in to use this feature.'}
         </div>

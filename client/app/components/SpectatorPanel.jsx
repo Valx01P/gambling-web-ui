@@ -87,6 +87,7 @@ function SpectatorPanelImpl({
   activePlayerId = null,
   isArena = false,
   arenaRunning = false,
+  chatVisible = true,
   onToggleBlind,
   onToggleRevealAll,
   onTogglePlayer,
@@ -98,9 +99,12 @@ function SpectatorPanelImpl({
   const [view, setView] = useState('expanded')
   const isCompact = view === 'compact'
   const activePlayer = players.find(p => p.id === activePlayerId) || null
+  // When the chat dock is visible we need to stack above it; when it's been
+  // toggled off via Tools, drop to the flat safe-area-aware bottom offset.
+  const bottomAnchorClass = chatVisible ? 'spectator-stack-bottom' : 'safe-bottom-offset'
 
   return (
-    <div className={`fixed bottom-3 left-3 z-50 w-[calc(100vw-1.5rem)] rounded-xl border border-zinc-600/60 bg-zinc-900/95 shadow-2xl backdrop-blur-md sm:bottom-4 sm:left-4 ${isCompact ? 'max-w-[420px] px-2 py-2' : 'max-w-[460px] px-3 py-3'}`}>
+    <div className={`fixed ${bottomAnchorClass} left-3 right-3 z-50 rounded-xl border border-zinc-600/60 bg-zinc-900/95 shadow-2xl backdrop-blur-md sm:left-4 sm:right-auto sm:w-[calc(100vw-1.5rem)] ${isCompact ? 'sm:max-w-[420px] px-2 py-2' : 'sm:max-w-[460px] px-3 py-3'}`}>
       <div className={`flex items-center justify-between gap-2 ${isCompact ? 'mb-0' : 'mb-2'}`}>
         <div className="min-w-0 flex items-center gap-2">
           {isCompact && activePlayer ? (
@@ -183,7 +187,7 @@ function SpectatorPanelImpl({
       </div>
 
       {!isCompact && (
-      <div className="max-h-[58vh] space-y-2 overflow-y-auto pr-1">
+      <div className="max-h-[58dvh] space-y-2 overflow-y-auto overscroll-contain pr-1">
         {players.map((player) => {
           const odds = oddsByPlayer.get(player.id)
           const pinned = visiblePlayerIds.has(player.id)

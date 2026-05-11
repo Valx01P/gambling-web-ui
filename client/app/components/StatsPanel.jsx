@@ -135,7 +135,7 @@ function StatsPanelImpl({ statistics, expansion = 'minimized', onSetExpansion, o
   }
 
   return (
-    <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/95 px-3 py-3 shadow-2xl backdrop-blur-md">
+    <div className="w-full max-h-[70dvh] overflow-y-auto overscroll-contain rounded-xl border border-zinc-600/50 bg-zinc-800/95 px-3 py-3 shadow-2xl backdrop-blur-md">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="text-sm font-black text-white">Statistics</div>

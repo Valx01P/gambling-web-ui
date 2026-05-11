@@ -42,7 +42,7 @@ export default function AchievementToast({ achievement, onDismiss }) {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-[200] w-[calc(100vw-2rem)] max-w-sm overflow-hidden rounded-xl border border-amber-300/60 bg-zinc-950/95 shadow-2xl backdrop-blur-md sm:bottom-5 sm:right-5"
+      className="fixed safe-bottom-offset-lg right-4 z-[180] w-[calc(100vw-2rem)] max-w-sm overflow-hidden rounded-xl border border-amber-300/60 bg-zinc-950/95 shadow-2xl backdrop-blur-md sm:right-5"
       style={{ animation: 'achievementSlideIn 320ms ease-out forwards' }}
     >
       {/* Trophy stripe — keeps the toast feeling like a "you earned this" event */}

@@ -1,5 +1,7 @@
 'use client'
 
+import { useEffect } from 'react'
+
 // Small themed confirm dialog that replaces the native window.confirm().
 // Two reasons we don't use the browser dialog:
 //   * Styling — matches the rest of the app (zinc/amber palette, rounded
@@ -29,6 +31,23 @@ export default function ConfirmModal({
   onConfirm,
   onClose,
 }) {
+  // Body scroll lock + ESC handling while the dialog is open. Has to be
+  // declared before the early return so the hook order stays stable
+  // across renders.
+  useEffect(() => {
+    if (!open) return
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    function onKeyDown(e) {
+      if (e.key === 'Escape' && !busy) onClose?.()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.body.style.overflow = prevOverflow
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open, busy, onClose])
+
   if (!open) return null
 
   const confirmClasses = tone === 'danger'
@@ -40,11 +59,12 @@ export default function ConfirmModal({
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      className="fixed inset-0 z-[210] flex items-center justify-center bg-black/65 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[310] flex items-center justify-center bg-black/65 backdrop-blur-sm p-4"
       onClick={() => !busy && onClose?.()}
     >
       <div
         className="w-full max-w-md rounded-xl border border-zinc-600/60 bg-zinc-900/98 shadow-2xl"
+        style={{ paddingBottom: 'max(0px, env(safe-area-inset-bottom))' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Top accent stripe — keeps the dialog feeling like a deliberate action */}

@@ -255,7 +255,7 @@ export default function BotDetailPage({ params }) {
                     type="button"
                     onClick={save}
                     disabled={!dirty || saving}
-                    className={`rounded-md px-3 py-2 text-xs font-bold transition-all disabled:opacity-60 ${dirty
+                    className={`min-w-[8.5rem] rounded-md px-3 py-2 text-xs font-bold text-center transition-all disabled:opacity-60 ${dirty
                       ? 'border border-emerald-400/70 bg-emerald-500 text-white shadow-md shadow-emerald-500/40 hover:bg-emerald-400 animate-pulse'
                       : 'border border-emerald-500/50 bg-emerald-500/25 text-emerald-100'}`}
                   >
@@ -351,6 +351,9 @@ export default function BotDetailPage({ params }) {
                       value={draftName}
                       onChange={e => setDraftName(e.target.value)}
                       maxLength={32}
+                      autoCorrect="off"
+                      autoCapitalize="words"
+                      spellCheck={false}
                       className="w-full rounded-md border border-zinc-600/60 bg-zinc-900 px-3 py-2 text-sm font-bold text-white outline-none focus:border-zinc-300"
                     />
                   </div>
@@ -399,7 +402,11 @@ export default function BotDetailPage({ params }) {
                         <HexColorInput
                           color={draftColor}
                           onChange={setDraftColor}
-                          className="w-24 rounded-md border border-zinc-600/60 bg-zinc-900 px-2 py-1 font-mono text-xs text-white uppercase outline-none focus:border-zinc-300"
+                          autoCapitalize="characters"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          inputMode="text"
+                          className="w-28 rounded-md border border-zinc-600/60 bg-zinc-900 px-2 py-1 font-mono text-xs text-white uppercase outline-none focus:border-zinc-300"
                         />
                       </label>
                     </div>

@@ -108,7 +108,7 @@ export default function AccountMenu() {
           Sign in
         </button>
         {open && (
-          <div className="absolute right-0 top-full mt-2 z-[100] w-64 overflow-hidden rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
+          <div className="absolute right-0 top-full mt-2 z-[100] w-[min(16rem,calc(100vw-1rem))] overflow-hidden rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
             <div className="px-3 py-2 text-[10px] font-black uppercase tracking-widest text-zinc-300">
               Sign in to build bots
             </div>
@@ -135,7 +135,7 @@ export default function AccountMenu() {
         <InitialsCircle name={user.displayName} color={color} />
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-2 z-[100] w-56 overflow-hidden rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
+        <div className="absolute right-0 top-full mt-2 z-[100] w-[min(14rem,calc(100vw-1rem))] overflow-hidden rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
           <div className="px-3 py-2 border-b border-zinc-700/70">
             <div className="text-xs font-black text-white truncate">{user.displayName}</div>
             <div className="text-[10px] font-bold text-zinc-300 truncate">{user.email}</div>

@@ -113,7 +113,7 @@ export default function ConfirmPopoverButton({
         <div
           role="dialog"
           aria-label="Confirm"
-          className={`absolute top-[calc(100%+6px)] z-[150] w-72 rounded-lg border border-amber-300/60 bg-zinc-900/98 shadow-2xl ${
+          className={`absolute top-[calc(100%+6px)] z-[150] w-[min(18rem,calc(100vw-1.5rem))] rounded-lg border border-amber-300/60 bg-zinc-900/98 shadow-2xl ${
             align === 'left' ? 'left-0' : 'right-0'
           }`}
         >

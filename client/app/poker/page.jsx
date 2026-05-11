@@ -37,6 +37,10 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001'
 const USERNAME_STORAGE_KEY = 'poker_username'
 const AVATAR_STORAGE_KEY = 'poker_avatar_id'
 const ZOOM_STORAGE_KEY = 'poker_zoom'
+// Chat dock visibility persists per-device. Default true (chat shown) — only
+// flipped when the user explicitly turns it off via Tools, so we treat any
+// stored value other than '0' as "show chat" and only '0' as "hidden".
+const CHAT_VISIBLE_STORAGE_KEY = 'poker_chat_visible'
 const ZOOM_MIN = 50
 const ZOOM_MAX = 200
 const ZOOM_STEP = 10
@@ -404,6 +408,9 @@ export default function PokerPage() {
   const [arenaStartingChips, setArenaStartingChips] = useState(1000)
   const [pageZoom, setPageZoom] = useState(100)
   const [myBotsExpanded, setMyBotsExpanded] = useState(false)
+  // Chat dock visibility — defaults to true (visible). Persisted to
+  // localStorage so the user's choice survives reloads.
+  const [chatDockVisible, setChatDockVisible] = useState(true)
   
   // New room feature states
   // 'general' | 'private' | 'spectate'. `private` is a UI tab only — the
@@ -516,9 +523,19 @@ export default function PokerPage() {
     let lines = []
     const breakdown = Array.isArray(potBreakdown) ? potBreakdown.filter(p => p.winners?.length > 0) : []
 
-    if (breakdown.length >= 2) {
-      // Multi-pot showdown. One line per pot so main vs side are clearly
-      // distinguishable rather than mashed onto a single line.
+    // If every pot has the exact same winner set, the main/side breakdown
+    // is misleading — it implies separate prizes for separate players when
+    // really one party scooped everything. Collapse to the single-pot view.
+    const allPotsSameWinners = breakdown.length >= 2 && (() => {
+      const ids = pot => pot.winners.map(w => w.playerId).sort().join('|')
+      const first = ids(breakdown[0])
+      return breakdown.every(pot => ids(pot) === first)
+    })()
+
+    if (breakdown.length >= 2 && !allPotsSameWinners) {
+      // Multi-pot showdown with distinct winners per pot. One line per pot
+      // so main vs side are clearly distinguishable rather than mashed onto
+      // a single line.
       lines = breakdown.map(pot => {
         const label = pot.potIndex === 0 ? 'Main pot'
                     : breakdown.length > 2 ? `Side pot ${pot.potIndex}`
@@ -526,7 +543,7 @@ export default function PokerPage() {
         return `${label}: ${fmtList(pot.winners)}`
       })
     } else if (winners.length >= 2) {
-      // Single pot, multiple winners (true chop).
+      // Single pot (or unified winners) with multiple players — true chop.
       lines = [`Split pot: ${fmtList(winners)}`]
     } else {
       // Single winner — no notice; the WINNER badge over their seat is enough.
@@ -608,11 +625,16 @@ export default function PokerPage() {
       const savedUsername = window.localStorage.getItem(USERNAME_STORAGE_KEY)
       const savedAvatarId = window.localStorage.getItem(AVATAR_STORAGE_KEY)
       const savedZoom = parseInt(window.localStorage.getItem(ZOOM_STORAGE_KEY) || '', 10)
+      const savedChat = window.localStorage.getItem(CHAT_VISIBLE_STORAGE_KEY)
       if (savedUsername) setUsername(savedUsername)
       if (savedAvatarId) setSelectedAvatarId(getProfileAvatar(savedAvatarId).id)
       if (Number.isFinite(savedZoom) && savedZoom >= ZOOM_MIN && savedZoom <= ZOOM_MAX) {
         setPageZoom(savedZoom)
       }
+      // Only '0' means "user explicitly hid chat" — any other value (including
+      // missing) leaves the default `true`. Keeps first-time visitors on the
+      // chat-visible path.
+      if (savedChat === '0') setChatDockVisible(false)
 
       const params = new URLSearchParams(window.location.search)
       const codeParam = params.get('code')
@@ -931,10 +953,18 @@ export default function PokerPage() {
   const activeTurnTimeRemaining = gameState?.activeTurnExpiresAt
     ? gameState.activeTurnExpiresAt - estimatedServerTime
     : null
+  // Only flag a turn timeout when there's a real social cost to stalling —
+  // i.e., 3+ humans waiting on the actor. Solo-with-bots and heads-up
+  // (1–2 humans) sessions are casual; the red urgency ring there is just
+  // noise and makes the table feel hostile.
+  const seatedHumanCount = (gameState?.players || []).filter(
+    p => p && !p.isBot && p.isConnected !== false
+  ).length
   const isActiveTurnWarning = activeTurnTimeRemaining !== null &&
     activeTurnTimeRemaining <= (gameState?.activeTurnWarningMs || 10000) &&
     phase !== 'waiting' &&
-    phase !== 'showdown'
+    phase !== 'showdown' &&
+    seatedHumanCount >= 3
   // useDeferredValue lets the heavy stats recompute run AT lower priority
   // than urgent updates (input, action button clicks). The table UI still
   // sees the latest gameState immediately; stats catches up a tick later,
@@ -1115,6 +1145,20 @@ export default function PokerPage() {
       window.localStorage.setItem(ZOOM_STORAGE_KEY, '100')
       window.dispatchEvent(new Event('gwu:zoom-changed'))
     } catch {}
+  }
+
+  // Flip chat dock visibility and persist the choice. We store '0' for hidden
+  // and clear the key for visible, so the on-state has no footprint and is
+  // the natural default for new visitors / cleared storage.
+  function toggleChatDock() {
+    setChatDockVisible(prev => {
+      const next = !prev
+      try {
+        if (next) window.localStorage.removeItem(CHAT_VISIBLE_STORAGE_KEY)
+        else window.localStorage.setItem(CHAT_VISIBLE_STORAGE_KEY, '0')
+      } catch {}
+      return next
+    })
   }
 
   function callBigYahu() {
@@ -1346,7 +1390,7 @@ export default function PokerPage() {
               Tools
             </button>
             {tableMenuOpen && (
-              <div className="absolute right-0 top-full mt-2 z-[100] w-56 overflow-hidden rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
+              <div className="absolute right-0 top-full mt-2 z-[100] w-56 max-w-[calc(100vw-1.5rem)] max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
                 <button type="button" onClick={() => openPokerPanel('help')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                   How to Play
                 </button>
@@ -1413,6 +1457,9 @@ export default function PokerPage() {
                     Table Stats {statsMode ? 'On' : 'Off'}
                   </button>
                 )}
+                <button type="button" onClick={toggleChatDock} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                  Chat {chatDockVisible ? 'On' : 'Off'}
+                </button>
                 {!isSpectator && (
                   <button type="button" onClick={() => openPokerPanel('reset')} className="block w-full px-3 py-2 text-left text-xs font-bold text-red-200 hover:bg-zinc-800">
                     Reset Money
@@ -2360,14 +2407,14 @@ export default function PokerPage() {
              }}>
 
           {/* Pot */}
-          <div className="absolute top-[12%] sm:top-[10%] left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 z-0">
+          <div className="absolute top-[12%] sm:top-[10%] left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 z-0 max-w-[40vw] sm:max-w-none">
             <PotChips amount={gameState?.pot || 0} />
             <div className="text-[10px] sm:text-xs text-white/60 font-bold tracking-widest bg-black/30 px-2 py-0.5 rounded-md mt-1">POT</div>
-            <div className="font-black text-2xl sm:text-3xl text-white drop-shadow-md">{gameState?.pot || 0}</div>
+            <div className="font-black text-xl sm:text-3xl text-white drop-shadow-md tabular-nums">{gameState?.pot || 0}</div>
           </div>
 
           {splitPotNotice.length > 0 && (
-            <div className="absolute top-[34%] left-1/2 z-50 -translate-x-1/2 rounded-md border border-amber-300/70 bg-zinc-950/90 px-3 py-1.5 text-center text-[10px] sm:text-xs font-black uppercase tracking-wide text-amber-100 shadow-xl space-y-0.5">
+            <div className="absolute top-[34%] left-1/2 z-50 -translate-x-1/2 max-w-[min(90vw,420px)] rounded-md border border-amber-300/70 bg-zinc-950/90 px-3 py-1.5 text-center text-[10px] sm:text-xs font-black uppercase tracking-wide text-amber-100 shadow-xl space-y-0.5 break-words">
               {splitPotNotice.map((line, i) => (
                 <div key={i}>{line}</div>
               ))}
@@ -2380,7 +2427,7 @@ export default function PokerPage() {
               <CardSprite key={i} card={card} highlight={isWinningCard(card)} className="w-[14vw] sm:w-[60px] md:w-[80px]" />
             ))}
             {Array.from({ length: Math.max(0, 5 - (gameState?.communityCards?.length || 0)) }).map((_, i) => (
-              <div key={`e-${i}`} className="border border-white/[0.08] rounded-md w-[14vw] sm:w-[60px] md:w-[80px] aspect-[80/110]" style={{ background: 'rgba(255,255,255,0.02)' }} />
+              <div key={`e-${i}`} className="rounded-md w-[14vw] sm:w-[60px] md:w-[80px] aspect-[80/110]" style={{ border: '1px dashed rgba(255,255,255,0.05)' }} />
             ))}
           </div>
 
@@ -2486,10 +2533,10 @@ export default function PokerPage() {
                     {isHighlighted && (
                       <div className={`absolute -top-4 sm:-top-5 left-1/2 -translate-x-1/2 text-xs sm:text-sm animate-bounce ${isTurnWarning ? 'text-red-500' : 'text-amber-400'}`}>▼</div>
                     )}
-                    <div className="text-[10px] sm:text-sm font-bold truncate text-white flex items-center justify-center gap-1 whitespace-nowrap">
-                      {isMe ? 'You' : player.username}
+                    <div className="text-[10px] sm:text-sm font-bold text-white flex items-center justify-center gap-1 whitespace-nowrap min-w-0">
+                      <span className="truncate min-w-0">{isMe ? 'You' : player.username}</span>
                       {player.isBot && (
-                        <span className="text-[8px] sm:text-[9px] font-black uppercase tracking-widest text-zinc-400">BOT</span>
+                        <span className="shrink-0 text-[8px] sm:text-[9px] font-black uppercase tracking-widest text-zinc-400">BOT</span>
                       )}
                     </div>
                     <div className="mt-0.5 flex items-center justify-center gap-1.5 text-[9px] sm:text-xs text-zinc-200 font-medium whitespace-nowrap">
@@ -2566,6 +2613,7 @@ export default function PokerPage() {
           activePlayerId={gameState?.activePlayerId || null}
           isArena={isArena}
           arenaRunning={arenaRunning}
+          chatVisible={chatDockVisible}
           onToggleArenaRunning={toggleArenaRunning}
           onToggleBlind={toggleSpectatorBlind}
           onToggleRevealAll={toggleSpectatorRevealAll}
@@ -2726,7 +2774,7 @@ export default function PokerPage() {
         {!isSpectator && statsMode && (
           <div
             ref={statsPanelRef}
-            className={`fixed right-4 top-14 z-40 ${
+            className={`fixed right-4 top-20 sm:top-14 z-40 ${
               statsExpansion === 'minimized'
                 ? 'w-[180px]'
                 : statsExpansion === 'detailed'
@@ -2743,8 +2791,11 @@ export default function PokerPage() {
           </div>
         )}
 
-        {/* Chat Panel */}
-        <div className={`${isSpectator ? 'fixed bottom-3 right-3 z-40 w-[calc(100vw-1.5rem)] max-w-[320px] sm:bottom-4 sm:right-4 md:w-[320px]' : 'w-[92%] max-w-[360px] md:w-[280px] md:max-w-none'} flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
+        {/* Chat Panel — opt-out via Tools. When hidden, the spectator panel
+            (in spectator mode) falls back to its flat bottom offset because
+            there's no chat dock to clear. */}
+        {chatDockVisible && (
+        <div className={`${isSpectator ? 'fixed safe-bottom-offset left-3 right-3 z-40 sm:left-auto sm:right-4 sm:w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px]' : 'w-[92%] max-w-[360px] md:w-[280px] md:max-w-none'} flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1.5">
             {chatMessages.length === 0 && sysMessages.length === 0 && (
               <div className="text-xs text-zinc-600 italic">No messages...</div>
@@ -2769,6 +2820,7 @@ export default function PokerPage() {
             <button onClick={sendChat} className="px-4 text-sm font-bold text-white hover:bg-zinc-700 transition-colors">Send</button>
           </div>
         </div>
+        )}
 
       </div>
     </div>

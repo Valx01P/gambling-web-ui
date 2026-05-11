@@ -326,6 +326,9 @@ function CreatePanel({ onCreated }) {
           className="bg-zinc-900/90 border border-zinc-500/50 rounded-lg px-4 py-3 text-sm text-white placeholder-zinc-500 outline-none focus:border-zinc-300 shadow-sm"
           placeholder="Bot name"
           maxLength={32}
+          autoCorrect="off"
+          autoCapitalize="words"
+          spellCheck={false}
           value={name}
           onChange={e => setName(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && !submitting && submit()}
