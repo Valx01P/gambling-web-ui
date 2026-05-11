@@ -30,8 +30,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env.local
+# env files — every variant. Use ./scripts/setup-env.sh to bootstrap.
 
 # vercel
 .vercel

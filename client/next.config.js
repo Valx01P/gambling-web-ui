@@ -9,9 +9,37 @@ const apiOrigin = apiUrl
   : ''
 const wsOrigin = apiOrigin.replace(/^https?:/, m => m === 'https:' ? 'wss:' : 'ws:')
 
+// CDN that fronts the private S3 bucket. Used as the read URL for uploaded
+// avatars (<img src=...>). Optional — falls back to nothing if unset.
+const cdnUrl = process.env.NEXT_PUBLIC_CDN_URL || ''
+const cdnOrigin = cdnUrl
+  ? (() => { try { return new URL(cdnUrl).origin } catch { return '' } })()
+  : ''
+
 const CONNECT_SRC = ["'self'"]
 if (apiOrigin) CONNECT_SRC.push(apiOrigin)
 if (wsOrigin) CONNECT_SRC.push(wsOrigin)
+// Browser-direct uploads PUT to a presigned S3 URL — the host is
+// `<bucket>.s3.<region>.amazonaws.com`. Without this entry the browser
+// silently blocks the request with "Failed to fetch" (no CORS error
+// surface, no network-tab entry — just a thrown TypeError). Wildcard is
+// necessary because the bucket+region aren't known to the client at build
+// time, and CSP doesn't support path-level scoping.
+CONNECT_SRC.push('https://*.amazonaws.com')
+// If a CloudFront CDN is configured, allow fetch() to it too. (Today the
+// CDN is only used for <img> reads, but future code might fetch JSON or
+// blob via the CDN — better to be consistent than have a second outage.)
+if (cdnOrigin) CONNECT_SRC.push(cdnOrigin)
+
+// Origins allowed in <img src=...>. Existing entries cover the legacy
+// preset avatars (ibb.co) and the Google account picture
+// (googleusercontent.com). The CDN entry lets uploaded avatars display.
+const IMG_SRC = ["'self'", 'data:', 'blob:', 'https://i.ibb.co', 'https://*.googleusercontent.com']
+if (cdnOrigin) IMG_SRC.push(cdnOrigin)
+// Wildcard CloudFront covers any *.cloudfront.net distribution including
+// future ones — keeps the policy from breaking the next time we provision
+// a separate prod bucket/distribution.
+IMG_SRC.push('https://*.cloudfront.net')
 
 // CSP. `unsafe-inline` and `unsafe-eval` are both required:
 //   * unsafe-inline — Next 16 ships inline runtime scripts/styles and has no
@@ -35,7 +63,7 @@ const CSP = [
   "object-src 'none'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https://i.ibb.co https://*.googleusercontent.com",
+  `img-src ${IMG_SRC.join(' ')}`,
   "font-src 'self' data:",
   `connect-src ${CONNECT_SRC.join(' ')}`,
   "frame-src https://accounts.google.com",

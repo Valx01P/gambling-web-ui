@@ -1218,6 +1218,7 @@ export class PokerGame {
       botId: p.botId || null,
       botColor: p.botColor || null,
       botTextColor: p.botTextColor || null,
+      botAvatarUrl: p.botAvatarUrl || null,
       addedByPlayerId: p.addedByPlayerId || null,
       ownerDisplayName: p.ownerDisplayName || null,
       chips: p.chips,

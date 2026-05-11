@@ -4,7 +4,7 @@ import Link from 'next/link'
 import HomeBackLink from '../../components/HomeBackLink'
 import AccountMenu from '../../components/AccountMenu'
 import AuthGateModal from '../../components/AuthGateModal'
-import ProfileSelector from '../../components/ProfileSelector'
+import ProfileSelector, { ProfileAvatar } from '../../components/ProfileSelector'
 
 // Pre-game lobby. Renders three tabs (General / Private / Spectate) and the
 // bot arena entry from inside the spectate panel. Owns no WS state — every
@@ -26,9 +26,32 @@ export default function LobbyView({
   authUser,
   authGateMessage,
   setAuthGateMessage,
+  playMode = 'self',
+  setPlayMode,
   send,
   joinPayload,
+  // tryJoin commits any staged avatar blob to S3, then sends join_game.
+  // Every join button must go through it (not send directly) so the
+  // deferred-upload flow stays correct.
+  tryJoin,
+  joinBusy = false,
+  joinError = null,
+  // Receives (blob, localUrl) from ProfileSelector's cropper. Parent
+  // stashes the blob; selectAvatar(localUrl) follows.
+  onPendingAvatar,
+  // Most-recent saved PFPs (up to 5, server-capped). Signed-in users in
+  // anon mode see them as a one-tap re-pick strip inside the selector.
+  recentPfps = [],
 }) {
+  // Signed-out users always join as anonymous — there's no "self" to play
+  // as. Force the toggle accordingly to keep the rest of the UI simple.
+  const effectivePlayMode = authUser ? playMode : 'anon'
+  const playingAsSelf = effectivePlayMode === 'self'
+
+  // Centralized button label. While we're uploading the staged avatar we
+  // show "Uploading…" so the user understands the click registered and
+  // they should wait, not retry.
+  const findTableLabel = joinBusy ? 'Uploading…' : 'Find Table'
   return (
     <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4">
       <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
@@ -53,27 +76,101 @@ export default function LobbyView({
           <button onClick={() => setJoinMode('spectate')} className={`min-h-12 px-3 py-3 rounded-lg text-sm font-bold leading-tight transition-all ${joinMode === 'spectate' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}>Spectate</button>
         </div>
 
-        {(joinMode === 'general' || joinMode === 'private') && (
-          <ProfileSelector value={selectedAvatarId} onChange={selectAvatar} />
+        {/* Signed-in users get an explicit "self vs anonymous" choice.
+            'Play as YOU' locks the username + avatar to their saved
+            profile so other players see their real handle. 'Play
+            anonymously' shows the free-text username + ProfileSelector
+            (preset or custom upload) for a session-only identity. */}
+        {authUser && joinMode !== 'spectate' && (
+          <div className="grid grid-cols-2 gap-3 w-full">
+            <button
+              type="button"
+              onClick={() => setPlayMode?.('self')}
+              className={`rounded-xl border p-3 text-left transition-all ${
+                playingAsSelf
+                  ? 'border-emerald-400/70 bg-emerald-500/15 shadow-lg'
+                  : 'border-zinc-600/50 bg-zinc-800/80 hover:bg-zinc-700/60'
+              }`}
+              aria-pressed={playingAsSelf}
+            >
+              <div className="flex items-center gap-3">
+                <ProfileAvatar
+                  avatarUrl={authUser.avatarUrl}
+                  name={authUser.displayName}
+                  nameKey={authUser.id || authUser.email}
+                  size={44}
+                  className={playingAsSelf ? 'ring-2 ring-emerald-300' : ''}
+                />
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-emerald-200">Play as YOU</div>
+                  <div className="truncate text-sm font-black text-white">{authUser.displayName || 'You'}</div>
+                </div>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setPlayMode?.('anon')}
+              className={`rounded-xl border p-3 text-left transition-all ${
+                !playingAsSelf
+                  ? 'border-amber-400/70 bg-amber-500/10 shadow-lg'
+                  : 'border-zinc-600/50 bg-zinc-800/80 hover:bg-zinc-700/60'
+              }`}
+              aria-pressed={!playingAsSelf}
+            >
+              <div className="flex items-center gap-3">
+                <div className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-dashed border-amber-400/60 text-lg" aria-hidden="true">🎭</div>
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-amber-200">Anonymous</div>
+                  <div className="truncate text-sm font-black text-white">Pick a name + avatar</div>
+                </div>
+              </div>
+            </button>
+          </div>
         )}
 
-        {joinMode !== 'spectate' && (
+        {/* ProfileSelector only renders for the anon path. Playing as
+            yourself shows a tiny edit-profile hint instead — the avatar
+            and username come from your saved profile, edited via the
+            AccountMenu's Profile dialog. */}
+        {(joinMode === 'general' || joinMode === 'private') && !playingAsSelf && (
+          <ProfileSelector
+            value={selectedAvatarId}
+            onChange={selectAvatar}
+            onPendingFile={onPendingAvatar}
+            recentPfps={recentPfps}
+          />
+        )}
+
+        {joinMode !== 'spectate' && !playingAsSelf && (
           <input
             className="w-full bg-zinc-800/90 border border-zinc-500/50 rounded-xl px-5 py-4 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-lg"
             placeholder="Username (optional)"
             value={username}
             onChange={e => persistUsername(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && connected && joinMode === 'general' && send('join_game', joinPayload('general'))}
+            onKeyDown={e => e.key === 'Enter' && connected && joinMode === 'general' && !joinBusy && tryJoin('general')}
           />
+        )}
+
+        {joinMode !== 'spectate' && playingAsSelf && (
+          <div className="w-full rounded-xl border border-zinc-700/70 bg-zinc-950/40 px-4 py-3 text-center text-[11px] font-bold text-zinc-400">
+            You'll join as <span className="text-white">{authUser.displayName}</span>.
+            Change your username or avatar from your <span className="text-emerald-200">avatar menu</span> in the top right.
+          </div>
+        )}
+
+        {joinError && (
+          <div className="w-full rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-200">
+            {joinError}
+          </div>
         )}
 
         {joinMode === 'general' && (
           <button
-            onClick={() => send('join_game', joinPayload('general'))}
-            disabled={!connected}
+            onClick={() => tryJoin('general')}
+            disabled={!connected || joinBusy}
             className="w-full bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 py-4 rounded-xl text-base font-bold text-white transition-colors border border-zinc-500/50 shadow-lg"
           >
-            Find Table
+            {findTableLabel}
           </button>
         )}
 
@@ -83,11 +180,11 @@ export default function LobbyView({
               <div className="mb-2 text-sm font-black text-white">Create a private room</div>
               <button
                 type="button"
-                onClick={() => send('join_game', joinPayload('create_private'))}
-                disabled={!connected}
+                onClick={() => tryJoin('create_private')}
+                disabled={!connected || joinBusy}
                 className="w-full rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 py-3 text-sm font-black text-white border border-zinc-500/50"
               >
-                Create Private Room
+                {joinBusy ? 'Uploading…' : 'Create Private Room'}
               </button>
             </div>
             <div className="border-t border-zinc-700/70 pt-4">
@@ -98,15 +195,15 @@ export default function LobbyView({
                 maxLength={5}
                 value={inputCode}
                 onChange={e => setInputCode(e.target.value.toUpperCase())}
-                onKeyDown={e => e.key === 'Enter' && connected && inputCode.length === 5 && send('join_game', joinPayload('join_private', { code: inputCode }))}
+                onKeyDown={e => e.key === 'Enter' && connected && inputCode.length === 5 && !joinBusy && tryJoin('join_private', { code: inputCode })}
               />
               <button
                 type="button"
-                onClick={() => send('join_game', joinPayload('join_private', { code: inputCode }))}
-                disabled={!connected || inputCode.length !== 5}
+                onClick={() => tryJoin('join_private', { code: inputCode })}
+                disabled={!connected || inputCode.length !== 5 || joinBusy}
                 className="mt-2 w-full rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 py-3 text-sm font-black text-white border border-zinc-500/50"
               >
-                Join Private Room
+                {joinBusy ? 'Uploading…' : 'Join Private Room'}
               </button>
             </div>
           </div>
@@ -124,9 +221,9 @@ export default function LobbyView({
                   type="button"
                   onClick={() => {
                     if (!authUser) { setAuthGateMessage('Sign in to create a Bot Arena.'); return }
-                    send('join_game', joinPayload('bot_arena'))
+                    tryJoin('bot_arena')
                   }}
-                  disabled={!connected}
+                  disabled={!connected || joinBusy}
                   className="rounded-md border border-emerald-500/50 bg-emerald-600/20 px-3 py-1.5 text-xs font-black text-emerald-100 transition-colors hover:bg-emerald-600/30 disabled:opacity-50"
                   title={authUser ? 'Create a fresh bot-vs-bot arena' : 'Sign in to create a Bot Arena'}
                 >
@@ -161,8 +258,8 @@ export default function LobbyView({
                     </div>
                     <button
                       type="button"
-                      onClick={() => send('join_game', joinPayload('spectate', { roomId: table.roomId }))}
-                      disabled={!connected}
+                      onClick={() => tryJoin('spectate', { roomId: table.roomId })}
+                      disabled={!connected || joinBusy}
                       className={`shrink-0 rounded-md px-3 py-2 text-xs font-black transition-colors disabled:opacity-50 ${table.isArena ? 'border border-emerald-400/50 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25' : 'border border-amber-400/50 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25'}`}
                     >
                       Watch

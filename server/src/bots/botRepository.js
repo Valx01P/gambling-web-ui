@@ -1,7 +1,7 @@
 import { query } from '../db/pool.js'
 
 const PUBLIC_FIELDS = `
-  b.id, b.owner_user_id, b.name, b.color, b.text_color, b.rules, b.phrases, b.is_public,
+  b.id, b.owner_user_id, b.name, b.color, b.text_color, b.avatar_url, b.rules, b.phrases, b.is_public,
   b.code, b.code_enabled,
   b.is_clone, b.clone_tier, b.clone_hands_used,
   b.elo, b.hands_played, b.hands_voluntary, b.hands_won,
@@ -14,7 +14,7 @@ const PUBLIC_FIELDS = `
 // code) which the leaderboard and "my bots" page never display. With ~5KB
 // average code size × 50 rows that's 250KB saved per leaderboard hit.
 const LIST_FIELDS = `
-  b.id, b.owner_user_id, b.name, b.color, b.text_color, b.is_public,
+  b.id, b.owner_user_id, b.name, b.color, b.text_color, b.avatar_url, b.is_public,
   b.code_enabled,
   b.is_clone, b.clone_tier, b.clone_hands_used,
   b.elo, b.hands_played, b.hands_voluntary, b.hands_won,
@@ -35,6 +35,7 @@ function toApi(row, ownerName = null) {
     name: row.name,
     color: row.color,
     textColor: row.text_color || 'auto',
+    avatarUrl: row.avatar_url || null,
     codeEnabled: Boolean(row.code_enabled),
     isPublic: row.is_public,
     elo: row.elo,
@@ -103,6 +104,7 @@ export async function updateBot({ botId, ownerUserId, patch }) {
     ['name', 'name'],
     ['color', 'color'],
     ['text_color', 'textColor'],
+    ['avatar_url', 'avatarUrl'],
     ['is_public', 'isPublic'],
     ['code', 'code'],
     ['code_enabled', 'codeEnabled']

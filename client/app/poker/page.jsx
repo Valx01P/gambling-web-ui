@@ -12,6 +12,7 @@ import AuthGateModal from '../components/AuthGateModal'
 import AchievementToast from '../components/AchievementToast'
 import BotAvatar from '../components/BotAvatar'
 import { useAuth } from '../lib/useAuth'
+import { useUpload } from '../lib/useUpload'
 import { api } from '../lib/api'
 import {
   BANKS,
@@ -372,6 +373,12 @@ export default function PokerPage() {
   const [activePokerPanel, setActivePokerPanel] = useState(null)
   const [sessionHands, setSessionHands] = useState([])
   const [botRoster, setBotRoster] = useState({ mine: [], public: [], loading: false, error: null })
+  // Most-recent uploaded PFPs for the signed-in user. Shown in the lobby's
+  // anon mode so they can re-pick a past custom avatar with one tap, no
+  // re-upload. Server caps the list at 5 (older entries auto-evicted on
+  // every new save), so we never need to slice client-side. Re-fetched
+  // after every successful upload via refreshRecentPfps().
+  const [recentPfps, setRecentPfps] = useState([])
   // Pending bot picks for the arena tool. Holds bot IDs (duplicates allowed),
   // capped at MAX_ARENA_PICK. Flushed when the user hits "Add N bots".
   const [arenaPickQueue, setArenaPickQueue] = useState([])
@@ -416,6 +423,21 @@ export default function PokerPage() {
   // 'general' | 'private' | 'spectate'. `private` is a UI tab only — the
   // actual join sends the legacy `create_private` / `join_private` modes.
   const [joinMode, setJoinMode] = useState('general')
+  // 'self' (signed-in user plays as themselves — locks username + avatar
+  // to their saved profile) | 'anon' (free-text username, ProfileSelector
+  // for avatar including upload). Default 'self' for signed-in users on
+  // first paint; anonymous users only ever see 'anon'. Persisted to
+  // localStorage so the user's preferred mode survives reloads.
+  const [playMode, setPlayMode] = useState('self')
+  // Avatar cropped via the lobby selector but not yet uploaded. We hold the
+  // raw Blob in memory and let the selector use a local `blob:` URL as the
+  // preview — the real S3 PUT only fires when the user actually joins a
+  // table. Keeps a user who iterates ("nope, different one") from burning
+  // an S3 PUT per try.
+  const [pendingAvatarBlob, setPendingAvatarBlob] = useState(null)
+  const { upload: commitAvatar, busy: avatarCommitBusy } = useUpload()
+  const [joinBusy, setJoinBusy] = useState(false)
+  const [joinError, setJoinError] = useState(null)
   // String message shown in the auth-gate modal (Sign in to ...). null hides.
   const [authGateMessage, setAuthGateMessage] = useState(null)
   // Most recent achievement payload from the server. Renders as a toast
@@ -627,7 +649,13 @@ export default function PokerPage() {
       const savedZoom = parseInt(window.localStorage.getItem(ZOOM_STORAGE_KEY) || '', 10)
       const savedChat = window.localStorage.getItem(CHAT_VISIBLE_STORAGE_KEY)
       if (savedUsername) setUsername(savedUsername)
-      if (savedAvatarId) setSelectedAvatarId(getProfileAvatar(savedAvatarId).id)
+      // Custom uploads are stored verbatim as their CloudFront URL; presets
+      // round-trip through getProfileAvatar so an unknown id falls back to
+      // the default cleanly.
+      if (savedAvatarId) {
+        if (/^https?:\/\//.test(savedAvatarId)) setSelectedAvatarId(savedAvatarId)
+        else setSelectedAvatarId(getProfileAvatar(savedAvatarId).id)
+      }
       if (Number.isFinite(savedZoom) && savedZoom >= ZOOM_MIN && savedZoom <= ZOOM_MAX) {
         setPageZoom(savedZoom)
       }
@@ -892,14 +920,51 @@ export default function PokerPage() {
     else window.localStorage.removeItem(USERNAME_STORAGE_KEY)
   }
 
-  function selectAvatar(avatarId) {
-    setSelectedAvatarId(avatarId)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(AVATAR_STORAGE_KEY, avatarId)
+  // `value` may be a preset id ('op1'…), a fully-qualified upload URL
+  // (https://…cloudfront…), or a deferred-upload preview (`blob:`). All
+  // three flow through this one setter so ProfileSelector +
+  // ProfileModal don't have to branch on the caller side.
+  function selectAvatar(value) {
+    // If we're switching away from a pending blob avatar, free the in-memory
+    // image and drop the staged blob so we don't accidentally upload it on
+    // the next join attempt.
+    if (
+      typeof selectedAvatarId === 'string' &&
+      selectedAvatarId.startsWith('blob:') &&
+      selectedAvatarId !== value
+    ) {
+      URL.revokeObjectURL(selectedAvatarId)
+      setPendingAvatarBlob(null)
+    }
+    setSelectedAvatarId(value)
+    // Don't persist a `blob:` URL — those are tab-lifetime only and would
+    // dangle as broken images after a reload.
+    if (typeof window !== 'undefined' && typeof value === 'string' && !value.startsWith('blob:')) {
+      window.localStorage.setItem(AVATAR_STORAGE_KEY, value)
     }
   }
 
-  function joinPayload(mode = joinMode, extra = {}) {
+  // ProfileSelector's deferred-upload callback. Receives the cropped blob
+  // plus a `blob:` URL the selector is about to display. We stash the blob
+  // here; selectAvatar (called by the selector immediately after) sets the
+  // URL as the current value so the carousel shows the preview.
+  function stagePendingAvatar(blob /* , localUrl */) {
+    setPendingAvatarBlob(blob)
+  }
+
+  function joinPayload(mode = joinMode, extra = {}, avatarUrlOverride = null) {
+    const useSelf = authUser && playMode === 'self'
+
+    // "Play as YOU" — server is the source of truth for username + avatar.
+    // We just signal the intent; the server reads from its cached profile
+    // (populated at auth_hello). This makes Google profile pictures, custom
+    // CDN uploads, and "no avatar → initials at the table" all work
+    // through one code path on both sides, and lets the player drop their
+    // current avatar by clearing it in the Profile modal.
+    if (useSelf && mode !== 'spectate' && mode !== 'bot_arena') {
+      return { playAsSelf: true, mode, ...extra }
+    }
+
     const payload = {
       username: username || undefined,
       mode,
@@ -907,10 +972,66 @@ export default function PokerPage() {
     }
 
     if (mode !== 'spectate' && mode !== 'bot_arena') {
-      payload.avatarId = selectedAvatarId
+      if (avatarUrlOverride) {
+        // tryJoin just committed a staged blob — use the fresh public URL
+        // directly rather than waiting for the next render to flush
+        // selectedAvatarId state.
+        payload.avatarUrl = avatarUrlOverride
+      } else if (typeof selectedAvatarId === 'string' && /^https?:\/\//.test(selectedAvatarId)) {
+        // Distinguish preset id from uploaded URL so the server can pick the
+        // right code path. URL → trusted custom upload (its public URL is
+        // signed by our presign endpoint); id → look up in the preset table.
+        payload.avatarUrl = selectedAvatarId
+      } else if (typeof selectedAvatarId === 'string' && selectedAvatarId.startsWith('blob:')) {
+        // Defensive: a `blob:` URL shouldn't make it into the payload — the
+        // caller should run tryJoin which commits it first.
+        payload.avatarId = 'op1'
+      } else {
+        payload.avatarId = selectedAvatarId
+      }
     }
 
     return payload
+  }
+
+  // Commit any staged avatar blob, then dispatch join_game. All lobby
+  // join buttons funnel through this so we can centralize:
+  //   * "upload the blob first if anonymous mode and not spectating"
+  //   * busy/error state for the buttons
+  //   * cleanup of the stale `blob:` URL after commit
+  // Spectate + bot_arena never carry a player avatar so they short-circuit
+  // straight to send().
+  async function tryJoin(mode = joinMode, extra = {}) {
+    setJoinError(null)
+    const useSelf = authUser && playMode === 'self'
+    const needsAvatarCommit =
+      !useSelf &&
+      pendingAvatarBlob &&
+      mode !== 'spectate' &&
+      mode !== 'bot_arena'
+
+    if (!needsAvatarCommit) {
+      send('join_game', joinPayload(mode, extra))
+      return
+    }
+
+    setJoinBusy(true)
+    try {
+      const { publicUrl } = await commitAvatar(pendingAvatarBlob, { saveToHistory: !!authUser })
+      const oldUrl = selectedAvatarId
+      setPendingAvatarBlob(null)
+      selectAvatar(publicUrl)
+      if (typeof oldUrl === 'string' && oldUrl.startsWith('blob:')) URL.revokeObjectURL(oldUrl)
+      // Fire-and-forget refresh so the next time the user lands in the
+      // lobby, the new image (and any auto-evicted older ones) are
+      // reflected in the recent-uploads strip.
+      if (authUser) refreshRecentPfps()
+      send('join_game', joinPayload(mode, extra, publicUrl))
+    } catch (err) {
+      setJoinError(err?.message || 'Avatar upload failed — try again.')
+    } finally {
+      setJoinBusy(false)
+    }
   }
   
   function sendChat() {
@@ -1229,6 +1350,22 @@ export default function PokerPage() {
     }
   }
 
+  // Lightweight fetch of the user's recent PFPs — used to populate the
+  // lobby's anon-mode roster strip. Failures are non-fatal (the strip just
+  // renders empty) so we don't surface an error UI; logging is enough.
+  const refreshRecentPfps = useCallback(async () => {
+    if (!authUser) { setRecentPfps([]); return }
+    try {
+      const { pfps } = await api.listPfps()
+      setRecentPfps(pfps || [])
+    } catch (err) {
+      console.warn('[lobby] recent pfp fetch failed:', err.message)
+    }
+  }, [authUser])
+
+  // Refresh whenever auth state flips. Signed-out → clear; signed-in → fetch.
+  useEffect(() => { refreshRecentPfps() }, [refreshRecentPfps])
+
   function addBotToTable(botId) {
     // Keep the panel open so the user can add multiple bots in a row.
     // The roster doesn't change after a successful add (each bot row stays
@@ -1343,8 +1480,15 @@ export default function PokerPage() {
         authUser={authUser}
         authGateMessage={authGateMessage}
         setAuthGateMessage={setAuthGateMessage}
+        playMode={playMode}
+        setPlayMode={setPlayMode}
         send={send}
         joinPayload={joinPayload}
+        tryJoin={tryJoin}
+        joinBusy={joinBusy || avatarCommitBusy}
+        joinError={joinError}
+        onPendingAvatar={stagePendingAvatar}
+        recentPfps={recentPfps}
       />
     )
   }
@@ -2541,11 +2685,13 @@ export default function PokerPage() {
                     </div>
                     <div className="mt-0.5 flex items-center justify-center gap-1.5 text-[9px] sm:text-xs text-zinc-200 font-medium whitespace-nowrap">
                       {player.isBot ? (
-                        <BotAvatar name={player.username} color={player.botColor || '#3b82f6'} textColor={player.botTextColor || 'auto'} size={24} className="h-5 w-5 sm:h-6 sm:w-6" />
+                        <BotAvatar name={player.username} color={player.botColor || '#3b82f6'} textColor={player.botTextColor || 'auto'} avatarUrl={player.botAvatarUrl} size={24} className="h-5 w-5 sm:h-6 sm:w-6" />
                       ) : (
                         <ProfileAvatar
                           avatarId={player.avatarId}
                           avatarUrl={player.avatarUrl}
+                          name={player.username}
+                          nameKey={player.id}
                           className="h-5 w-5 sm:h-6 sm:w-6"
                         />
                       )}

@@ -8,6 +8,7 @@ import AccountMenu from '../../../components/AccountMenu'
 import ConfirmPopoverButton from '../../../components/ConfirmPopoverButton'
 import BotAvatar from '../../../components/BotAvatar'
 import { useAuth } from '../../../lib/useAuth'
+import { useUpload } from '../../../lib/useUpload'
 import { api } from '../../../lib/api'
 import { BOT_COLOR_PRESETS, isValidHex } from '../../../lib/botColors'
 import { STARTER_CODE } from '../../../lib/starterBotCode'
@@ -18,6 +19,7 @@ import { STARTER_CODE } from '../../../lib/starterBotCode'
 // tab, so it's loaded the first time the user opens that tab.
 const JsCodeEditor = dynamic(() => import('../../../components/JsCodeEditor'), { ssr: false })
 const Simulator = dynamic(() => import('../../../components/Simulator'), { ssr: false })
+const AvatarCropper = dynamic(() => import('../../../components/AvatarCropper'), { ssr: false })
 const HexColorPicker = dynamic(() => import('react-colorful').then(m => m.HexColorPicker), { ssr: false })
 const HexColorInput = dynamic(() => import('react-colorful').then(m => m.HexColorInput), { ssr: false })
 
@@ -45,12 +47,21 @@ export default function BotDetailPage({ params }) {
   const [draftName, setDraftName] = useState('')
   const [draftColor, setDraftColor] = useState('#3b82f6')
   const [draftTextColor, setDraftTextColor] = useState('auto')
+  const [draftAvatarUrl, setDraftAvatarUrl] = useState(null)
   const [draftCode, setDraftCode] = useState('')
 
   const [tab, setTab] = useState('code')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
   const [saveOk, setSaveOk] = useState(false)
+
+  // Avatar upload state — wired to the same useUpload hook + AvatarCropper
+  // the user-facing ProfileModal uses. The bot owner is signed-in (else
+  // they can't edit), so uploads land in users/{userId}/pfp/ and are
+  // saved to their PFP history; the bot just references the public URL.
+  const [cropFile, setCropFile] = useState(null)
+  const avatarFileInputRef = useRef(null)
+  const { upload: uploadAvatar, busy: avatarUploading, error: avatarUploadError } = useUpload()
 
   const baselineRef = useRef(null)
   const isMine = user && bot && bot.ownerUserId === user.id
@@ -67,11 +78,13 @@ export default function BotDetailPage({ params }) {
         setDraftName(bot.name)
         setDraftColor(bot.color)
         setDraftTextColor(bot.textColor || 'auto')
+        setDraftAvatarUrl(bot.avatarUrl || null)
         setDraftCode(initialCode)
         baselineRef.current = {
           name: bot.name,
           color: bot.color,
           textColor: bot.textColor || 'auto',
+          avatarUrl: bot.avatarUrl || null,
           code: initialCode
         }
       })
@@ -86,15 +99,17 @@ export default function BotDetailPage({ params }) {
       draftName !== baselineRef.current.name ||
       draftColor !== baselineRef.current.color ||
       draftTextColor !== baselineRef.current.textColor ||
+      draftAvatarUrl !== baselineRef.current.avatarUrl ||
       draftCode !== baselineRef.current.code
     )
-  }, [draftName, draftColor, draftTextColor, draftCode])
+  }, [draftName, draftColor, draftTextColor, draftAvatarUrl, draftCode])
 
   const reset = useCallback(() => {
     if (!baselineRef.current) return
     setDraftName(baselineRef.current.name)
     setDraftColor(baselineRef.current.color)
     setDraftTextColor(baselineRef.current.textColor || 'auto')
+    setDraftAvatarUrl(baselineRef.current.avatarUrl || null)
     setDraftCode(baselineRef.current.code)
     setSaveError(null)
     setSaveOk(false)
@@ -112,6 +127,7 @@ export default function BotDetailPage({ params }) {
         name: draftName.trim(),
         color: draftColor,
         textColor: draftTextColor,
+        avatarUrl: draftAvatarUrl,
         code: draftCode,
         codeEnabled: true
       })
@@ -121,11 +137,13 @@ export default function BotDetailPage({ params }) {
         name: updated.name,
         color: updated.color,
         textColor: updated.textColor || 'auto',
+        avatarUrl: updated.avatarUrl || null,
         code: initialCode
       }
       setDraftName(updated.name)
       setDraftColor(updated.color)
       setDraftTextColor(updated.textColor || 'auto')
+      setDraftAvatarUrl(updated.avatarUrl || null)
       setDraftCode(initialCode)
       setSaveOk(true)
       setTimeout(() => setSaveOk(false), 2000)
@@ -134,7 +152,7 @@ export default function BotDetailPage({ params }) {
     } finally {
       setSaving(false)
     }
-  }, [draftName, draftColor, draftTextColor, draftCode, id])
+  }, [draftName, draftColor, draftTextColor, draftAvatarUrl, draftCode, id])
 
   async function destroy() {
     if (!bot) return
@@ -225,7 +243,7 @@ export default function BotDetailPage({ params }) {
           <>
             <div className="flex w-full flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
-                <BotAvatar name={draftName || bot.name} color={draftColor} textColor={draftTextColor} size={56} />
+                <BotAvatar name={draftName || bot.name} color={draftColor} textColor={draftTextColor} avatarUrl={draftAvatarUrl} size={56} />
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <div className="truncate text-xl font-black text-white">{draftName || bot.name}</div>
@@ -365,11 +383,14 @@ export default function BotDetailPage({ params }) {
                     </div>
 
                     {/* Live avatar preview reflecting the current background +
-                        text choices so the user can see the contrast pick. */}
+                        text choices so the user can see the contrast pick.
+                        When an uploaded image is set, the preview shows that
+                        instead — colors are still saved as fallback for any
+                        spot the image can't render. */}
                     <div className="mb-3 flex items-center gap-3">
-                      <BotAvatar name={draftName || bot.name} color={draftColor} textColor={draftTextColor} size={56} />
+                      <BotAvatar name={draftName || bot.name} color={draftColor} textColor={draftTextColor} avatarUrl={draftAvatarUrl} size={56} />
                       <div className="text-[11px] font-bold text-zinc-200">
-                        Live preview — that's what the table seat will show.
+                        {draftAvatarUrl ? 'Custom image active — color shows when no image.' : "Live preview — that's what the table seat will show."}
                       </div>
                     </div>
 
@@ -438,6 +459,64 @@ export default function BotDetailPage({ params }) {
                         )
                       })}
                     </div>
+                  </div>
+
+                  {/* Custom avatar — overrides the color+initials at the table.
+                      Upload goes through the same presign + S3 flow as user
+                      profile pictures; image becomes one of the user's saved
+                      PFPs and can be re-used across bots if desired. */}
+                  <div className="rounded-xl border border-zinc-600/50 bg-zinc-800/95 p-3 shadow-sm">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Profile picture</div>
+                        <div className="text-[11px] font-bold text-zinc-400">
+                          Optional. Overrides the color + initials at the table.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => avatarFileInputRef.current?.click()}
+                        disabled={avatarUploading}
+                        className="rounded-md border border-amber-400/60 bg-amber-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-amber-100 hover:bg-amber-500/25 disabled:opacity-50"
+                      >
+                        {avatarUploading ? 'Uploading…' : draftAvatarUrl ? 'Replace' : '+ Upload'}
+                      </button>
+                    </div>
+                    <input
+                      ref={avatarFileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0]
+                        e.target.value = ''
+                        if (!f) return
+                        if (f.size > 5 * 1024 * 1024) { setSaveError('Image too large — max 5MB.'); return }
+                        if (!/^image\/(png|jpe?g|webp|gif)$/.test(f.type)) { setSaveError('Use PNG, JPEG, WebP, or GIF.'); return }
+                        setCropFile(f)
+                      }}
+                    />
+                    {draftAvatarUrl ? (
+                      <div className="flex items-center gap-3">
+                        <BotAvatar name={draftName || bot.name} color={draftColor} textColor={draftTextColor} avatarUrl={draftAvatarUrl} size={56} />
+                        <button
+                          type="button"
+                          onClick={() => setDraftAvatarUrl(null)}
+                          className="rounded-md border border-zinc-500/50 bg-zinc-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-zinc-700"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-zinc-700/70 bg-zinc-900/40 px-3 py-3 text-[11px] font-bold text-zinc-500">
+                        No image — bot shows its color + initials at the table.
+                      </div>
+                    )}
+                    {avatarUploadError && (
+                      <div className="mt-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] font-bold text-red-200">
+                        {avatarUploadError}
+                      </div>
+                    )}
                   </div>
 
                   {/* Visibility toggle — clones default private, manual bots
@@ -533,6 +612,24 @@ export default function BotDetailPage({ params }) {
         )}
       </div>
 
+      <AvatarCropper
+        open={!!cropFile}
+        file={cropFile}
+        busy={avatarUploading}
+        onCancel={() => setCropFile(null)}
+        onConfirm={async (blob) => {
+          try {
+            // saveToHistory:true → the cropped image lands in the owner's
+            // PFP history too, so they can pick the same image for a
+            // different bot or for themselves without re-uploading.
+            const { publicUrl } = await uploadAvatar(blob, { saveToHistory: true })
+            setDraftAvatarUrl(publicUrl)
+            setCropFile(null)
+          } catch {
+            /* useUpload reports the error; cropper stays open for retry */
+          }
+        }}
+      />
     </div>
   )
 }

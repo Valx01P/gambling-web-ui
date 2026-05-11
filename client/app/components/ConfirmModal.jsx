@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect } from 'react'
+import { createPortal } from 'react-dom'
 
 // Small themed confirm dialog that replaces the native window.confirm().
 // Two reasons we don't use the browser dialog:
@@ -49,12 +50,14 @@ export default function ConfirmModal({
   }, [open, busy, onClose])
 
   if (!open) return null
+  if (typeof document === 'undefined') return null
 
   const confirmClasses = tone === 'danger'
     ? 'border-red-400/60 bg-red-500/25 text-red-100 hover:bg-red-500/40'
     : 'border-amber-400/60 bg-amber-500/25 text-amber-100 hover:bg-amber-500/40'
 
-  return (
+  // Portal so z-[310] reliably sits above all in-page chrome.
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -67,8 +70,6 @@ export default function ConfirmModal({
         style={{ paddingBottom: 'max(0px, env(safe-area-inset-bottom))' }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Top accent stripe — keeps the dialog feeling like a deliberate action */}
-        <div className={`h-1 w-full ${tone === 'danger' ? 'bg-red-400' : 'bg-amber-300'}`} />
         <div className="p-4">
           <div className="text-sm font-black text-white">{title}</div>
           {description && (
@@ -106,6 +107,7 @@ export default function ConfirmModal({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

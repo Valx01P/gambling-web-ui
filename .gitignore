@@ -1,0 +1,28 @@
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node / build artifacts (per-side ignores cover most of this; these are
+# safety nets in case someone runs a tool at the repo root).
+node_modules/
+coverage/
+.next/
+out/
+build/
+
+# Environment files — both sides, every variant. Never commit secrets to
+# this repo. To bootstrap a fresh checkout, run `./scripts/setup-env.sh`,
+# which generates placeholder files.
+.env
+.env.*
+!.env.example.disabled   # accidental safety net — no longer in use
+client/.env
+client/.env.*
+server/.env
+server/.env.*
+
+# AWS CLI temp scratch — used by the setup flow, never meant to be committed.
+.aws-scratch/

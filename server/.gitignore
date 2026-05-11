@@ -1,2 +1,3 @@
 node_modules
-.env
+
+# env files — every variant. Use ./scripts/setup-env.sh to bootstrap.

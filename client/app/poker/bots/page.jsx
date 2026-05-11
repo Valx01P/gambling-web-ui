@@ -72,7 +72,7 @@ function CloneSlot({ slot, onBuilt, onUpdated, autoBuild = false }) {
       <div className="rounded-lg border border-amber-300/40 bg-amber-500/5 transition-colors hover:bg-amber-500/15">
         <div className="flex items-center gap-2 px-3 py-2">
           <Link href={`/poker/bots/${slot.botId}`} className="flex flex-1 items-center gap-2 min-w-0">
-            <BotAvatar name={slot.name} color={slot.color} size={28} />
+            <BotAvatar name={slot.name} color={slot.color} avatarUrl={slot.avatarUrl} size={28} />
             <div className="min-w-0">
               <div className="truncate text-xs font-black text-white">{slot.name}</div>
               <div className="truncate text-[10px] font-bold text-zinc-400">
@@ -391,7 +391,7 @@ function BotRow({ bot, mine, onDeleted }) {
     >
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <BotAvatar name={bot.name} color={bot.color} textColor={bot.textColor} size={40} />
+          <BotAvatar name={bot.name} color={bot.color} textColor={bot.textColor} avatarUrl={bot.avatarUrl} size={40} />
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-sm font-black text-white">{bot.name}</span>

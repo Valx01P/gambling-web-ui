@@ -3,7 +3,6 @@ import {
   CREDIT_SCORE_DEFAULT,
   CREDIT_SCORE_MAX,
   CREDIT_SCORE_MIN,
-  DEFAULT_PROFILE_AVATAR,
   LOAN_AMOUNT,
   LOAN_INTEREST_HAND_INTERVAL,
   POKER_CONFIG,
@@ -19,8 +18,11 @@ export class Player {
     this.username = username || `Player_${id.substring(0, 6)}`
     this.chips = POKER_CONFIG.STARTING_CHIPS
     this.pokerBuyIn = POKER_CONFIG.STARTING_CHIPS
-    this.avatarId = DEFAULT_PROFILE_AVATAR.id
-    this.avatarUrl = DEFAULT_PROFILE_AVATAR.url
+    // No avatar by default — table rendering falls back to an initials
+    // circle keyed off `username` (see ProfileAvatar on the client).
+    // Picking a preset or uploading a custom image overrides this.
+    this.avatarId = null
+    this.avatarUrl = null
     this.currentRoom = null
     this.isSpectator = false
     this.isVoluntarySpectator = false
@@ -30,6 +32,12 @@ export class Player {
     // arena creation, bot creation, etc. Anonymous players never set it.
     this.userId = null
     this.userEmail = null
+    // Cached profile snapshot from the users table, populated during
+    // auth_hello. Used at join_game time when the client signals
+    // playAsSelf — server reads from here instead of trusting whatever
+    // username/avatar the client tried to send.
+    this.userDisplayName = null
+    this.userAvatarUrl = null
 
     // Loan accounts. Each entry: { bankId, bankName, principal, interestRate,
     // owed, takenAtHand, lastInterestAtHand }
@@ -231,6 +239,27 @@ export class Player {
 
     this.avatarId = avatar.id
     this.avatarUrl = avatar.url
+    return true
+  }
+
+  // Set a custom uploaded avatar (URL). Validates the URL against the
+  // configured CDN base so we don't broadcast an arbitrary attacker-
+  // controlled image URL to every player at the table.
+  //
+  // `avatarId` is cleared (set to null) so consumers know to render
+  // straight from `avatarUrl` instead of looking up a preset.
+  setCustomAvatarUrl(url) {
+    if (typeof url !== 'string' || url.length === 0 || url.length > 512) return false
+    let parsed
+    try { parsed = new URL(url) } catch { return false }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false
+    const baseRaw = process.env.S3_PUBLIC_BASE_URL || ''
+    if (!baseRaw) return false
+    let baseHost
+    try { baseHost = new URL(baseRaw).hostname } catch { return false }
+    if (parsed.hostname !== baseHost) return false
+    this.avatarId = null
+    this.avatarUrl = url
     return true
   }
 

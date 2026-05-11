@@ -25,6 +25,9 @@ export class BotPlayer {
     this.avatarUrl = null
     this.botColor = bot.color
     this.botTextColor = bot.textColor || 'auto'
+    // Custom uploaded image for the bot. When set, the client renders this
+    // instead of the color+initials fallback. Null = no custom image.
+    this.botAvatarUrl = bot.avatarUrl || null
     this.botId = bot.id
 
     this.currentRoom = null
@@ -189,6 +192,8 @@ export class BotPlayer {
       isBot: true,
       botId: this.botId,
       botColor: this.botColor,
+      botTextColor: this.botTextColor,
+      botAvatarUrl: this.botAvatarUrl,
       addedByPlayerId: this.addedByPlayerId,
       ownerDisplayName: this.ownerDisplayName
     }

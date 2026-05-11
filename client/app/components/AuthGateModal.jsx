@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useAuth } from '../lib/useAuth'
 
 const SCRIPT_SRC = 'https://accounts.google.com/gsi/client'
@@ -93,8 +94,10 @@ export default function AuthGateModal({ open, message, onClose }) {
   }, [open, user, signInWithGoogle, onClose])
 
   if (!open) return null
+  if (typeof document === 'undefined') return null
 
-  return (
+  // Portal to body so z-[300] isn't trapped by an ancestor's stacking context.
+  return createPortal(
     <div
       className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-4"
       onClick={onClose}
@@ -129,6 +132,7 @@ export default function AuthGateModal({ open, message, onClose }) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

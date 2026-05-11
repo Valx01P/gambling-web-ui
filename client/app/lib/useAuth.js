@@ -73,5 +73,16 @@ export function useAuth() {
     return data.user
   }, [])
 
-  return { user, loading, signInWithGoogle, signOut }
+  // Forces an /auth/me re-fetch, bypassing the TTL cache. Use after the
+  // user mutates their own profile (PATCH /auth/me) so the cached User
+  // reflects the new displayName / avatarUrl across every consumer.
+  const refreshUser = useCallback(async () => {
+    _refreshedAt = 0
+    _refreshing = null
+    const next = await refreshMeOnce()
+    setUser(next)
+    return next
+  }, [])
+
+  return { user, loading, signInWithGoogle, signOut, refreshUser }
 }

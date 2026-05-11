@@ -2,6 +2,7 @@ import { BANKS, GAME_PHASES, MESSAGE_TYPES, POKER_CONFIG } from "../config/const
 import { getBotById } from "../bots/botRepository.js"
 import { verify as verifyJwt } from "../auth/jwt.js"
 import { sanitizeDisplayString } from "../utils/sanitize.js"
+import { findUserById } from "../users/userRepository.js"
 
 export class MessageHandler {
   constructor(playerManager, roomManager) {
@@ -97,12 +98,35 @@ export class MessageHandler {
   }
 
   handleJoin(player, data) {
-    if (data?.username) {
-      const clean = sanitizeDisplayString(data.username, { maxLength: 24 })
-      if (clean) player.username = clean
-    }
-    if (data?.avatarId && typeof player.setProfileAvatar === 'function') {
-      player.setProfileAvatar(data.avatarId)
+    // "Play as YOU" — signed-in user wants their server-authoritative
+    // profile applied to the table. The server is the source of truth here,
+    // so we ignore any avatarId/avatarUrl/username in the payload and pull
+    // straight from the cached profile (populated during auth_hello).
+    //
+    // Why not validate the client-supplied avatarUrl instead? Google
+    // profile pictures live on googleusercontent.com, which isn't on our
+    // CDN — setCustomAvatarUrl would reject them. Going through the
+    // server-side lookup means Google pictures, custom uploads, and
+    // no-avatar (initials at the table) all work uniformly.
+    if (data?.playAsSelf && player.userId) {
+      if (player.userDisplayName) {
+        const clean = sanitizeDisplayString(player.userDisplayName, { maxLength: 24 })
+        if (clean) player.username = clean
+      }
+      player.avatarId = null
+      player.avatarUrl = player.userAvatarUrl || null
+    } else {
+      if (data?.username) {
+        const clean = sanitizeDisplayString(data.username, { maxLength: 24 })
+        if (clean) player.username = clean
+      }
+      if (data?.avatarUrl && typeof player.setCustomAvatarUrl === 'function') {
+        // Custom upload — must originate from our own S3+CloudFront stack.
+        // setCustomAvatarUrl rejects URLs outside the configured CDN host.
+        player.setCustomAvatarUrl(data.avatarUrl)
+      } else if (data?.avatarId && typeof player.setProfileAvatar === 'function') {
+        player.setProfileAvatar(data.avatarId)
+      }
     }
 
     const mode = data?.mode || 'general'
@@ -155,6 +179,21 @@ export class MessageHandler {
       const payload = verifyJwt(token)
       player.userId = payload.sub
       player.userEmail = payload.email || null
+      // Fire-and-forget profile fetch so "Play as YOU" at join time can
+      // pull the server-authoritative username + avatar synchronously.
+      // The join happens seconds after auth_hello in normal flows, so the
+      // race is benign — if the fetch hasn't completed yet, the player
+      // just appears with their (default-null) avatar and we eat one
+      // missing-photo turn at the table. Repopulates on every auth_hello
+      // in case the user updated their profile between sessions.
+      findUserById(player.userId)
+        .then(user => {
+          if (user && player.userId === payload.sub) {
+            player.userDisplayName = user.display_name || null
+            player.userAvatarUrl = user.avatar_url || null
+          }
+        })
+        .catch(err => console.warn('[auth] profile prefetch failed:', err.message))
       return { success: true }
     } catch {
       player.userId = null
@@ -428,13 +467,16 @@ export class MessageHandler {
       ? sanitizeDisplayString(data.username, { maxLength: 24 })
       : null
     const nextAvatarId = typeof data?.avatarId === 'string' ? data.avatarId : null
+    const nextAvatarUrl = typeof data?.avatarUrl === 'string' ? data.avatarUrl : null
 
-    if (!nextUsername && !nextAvatarId) {
+    if (!nextUsername && !nextAvatarId && !nextAvatarUrl) {
       return this.error('Nothing to update', player)
     }
 
     if (nextUsername) player.username = nextUsername || player.username
-    if (nextAvatarId && typeof player.setProfileAvatar === 'function') {
+    if (nextAvatarUrl && typeof player.setCustomAvatarUrl === 'function') {
+      player.setCustomAvatarUrl(nextAvatarUrl)
+    } else if (nextAvatarId && typeof player.setProfileAvatar === 'function') {
       player.setProfileAvatar(nextAvatarId)
     }
 

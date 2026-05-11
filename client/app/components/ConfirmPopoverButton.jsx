@@ -117,9 +117,6 @@ export default function ConfirmPopoverButton({
             align === 'left' ? 'left-0' : 'right-0'
           }`}
         >
-          {/* Top accent stripe — matches the rest of the app's "this is a
-              real action" treatment. */}
-          <div className="h-[3px] w-full rounded-t-lg bg-amber-300" />
           <div className="p-3">
             {description && (
               <div className="text-[11px] font-bold leading-snug text-zinc-200">

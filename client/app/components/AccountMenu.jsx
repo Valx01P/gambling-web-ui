@@ -4,6 +4,8 @@ import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../lib/useAuth'
 import { colorForKey, getInitials } from '../lib/initials'
+import { ProfileAvatar } from './ProfileSelector'
+import ProfileModal from './ProfileModal'
 
 const SCRIPT_SRC = 'https://accounts.google.com/gsi/client'
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
@@ -49,6 +51,11 @@ export default function AccountMenu() {
   const gsiHostRef = useRef(null)
   const [open, setOpen] = useState(false)
   const [error, setError] = useState(null)
+  // profileOpen has to live up here, not after the `!user` early return.
+  // Hook order must be identical on every render — a useState declared
+  // only on the signed-in branch flips the hook count when the user
+  // signs in mid-session and React throws "change in the order of Hooks".
+  const [profileOpen, setProfileOpen] = useState(false)
   const initialized = useRef(false)
 
   useEffect(() => {
@@ -132,7 +139,16 @@ export default function AccountMenu() {
         aria-label={user.displayName}
         className="rounded-full ring-1 ring-zinc-500/50 hover:ring-zinc-300/80 transition shadow-sm"
       >
-        <InitialsCircle name={user.displayName} color={color} />
+        {/* ProfileAvatar handles both: shows the uploaded image when
+            present, otherwise the initials circle. Earlier this branch
+            rendered a raw <img> which surfaced a broken-image artifact
+            when avatarUrl was set but failed to load. */}
+        <ProfileAvatar
+          avatarUrl={user.avatarUrl}
+          name={user.displayName}
+          nameKey={user.id || user.email}
+          size={32}
+        />
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-2 z-[100] w-[min(14rem,calc(100vw-1rem))] overflow-hidden rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
@@ -140,6 +156,13 @@ export default function AccountMenu() {
             <div className="text-xs font-black text-white truncate">{user.displayName}</div>
             <div className="text-[10px] font-bold text-zinc-300 truncate">{user.email}</div>
           </div>
+          <button
+            type="button"
+            onClick={() => { setOpen(false); setProfileOpen(true) }}
+            className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800"
+          >
+            Profile
+          </button>
           <Link
             href="/poker/bots"
             onClick={() => setOpen(false)}
@@ -156,6 +179,7 @@ export default function AccountMenu() {
           </button>
         </div>
       )}
+      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
     </div>
   )
 }

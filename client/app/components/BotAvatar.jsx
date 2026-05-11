@@ -1,6 +1,6 @@
 'use client'
 
-import { memo } from 'react'
+import { memo, useEffect, useState } from 'react'
 
 function readableTextColor(hex) {
   const c = (hex || '').replace('#', '')
@@ -22,7 +22,38 @@ export function resolveTextColor(bgHex, choice) {
 // Avatar repaints on every parent re-render even though its props rarely
 // change. Memoizing eliminates wasted reconciliation across the 5 seated
 // players on every WS tick.
-function BotAvatarImpl({ name, color = '#3b82f6', textColor = 'auto', size = 40, className = '' }) {
+//
+// `avatarUrl` (optional) — when set, render the uploaded image and skip the
+// colored-initials fallback. Owner-uploaded via the same S3 + CloudFront
+// pipeline as user PFPs.
+function BotAvatarImpl({ name, color = '#3b82f6', textColor = 'auto', avatarUrl = null, size = 40, className = '' }) {
+  // Same broken-image guard as ProfileAvatar — if the URL is set but the
+  // load fails (404, network, etc.) drop to the color+initials variant
+  // instead of showing the browser's broken-image glyph at a seat.
+  const [imgFailed, setImgFailed] = useState(false)
+  useEffect(() => { setImgFailed(false) }, [avatarUrl])
+
+  if (avatarUrl && !imgFailed) {
+    return (
+      <div
+        className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-zinc-900 ${className}`}
+        style={{ width: size, height: size }}
+        aria-label={`Bot ${name}`}
+      >
+        <img
+          src={avatarUrl}
+          alt=""
+          width={size}
+          height={size}
+          className="h-full w-full object-cover object-center"
+          draggable="false"
+          loading="lazy"
+          decoding="async"
+          onError={() => setImgFailed(true)}
+        />
+      </div>
+    )
+  }
   const initials = (name || '?').trim().slice(0, 2).toUpperCase()
   return (
     <div

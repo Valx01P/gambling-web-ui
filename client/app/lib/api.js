@@ -75,5 +75,15 @@ export const api = {
   // an existing tier's code in place.
   previewMyBot: () => apiFetch('/api/bots/from-me/preview', { auth: true }),
   buildMyBot: (tier = 1) => apiFetch('/api/bots/from-me', { method: 'POST', auth: true, body: { tier } }),
-  recalculateClone: (id) => apiFetch(`/api/bots/${id}/recalculate-clone`, { method: 'POST', auth: true })
+  recalculateClone: (id) => apiFetch(`/api/bots/${id}/recalculate-clone`, { method: 'POST', auth: true }),
+
+  // Uploads. `presign` is auth-optional — anonymous users get tmp/ keys that
+  // the bucket lifecycle reaps after 24h; signed-in users get persistent
+  // users/<id>/ keys that they manage via the PFP endpoints below.
+  presignUpload: ({ kind, contentType, size }) =>
+    apiFetch('/api/uploads/presign', { method: 'POST', auth: true, body: { kind, contentType, size } }),
+  savePfp: ({ key, publicUrl, contentType, byteSize }) =>
+    apiFetch('/api/uploads/me/pfps', { method: 'POST', auth: true, body: { key, publicUrl, contentType, byteSize } }),
+  listPfps: () => apiFetch('/api/uploads/me/pfps', { auth: true }),
+  deletePfp: (id) => apiFetch(`/api/uploads/me/pfps/${id}`, { method: 'DELETE', auth: true }),
 }

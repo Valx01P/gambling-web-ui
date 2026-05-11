@@ -416,16 +416,38 @@ export function botRoutes() {
   })
 
   router.patch('/:id', authRequired, botWriteLimiter, async (req, res) => {
-    const { name, color, textColor, rules, phrases, code, codeEnabled } = req.body || {}
+    const { name, color, textColor, avatarUrl, rules, phrases, code, codeEnabled, isPublic } = req.body || {}
     try {
       const patch = {}
       if (name !== undefined) patch.name = validateName(name)
       if (color !== undefined) { validateColor(color); patch.color = color }
       if (textColor !== undefined) { validateTextColor(textColor); patch.textColor = textColor }
+      // Custom avatar URL — must be either null (clear it) or a CloudFront URL
+      // from our own bucket. Anyone-anywhere URLs would let a bot owner
+      // broadcast an attacker-chosen image to every table the bot sits at.
+      if (avatarUrl !== undefined) {
+        if (avatarUrl === null || avatarUrl === '') {
+          patch.avatarUrl = null
+        } else if (typeof avatarUrl !== 'string' || avatarUrl.length > 512) {
+          return res.status(400).json({ error: 'invalid_avatar_url' })
+        } else {
+          try {
+            const parsed = new URL(avatarUrl)
+            const baseHost = process.env.S3_PUBLIC_BASE_URL ? new URL(process.env.S3_PUBLIC_BASE_URL).hostname : null
+            if (!baseHost || parsed.hostname !== baseHost) {
+              return res.status(400).json({ error: 'invalid_avatar_url', detail: 'Avatar must be uploaded through this app.' })
+            }
+            patch.avatarUrl = avatarUrl
+          } catch {
+            return res.status(400).json({ error: 'invalid_avatar_url' })
+          }
+        }
+      }
       if (rules !== undefined) { validateRules(rules); patch.rules = rules }
       if (phrases !== undefined) { validatePhrases(phrases); patch.phrases = phrases }
       if (code !== undefined) { validateCode(code); patch.code = code }
       if (codeEnabled !== undefined) patch.codeEnabled = Boolean(codeEnabled)
+      if (isPublic !== undefined) patch.isPublic = Boolean(isPublic)
 
       const bot = await updateBot({ botId: req.params.id, ownerUserId: req.user.id, patch })
       if (!bot) return res.status(404).json({ error: 'not_found' })
