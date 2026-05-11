@@ -1,17 +1,25 @@
 'use client'
 
 import Link from 'next/link'
+import dynamic from 'next/dynamic'
 import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import HomeBackLink from '../../../components/HomeBackLink'
 import AccountMenu from '../../../components/AccountMenu'
 import ConfirmPopoverButton from '../../../components/ConfirmPopoverButton'
 import BotAvatar from '../../../components/BotAvatar'
-import JsCodeEditor, { STARTER_CODE } from '../../../components/JsCodeEditor'
-import Simulator from '../../../components/Simulator'
 import { useAuth } from '../../../lib/useAuth'
 import { api } from '../../../lib/api'
 import { BOT_COLOR_PRESETS, isValidHex } from '../../../lib/botColors'
-import { HexColorPicker, HexColorInput } from 'react-colorful'
+import { STARTER_CODE } from '../../../lib/starterBotCode'
+
+// Heavy chunks deferred until the user actually engages with editing.
+// JsCodeEditor pulls in the docs reference panel + linter; Simulator pulls
+// in the bot-code runner. react-colorful is only used inside the Settings
+// tab, so it's loaded the first time the user opens that tab.
+const JsCodeEditor = dynamic(() => import('../../../components/JsCodeEditor'), { ssr: false })
+const Simulator = dynamic(() => import('../../../components/Simulator'), { ssr: false })
+const HexColorPicker = dynamic(() => import('react-colorful').then(m => m.HexColorPicker), { ssr: false })
+const HexColorInput = dynamic(() => import('react-colorful').then(m => m.HexColorInput), { ssr: false })
 
 function StatTile({ label, value }) {
   return (

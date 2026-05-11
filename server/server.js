@@ -1,5 +1,6 @@
 import express from 'express'
 import cookieParser from 'cookie-parser'
+import compression from 'compression'
 import { WebSocketServer } from './src/network/WebSocketServer.js'
 import { apiRouter } from './src/api/index.js'
 import { runMigrations } from './src/db/migrate.js'
@@ -7,6 +8,17 @@ import { closePool, query as dbQuery } from './src/db/pool.js'
 
 const app = express()
 const PORT = process.env.PORT || 3001
+
+// Drop the `X-Powered-By: Express` header — pure fingerprint leak with zero
+// upside, and a security-best-practices audit will flag it.
+app.disable('x-powered-by')
+// We sit behind Render's edge proxy. Trusting the first hop lets req.ip
+// reflect the real client (useful for future rate-limiting + logs).
+app.set('trust proxy', 1)
+// Express ETag for JSON responses — strong by default. Combined with the
+// route-level Cache-Control headers we set, this lets the browser revalidate
+// with a 304 instead of redownloading.
+app.set('etag', 'strong')
 
 const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000')
   .split(',')
@@ -25,6 +37,13 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
+
+// gzip-compress JSON responses above ~1KB. /api/bots/public ships ~25KB of
+// leaderboard JSON; compressed it's ~5KB. Negligible CPU at level=4. Below
+// the 1KB threshold the response is sent as-is — tiny payloads aren't worth
+// the framing overhead. Render's edge does its own compression on top; the
+// middleware short-circuits when a downstream already set Content-Encoding.
+app.use(compression({ level: 4, threshold: 1024 }))
 
 app.use(express.json({ limit: '256kb' }))
 app.use(cookieParser())
@@ -75,6 +94,23 @@ app.use((err, _req, res, _next) => {
   })
 })
 
+// Trim the bot_hand_results audit log to a rolling N-day window. Without
+// this the table grows unbounded — every bot decision at every table leaves
+// a row. Default 90 days is enough history for any offline ELO recompute
+// while keeping the table small enough that the (played_at) index stays hot.
+async function pruneAuditLog() {
+  const days = Number(process.env.BOT_HAND_RETENTION_DAYS) || 90
+  try {
+    const { rowCount } = await dbQuery(
+      `DELETE FROM bot_hand_results WHERE played_at < NOW() - ($1 || ' days')::interval`,
+      [String(days)]
+    )
+    if (rowCount > 0) console.log(`[db] pruned ${rowCount} audit rows older than ${days} days`)
+  } catch (err) {
+    console.error('[db] audit prune failed:', err.message)
+  }
+}
+
 async function start() {
   if (process.env.DATABASE_URL) {
     try {
@@ -84,6 +120,10 @@ async function start() {
       // Surface but don't crash — the WS poker game still works without DB.
       // Bot endpoints will 500 until migrations succeed.
     }
+    // Run once at boot, then daily. setInterval is safe here because each
+    // call is a single bounded DELETE against an indexed column.
+    pruneAuditLog().catch(() => {})
+    setInterval(pruneAuditLog, 24 * 60 * 60 * 1000).unref()
   } else {
     console.warn('[db] DATABASE_URL not set; bot endpoints will fail. See server/.env.example.')
   }

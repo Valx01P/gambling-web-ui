@@ -10,10 +10,13 @@
     "test": "node --env-file-if-exists=.env --test"
   },
   "dependencies": {
+    "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.5.1",
     "google-auth-library": "^10.6.2",
     "jsonwebtoken": "^9.0.3",
+    "lru-cache": "^11.3.6",
     "pg": "^8.20.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.0"

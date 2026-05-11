@@ -17,9 +17,15 @@ export function getPool() {
   pool = new Pool({
     connectionString,
     ssl: sslEnabled ? { rejectUnauthorized: false } : false,
-    max: 10,
+    max: Number(process.env.DATABASE_POOL_MAX) || 20,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000
+    connectionTimeoutMillis: 10_000,
+    // Server-side guards. statement_timeout kills runaway queries before they
+    // tie up a connection; idle_in_transaction_session_timeout reclaims pool
+    // slots if app code forgets to COMMIT/ROLLBACK after an error.
+    statement_timeout: Number(process.env.DATABASE_STATEMENT_TIMEOUT_MS) || 5_000,
+    idle_in_transaction_session_timeout: 10_000,
+    keepAlive: true
   })
 
   pool.on('error', err => {

@@ -27,8 +27,12 @@ export function ProfileAvatar({ avatarId, avatarUrl, className = '' }) {
       <img
         src={avatar.url}
         alt=""
+        width={108}
+        height={108}
         className="h-full w-full object-cover object-center"
         draggable="false"
+        loading="lazy"
+        decoding="async"
       />
     </span>
   )
@@ -113,8 +117,12 @@ export default function ProfileSelector({ value = DEFAULT_AVATAR.id, onChange })
                 <img
                   src={avatar.url}
                   alt=""
+                  width={108}
+                  height={108}
                   className="h-full w-full object-cover object-center"
                   draggable="false"
+                  loading="lazy"
+                  decoding="async"
                 />
               </span>
             </button>

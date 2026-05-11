@@ -160,3 +160,43 @@ body {
     opacity: 1;
   }
 }
+
+/* Global motion reduction. Catches inline transitions / animations on every
+   button + modal we ship through Tailwind without us having to thread the
+   prefers-reduced-motion guard into every utility. Visual state still
+   transitions instantly — we're only suppressing the long ones. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visible focus ring for keyboard users only. Lighthouse a11y audit flags
+   missing :focus-visible rings on interactive elements; this gives every
+   tabbable element a subtle amber outline without the click-and-hold halo
+   that :focus alone would produce for mouse users. */
+:where(button, a, [role="button"], [role="link"], input, select, textarea, summary):focus-visible {
+  outline: 2px solid #fcd34d;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Skip-link target. The link itself lives in layout.jsx; it's only visible
+   when focused so it doesn't take up screen real estate for sighted users. */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 0;
+  padding: 0.6rem 1rem;
+  background: #18181b;
+  color: white;
+  font-weight: 800;
+  z-index: 10000;
+  border-radius: 0 0 0.5rem 0;
+}
+.skip-link:focus {
+  top: 0;
+}

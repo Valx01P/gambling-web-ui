@@ -1,5 +1,6 @@
 'use client'
 
+import { memo } from 'react'
 import { formatPercent } from '../lib/pokerOdds'
 
 function StatBlock({ label, value, sub }) {
@@ -91,7 +92,11 @@ function HeaderControls({ expansion, onSetExpansion, onClose }) {
   )
 }
 
-export default function StatsPanel({ statistics, expansion = 'minimized', onSetExpansion, onClose }) {
+// Memoized: parent re-renders on every WS tick, but StatsPanel only needs
+// to repaint when the derived statistics object (or expansion state)
+// actually changes. statistics is already useMemo'd in the parent so
+// shallow comparison is the right boundary here.
+function StatsPanelImpl({ statistics, expansion = 'minimized', onSetExpansion, onClose }) {
   const hero = statistics?.hero
   const allIn = statistics?.allIn
   const outsCount = hero?.outs?.reduce((sum, out) => sum + out.count, 0) || 0
@@ -261,3 +266,6 @@ export default function StatsPanel({ statistics, expansion = 'minimized', onSetE
     </div>
   )
 }
+
+const StatsPanel = memo(StatsPanelImpl)
+export default StatsPanel

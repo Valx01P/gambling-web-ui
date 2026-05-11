@@ -18,7 +18,7 @@
 // Cost: ~1ms per 200 samples for 5 players, scales linearly. Default 600
 // samples = ~3ms per decision, comfortably inside the bot think-window.
 
-import { evaluateHand, compareHands } from '../../poker/handEvaluator.js'
+import { evaluateHand, scoreHand } from '../../poker/handEvaluator.js'
 import { GAME_PHASES } from '../../config/constants.js'
 import { preflopScore as analyzerPreflopScore } from './handAnalyzer.js'
 
@@ -219,6 +219,13 @@ export function calculateRangeEquity({
 
   const missingBoardCount = Math.max(0, 5 - board.length)
 
+  // Pre-allocated 7-card buffer reused every iteration. evaluateHand /
+  // scoreHand only read from this — no aliasing risk.
+  const heroCards = new Array(7)
+  heroCards[0] = holeCards[0]
+  heroCards[1] = holeCards[1]
+  const oppCards = new Array(7)
+
   for (let it = 0; it < iterations; it++) {
     const deck = baseDeck.slice()
     const oppHands = []
@@ -230,19 +237,29 @@ export function calculateRangeEquity({
     }
     if (aborted) continue
     const remainingBoard = takeRandomCards(deck, missingBoardCount)
-    const finalBoard = [...board, ...remainingBoard]
 
-    const heroEval = evaluateHand([...holeCards, ...finalBoard])
-    let bestRank = heroEval
-    let tiedWithHero = 0
+    // Final board = board ++ remainingBoard. Splat into the pre-allocated
+    // 7-card buffers so we don't churn the GC on every iteration.
+    for (let i = 0; i < board.length; i++) heroCards[2 + i] = board[i]
+    for (let i = 0; i < remainingBoard.length; i++) heroCards[2 + board.length + i] = remainingBoard[i]
+
+    // Bitmask-based integer score. compareHands becomes a primitive >/===.
+    // ~10x faster than evaluateHand + compareHands per call, and zero per-
+    // iteration object allocation.
+    const heroScore = scoreHand(heroCards)
     let beatenByOpp = false
-    for (const oh of oppHands) {
-      const oppEval = evaluateHand([...oh, ...finalBoard])
-      const cmp = compareHands(oppEval, bestRank)
-      if (cmp > 0) {
+    let tiedWithHero = 0
+    for (let i = 0; i < oppHands.length; i++) {
+      const oh = oppHands[i]
+      oppCards[0] = oh[0]
+      oppCards[1] = oh[1]
+      for (let j = 0; j < board.length; j++) oppCards[2 + j] = board[j]
+      for (let j = 0; j < remainingBoard.length; j++) oppCards[2 + board.length + j] = remainingBoard[j]
+      const oppScore = scoreHand(oppCards)
+      if (oppScore > heroScore) {
         beatenByOpp = true
         break
-      } else if (cmp === 0) {
+      } else if (oppScore === heroScore) {
         tiedWithHero += 1
       }
     }

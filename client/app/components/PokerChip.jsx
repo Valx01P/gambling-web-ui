@@ -1,5 +1,7 @@
 'use client'
 
+import { memo } from 'react'
+
 const chipConfig = {
   5: { color: '#DC2626', edgeColor: '#FFFFFF' },
   10: { color: '#2563EB', edgeColor: '#FFFFFF' },
@@ -24,7 +26,7 @@ function formatValue(value) {
   return String(value)
 }
 
-export default function PokerChip({ value = 5, className = '' }) {
+function PokerChipImpl({ value = 5, className = '' }) {
   const config = chipConfig[value] || chipConfig[5]
 
   return (
@@ -60,3 +62,9 @@ export default function PokerChip({ value = 5, className = '' }) {
     </svg>
   )
 }
+
+// Chips are rendered in stacks (8 per bet × N players) and on every WS tick
+// the parent re-renders. Memo's shallow compare on { value, className } is
+// the right boundary — both are primitives.
+const PokerChip = memo(PokerChipImpl)
+export default PokerChip

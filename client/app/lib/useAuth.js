@@ -3,6 +3,40 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, getStoredToken, getStoredUser, setSession, clearSession } from './api'
 
+// Module-level dedup. Every page that uses useAuth previously fired its own
+// `api.me()` on mount — with AccountMenu in the header + the page body each
+// calling useAuth, that's 2+ identical requests per navigation. Now: the
+// first mount triggers the refresh, every other consumer awaits the same
+// promise, and we cache the result for a short window so back-nav doesn't
+// re-hit the server.
+const REFRESH_TTL_MS = 60 * 1000
+let _refreshing = null     // Promise<User|null> currently in flight
+let _refreshedAt = 0       // ms timestamp of last successful refresh
+
+function refreshMeOnce() {
+  if (_refreshing) return _refreshing
+  if (Date.now() - _refreshedAt < REFRESH_TTL_MS) {
+    return Promise.resolve(getStoredUser())
+  }
+  _refreshing = api.me()
+    .then(data => {
+      _refreshedAt = Date.now()
+      setSession({ token: getStoredToken(), user: data.user })
+      return data.user
+    })
+    .catch(err => {
+      if (err.status === 401) {
+        clearSession()
+        return null
+      }
+      // Network / other error — leave whatever's in storage in place so the
+      // UI doesn't flicker between logged-in and logged-out states.
+      return getStoredUser()
+    })
+    .finally(() => { _refreshing = null })
+  return _refreshing
+}
+
 export function useAuth() {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -11,18 +45,8 @@ export function useAuth() {
     const stored = getStoredUser()
     if (stored && getStoredToken()) {
       setUser(stored)
-      // Refresh in the background to catch profile updates / token expiry.
-      api.me()
-        .then(data => {
-          setUser(data.user)
-          setSession({ token: getStoredToken(), user: data.user })
-        })
-        .catch(err => {
-          if (err.status === 401) {
-            clearSession()
-            setUser(null)
-          }
-        })
+      refreshMeOnce()
+        .then(nextUser => setUser(nextUser))
         .finally(() => setLoading(false))
     } else {
       setLoading(false)

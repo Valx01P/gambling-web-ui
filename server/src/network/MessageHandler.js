@@ -1,6 +1,7 @@
 import { BANKS, GAME_PHASES, MESSAGE_TYPES, POKER_CONFIG } from "../config/constants.js"
 import { getBotById } from "../bots/botRepository.js"
 import { verify as verifyJwt } from "../auth/jwt.js"
+import { sanitizeDisplayString } from "../utils/sanitize.js"
 
 export class MessageHandler {
   constructor(playerManager, roomManager) {
@@ -96,7 +97,10 @@ export class MessageHandler {
   }
 
   handleJoin(player, data) {
-    if (data?.username) player.username = data.username
+    if (data?.username) {
+      const clean = sanitizeDisplayString(data.username, { maxLength: 24 })
+      if (clean) player.username = clean
+    }
     if (data?.avatarId && typeof player.setProfileAvatar === 'function') {
       player.setProfileAvatar(data.avatarId)
     }
@@ -172,7 +176,10 @@ export class MessageHandler {
       return { success: false }
     }
 
-    const text = (data?.message || '').trim().substring(0, 200)
+    // sanitizeDisplayString trims, collapses whitespace, strips zero-width /
+    // bidi-spoof / control chars before capping length. React's escaping
+    // already handles HTML; this layer covers Unicode trickery.
+    const text = sanitizeDisplayString(data?.message || '', { maxLength: 200 })
     if (!text) return { success: false }
 
     room.broadcast({
@@ -418,7 +425,7 @@ export class MessageHandler {
 
   handleUpdateProfile(player, data) {
     const nextUsername = typeof data?.username === 'string'
-      ? data.username.trim().slice(0, 24)
+      ? sanitizeDisplayString(data.username, { maxLength: 24 })
       : null
     const nextAvatarId = typeof data?.avatarId === 'string' ? data.avatarId : null
 

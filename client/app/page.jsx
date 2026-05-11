@@ -41,9 +41,48 @@ function SuitHeart({ className }) {
   )
 }
 
+// schema.org JSON-LD. Surfaces the site as a structured WebApplication +
+// VideoGame to Google so it can build a rich result card. The score / price
+// fields tell Google this is free-to-play with no IAP — which avoids it
+// getting bucketed alongside paid gambling apps.
+const SITE_JSONLD = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebSite',
+      '@id': 'https://pokerxyz.io#site',
+      url: 'https://pokerxyz.io',
+      name: 'pokerxyz',
+      description: "No-limit hold'em with JavaScript bots and bot-vs-bot arenas.",
+      inLanguage: 'en',
+    },
+    {
+      '@type': 'VideoGame',
+      '@id': 'https://pokerxyz.io#game',
+      name: 'pokerxyz',
+      description: "Multiplayer no-limit Texas hold'em with programmable JavaScript bots, ELO rankings, and a banking system. Fake chips, real strategy.",
+      url: 'https://pokerxyz.io',
+      genre: ['Card Game', 'Poker', 'Strategy'],
+      playMode: ['MultiPlayer', 'SinglePlayer'],
+      gamePlatform: 'Web browser',
+      applicationCategory: 'GameApplication',
+      operatingSystem: 'Any (web browser)',
+      offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+      isAccessibleForFree: true,
+    },
+  ],
+}
+
 export default function Home() {
   return (
     <div className="relative h-[100dvh] w-full overflow-hidden flex flex-col">
+      {/* Structured data for Google. Inline JSON-LD is the most reliable
+          way to attach schema metadata — no extra request, no race with
+          client hydration. */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(SITE_JSONLD) }}
+      />
       <header className="absolute right-3 top-3 z-10 flex items-center gap-2 sm:right-4 sm:top-4">
         <Link
           href="/poker/bots"
@@ -54,7 +93,7 @@ export default function Home() {
         <AccountMenu />
       </header>
 
-      <main className="flex flex-1 flex-col items-center justify-center px-4 text-center">
+      <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col items-center justify-center px-4 text-center">
         {/* Suit banner */}
         <div className="mb-6 flex items-center gap-3 text-zinc-400">
           <SuitDiamond className="h-5 w-5 text-red-400" />

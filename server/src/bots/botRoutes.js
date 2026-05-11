@@ -1,5 +1,34 @@
+import { createHash } from 'node:crypto'
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
 import { asyncRouter as Router } from '../api/asyncRouter.js'
 import { authRequired, authOptional } from '../auth/middleware.js'
+
+// Bot creation / mutation is the main spam vector. The DB caps each user at
+// 10 manual bots + 5 clones, but a rate limit on top prevents an attacker
+// from churning through delete+create cycles or hammering the validation
+// path. Keyed on the authenticated user id when available (per-account),
+// falling back to IP for the rare unauth path. Generous enough for a real
+// session: 60 mutating actions per minute = one per second.
+const botWriteLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip),
+  message: { error: 'rate_limited', detail: 'Slow down on bot edits — try again in a moment.' },
+})
+
+// Clone-from-user is more expensive: it scans the user's full hand history
+// and runs the template generator. Tighter cap so a malicious script can't
+// burn CPU on the server by hammering this endpoint.
+const cloneBuildLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip),
+  message: { error: 'rate_limited', detail: 'Clone builds are limited to 10 per minute.' },
+})
 import {
   createBot,
   updateBot,
@@ -53,12 +82,73 @@ function handleValidationError(err, res) {
   throw err
 }
 
+// Tiny stale-while-revalidate cache for the public leaderboard. Every visitor
+// hitting /poker fires this; the underlying ELO + slim-row query is fast but
+// not free. With a 30s TTL the cache absorbs the burst and the next request
+// after expiry kicks off a single refresh while still serving the stale copy
+// to in-flight callers — so we never block a request on the refresh.
+const LEADERBOARD_TTL_MS = 30 * 1000
+let _leaderboardCache = null // { fetchedAt, payload, etag, refreshing: Promise|null }
+
+function computeLeaderboardEtag(bots) {
+  // Light fingerprint covering each bot's id + elo + updated_at + chip-counter.
+  // Cheap to compute (string concat), strong enough that any change to a
+  // public bot's stats invalidates the etag. The hash is sha1 truncated to
+  // 16 hex chars — collision-resistant well past any realistic dataset.
+  const h = createHash('sha1')
+  for (const b of bots) {
+    h.update(b.id)
+    h.update('|')
+    h.update(String(b.elo))
+    h.update('|')
+    h.update(String(b.stats?.handsPlayed ?? 0))
+    h.update('\n')
+  }
+  return `"lb-${h.digest('hex').slice(0, 16)}"`
+}
+
+async function getLeaderboardCached() {
+  const now = Date.now()
+  if (_leaderboardCache && now - _leaderboardCache.fetchedAt < LEADERBOARD_TTL_MS) {
+    return _leaderboardCache
+  }
+  // Single in-flight refresh: every caller during the refetch awaits the
+  // same promise. Important on a cache miss after restart when many clients
+  // race the first request.
+  if (_leaderboardCache?.refreshing) return _leaderboardCache.refreshing
+
+  const refreshing = listPublicBots().then(bots => {
+    const payload = { bots }
+    const etag = computeLeaderboardEtag(bots)
+    _leaderboardCache = { fetchedAt: Date.now(), payload, etag, refreshing: null }
+    return _leaderboardCache
+  }).catch(err => {
+    if (_leaderboardCache) _leaderboardCache.refreshing = null
+    throw err
+  })
+
+  if (_leaderboardCache) _leaderboardCache.refreshing = refreshing
+  else _leaderboardCache = { fetchedAt: 0, payload: null, etag: null, refreshing }
+  return refreshing
+}
+
 export function botRoutes() {
   const router = Router()
 
-  router.get('/public', async (_req, res) => {
-    const bots = await listPublicBots()
-    res.json({ bots })
+  router.get('/public', async (req, res) => {
+    const cached = await getLeaderboardCached()
+    // Allow the browser + any CDN in front of us to cache for 30s, then
+    // serve-stale-while-revalidate for another 60s. Pairs naturally with
+    // the in-process cache above for layered caching.
+    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60')
+    res.setHeader('ETag', cached.etag)
+    // If the client sent matching If-None-Match, save them the body — the
+    // server saves the gzip+stringify, the client saves the parse. Pure win.
+    if (req.headers['if-none-match'] === cached.etag) {
+      res.status(304).end()
+      return
+    }
+    res.json(cached.payload)
   })
 
   router.get('/mine', authRequired, async (req, res) => {
@@ -71,11 +161,15 @@ export function botRoutes() {
   // hands but hasn't built that tier yet. Used by the /poker/bots page to
   // render the 5 reserved slots.
   router.get('/from-me/preview', authRequired, async (req, res) => {
-    const stats = await getPlayStats(req.user.id)
+    // Three independent DB reads — kick all of them off at once so the route
+    // is bottlenecked by the slowest, not their sum. Was 3 sequential RTTs.
+    const [stats, user, allHands] = await Promise.all([
+      getPlayStats(req.user.id),
+      findUserById(req.user.id),
+      getRecentHands(req.user.id)
+    ])
     const seated = stats?.handsSeated ?? 0
-    const user = await findUserById(req.user.id)
     if (!user) return res.status(404).json({ error: 'user_not_found' })
-    const allHands = await getRecentHands(req.user.id)
 
     const tiers = await Promise.all(CLONE_TIERS.map(async (t) => {
       const existing = await getCloneByTier(req.user.id, t.tier)
@@ -136,12 +230,21 @@ export function botRoutes() {
   // Materialize a clone for a specific tier. Body: { tier: 1..5 }. Idempotent
   // by (owner_user_id, clone_tier) — already-built tiers return the existing
   // bot rather than erroring.
-  router.post('/from-me', authRequired, async (req, res) => {
+  router.post('/from-me', authRequired, cloneBuildLimiter, async (req, res) => {
     const tierId = Number(req.body?.tier ?? 1)
     const tierMeta = findCloneTier(tierId)
     if (!tierMeta) return res.status(400).json({ error: 'invalid_tier' })
 
-    const stats = await getPlayStats(req.user.id)
+    // Race the gate check, the idempotency check, and the data we'd need
+    // if we end up building. Saves 3 sequential RTTs down to one wall-clock
+    // round, and the wasted work (user/hands fetch when tier is locked or
+    // already built) is bounded — both fast single-row reads.
+    const [stats, already, user, allHands] = await Promise.all([
+      getPlayStats(req.user.id),
+      getCloneByTier(req.user.id, tierId),
+      findUserById(req.user.id),
+      getRecentHands(req.user.id)
+    ])
     const seated = stats?.handsSeated ?? 0
     if (seated < tierMeta.hands) {
       return res.status(400).json({
@@ -154,13 +257,10 @@ export function botRoutes() {
     // Already built? Return what's there — the unique index would block a
     // duplicate insert anyway, and it's nicer for the client to get the
     // existing bot back than to handle a 400.
-    const already = await getCloneByTier(req.user.id, tierId)
     if (already) return res.json({ bot: already, alreadyBuilt: true })
 
     try {
-      const user = await findUserById(req.user.id)
       if (!user) return res.status(404).json({ error: 'user_not_found' })
-      const allHands = await getRecentHands(req.user.id)
       const draft = buildBotFromUser({
         user: { id: user.id, displayName: user.display_name },
         stats,
@@ -210,7 +310,7 @@ export function botRoutes() {
   // (where N is locked by the clone's tier). Replaces the code, ELO, and
   // color while keeping the bot id stable so anyone with a saved reference
   // (table, public link if they shared it) keeps pointing at the same bot.
-  router.post('/:id/recalculate-clone', authRequired, async (req, res) => {
+  router.post('/:id/recalculate-clone', authRequired, cloneBuildLimiter, async (req, res) => {
     try {
       const existing = await getBotById(req.params.id, { viewerUserId: req.user.id })
       if (!existing) return res.status(404).json({ error: 'not_found' })
@@ -221,7 +321,13 @@ export function botRoutes() {
       const tierMeta = findCloneTier(existing.cloneTier)
       if (!tierMeta) return res.status(500).json({ error: 'unknown_tier' })
 
-      const stats = await getPlayStats(req.user.id)
+      // Same parallel fetch pattern as /from-me — stats/user/hands are
+      // independent reads.
+      const [stats, user, allHands] = await Promise.all([
+        getPlayStats(req.user.id),
+        findUserById(req.user.id),
+        getRecentHands(req.user.id)
+      ])
       const seated = stats?.handsSeated ?? 0
       if (seated < tierMeta.hands) {
         return res.status(400).json({
@@ -229,8 +335,6 @@ export function botRoutes() {
           detail: `You need ${tierMeta.hands} hands of play data — you have ${seated}.`
         })
       }
-      const user = await findUserById(req.user.id)
-      const allHands = await getRecentHands(req.user.id)
       const draft = buildBotFromUser({
         user: { id: user.id, displayName: user.display_name },
         stats,
@@ -271,7 +375,7 @@ export function botRoutes() {
   // but the owner can opt into a private bot at create time. The 10-bot cap
   // counts only NON-clone bots so users always have their 5 reserved clone
   // slots regardless of how many manual bots they've made.
-  router.post('/', authRequired, async (req, res) => {
+  router.post('/', authRequired, botWriteLimiter, async (req, res) => {
     const { name, color, textColor, rules, phrases, code, codeEnabled, isPublic } = req.body || {}
     try {
       const cleanName = validateName(name ?? '')
@@ -311,7 +415,7 @@ export function botRoutes() {
     }
   })
 
-  router.patch('/:id', authRequired, async (req, res) => {
+  router.patch('/:id', authRequired, botWriteLimiter, async (req, res) => {
     const { name, color, textColor, rules, phrases, code, codeEnabled } = req.body || {}
     try {
       const patch = {}
@@ -333,7 +437,7 @@ export function botRoutes() {
     }
   })
 
-  router.delete('/:id', authRequired, async (req, res) => {
+  router.delete('/:id', authRequired, botWriteLimiter, async (req, res) => {
     const result = await deleteBot({ botId: req.params.id, ownerUserId: req.user.id })
     if (result.ok) return res.status(204).end()
     if (result.reason === 'clone_locked') {

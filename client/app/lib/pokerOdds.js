@@ -184,6 +184,115 @@ export function compareHands(a, b) {
   return 0
 }
 
+// Bitmask-based integer scorer. Mirror of the server's scoreHand (~95x
+// faster than evaluateHand+compareHands per call). Used in the Monte Carlo
+// equity loop where the existing `{ rank, kickers }` shape is overkill —
+// integer compare is enough to settle each runout.
+//
+// Score layout (24 bits): rank (4) << 20 | k0 (4) << 16 | k1 << 12 | k2 << 8
+// | k3 << 4 | k4 << 0. Higher score = better hand.
+const _scoreRankCount = new Uint8Array(15)
+const _scoreSuitMasks = new Uint16Array(4)
+const _scoreSuitCounts = new Uint8Array(4)
+
+function _findStraightHigh(mask) {
+  for (let high = 14; high >= 6; high--) {
+    const needed =
+      (1 << high) | (1 << (high - 1)) | (1 << (high - 2)) | (1 << (high - 3)) | (1 << (high - 4))
+    if ((mask & needed) === needed) return high
+  }
+  const wheel = (1 << 14) | (1 << 5) | (1 << 4) | (1 << 3) | (1 << 2)
+  return (mask & wheel) === wheel ? 5 : 0
+}
+
+export function scoreHand(cards) {
+  if (cards.length < 5) return 0
+  _scoreRankCount.fill(0)
+  _scoreSuitMasks[0] = 0; _scoreSuitMasks[1] = 0; _scoreSuitMasks[2] = 0; _scoreSuitMasks[3] = 0
+  _scoreSuitCounts[0] = 0; _scoreSuitCounts[1] = 0; _scoreSuitCounts[2] = 0; _scoreSuitCounts[3] = 0
+  let rankMask = 0
+
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i]
+    const v = RANK_VALUES[c.rank]
+    const s = SUIT_INDEX[c.suit]
+    _scoreRankCount[v]++
+    rankMask |= 1 << v
+    _scoreSuitMasks[s] |= 1 << v
+    _scoreSuitCounts[s]++
+  }
+
+  let flushSuit = -1
+  for (let s = 0; s < 4; s++) if (_scoreSuitCounts[s] >= 5) { flushSuit = s; break }
+
+  if (flushSuit !== -1) {
+    const sfHigh = _findStraightHigh(_scoreSuitMasks[flushSuit])
+    if (sfHigh) {
+      const rank = sfHigh === 14 ? 9 : 8
+      return (rank << 20) | (sfHigh << 16)
+    }
+  }
+
+  let quad = 0, trip1 = 0, trip2 = 0, pair1 = 0, pair2 = 0
+  for (let v = 14; v >= 2; v--) {
+    const c = _scoreRankCount[v]
+    if (c === 4) { if (!quad) quad = v }
+    else if (c === 3) { if (!trip1) trip1 = v; else if (!trip2) trip2 = v }
+    else if (c === 2) { if (!pair1) pair1 = v; else if (!pair2) pair2 = v }
+  }
+
+  if (quad) {
+    let k = 0
+    for (let v = 14; v >= 2; v--) if (v !== quad && _scoreRankCount[v] > 0) { k = v; break }
+    return (7 << 20) | (quad << 16) | (k << 12)
+  }
+  if (trip1 && (pair1 || trip2)) {
+    const p = pair1 > trip2 ? pair1 : trip2
+    return (6 << 20) | (trip1 << 16) | (p << 12)
+  }
+  if (flushSuit !== -1) {
+    let score = 5 << 20, shift = 16, n = 0
+    for (let v = 14; v >= 2 && n < 5; v--) {
+      if (_scoreSuitMasks[flushSuit] & (1 << v)) { score |= v << shift; shift -= 4; n++ }
+    }
+    return score
+  }
+  const sh = _findStraightHigh(rankMask)
+  if (sh) return (4 << 20) | (sh << 16)
+  if (trip1) {
+    let k1 = 0, k2 = 0
+    for (let v = 14; v >= 2; v--) {
+      if (v === trip1 || _scoreRankCount[v] === 0) continue
+      if (!k1) k1 = v
+      else { k2 = v; break }
+    }
+    return (3 << 20) | (trip1 << 16) | (k1 << 12) | (k2 << 8)
+  }
+  if (pair1 && pair2) {
+    let k = 0
+    for (let v = 14; v >= 2; v--) {
+      if (v === pair1 || v === pair2) continue
+      if (_scoreRankCount[v] > 0) { k = v; break }
+    }
+    return (2 << 20) | (pair1 << 16) | (pair2 << 12) | (k << 8)
+  }
+  if (pair1) {
+    let k1 = 0, k2 = 0, k3 = 0
+    for (let v = 14; v >= 2; v--) {
+      if (v === pair1 || _scoreRankCount[v] === 0) continue
+      if (!k1) k1 = v
+      else if (!k2) k2 = v
+      else { k3 = v; break }
+    }
+    return (1 << 20) | (pair1 << 16) | (k1 << 12) | (k2 << 8) | (k3 << 4)
+  }
+  let score = 0, shift = 16, n = 0
+  for (let v = 14; v >= 2 && n < 5; v--) {
+    if (_scoreRankCount[v] > 0) { score |= v << shift; shift -= 4; n++ }
+  }
+  return score
+}
+
 function straightHighFromMask(mask) {
   for (let high = 14; high >= 6; high--) {
     const needed =
@@ -372,27 +481,43 @@ function drawRandom(pool, count, rng) {
   return drawn
 }
 
+// Pre-allocated 7-card buffer reused across MC iterations to avoid the
+// `[...player.cards, ...finalBoard]` spread on every player every iter.
+const _settleHandBuf = new Array(7)
+
 function settleEquity(players, finalBoard, totals, distributions = null) {
-  let best = null
-  const evaluated = players.map((player) => {
-    const hand = evaluateHand([...player.cards, ...finalBoard])
-    if (!best || compareHands(hand, best) > 0) best = hand
-    return { ...player, hand }
-  })
+  // Score each player to a sortable integer; integer compare replaces the
+  // old object-walking compareHands. With 2000 iters × 5 players that's
+  // 10K evaluations per equity refresh — bitmask scoring is ~95x faster.
+  let bestScore = -1
+  let bestCount = 0  // tracks how many tie at bestScore so we don't need a second pass
+  const scores = new Array(players.length)
 
-  const winners = evaluated.filter((player) => compareHands(player.hand, best) === 0)
+  for (let i = 0; i < players.length; i++) {
+    const cards = players[i].cards
+    _settleHandBuf[0] = cards[0]
+    _settleHandBuf[1] = cards[1]
+    for (let j = 0; j < finalBoard.length; j++) _settleHandBuf[2 + j] = finalBoard[j]
+    _settleHandBuf.length = 2 + finalBoard.length
+    const s = scoreHand(_settleHandBuf)
+    scores[i] = s
+    if (s > bestScore) { bestScore = s; bestCount = 1 }
+    else if (s === bestScore) bestCount += 1
+  }
 
-  for (const player of evaluated) {
+  for (let i = 0; i < players.length; i++) {
+    const player = players[i]
     const total = totals.get(player.id)
-    if (winners.some((winner) => winner.id === player.id)) {
-      total.equity += 1 / winners.length
-      if (winners.length === 1) total.wins += 1
+    if (scores[i] === bestScore) {
+      total.equity += 1 / bestCount
+      if (bestCount === 1) total.wins += 1
       else total.ties += 1
     }
-
     if (distributions) {
       const dist = distributions.get(player.id)
-      const label = HAND_NAMES[player.hand.rank] || 'Unknown'
+      // Rank lives in bits 23..20 of the packed score.
+      const rank = (scores[i] >>> 20) & 0xf
+      const label = HAND_NAMES[rank] || 'Unknown'
       dist.set(label, (dist.get(label) || 0) + 1)
     }
   }

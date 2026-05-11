@@ -1,5 +1,7 @@
 'use client'
 
+import { memo } from 'react'
+
 const SUIT_INDEX = { clubs: 0, diamonds: 1, hearts: 2, spades: 3 }
 const RANK_INDEX = {
   'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6,
@@ -9,7 +11,7 @@ const RANK_INDEX = {
 export const CARD_W = 80
 export const CARD_H = 110
 
-export default function CardSprite({ card, className = '', highlight = false, ...props }) {
+function CardSpriteImpl({ card, className = '', highlight = false, ...props }) {
   // Map to the 5th row, 1st column if no card is passed (card back)
   const bgX = card ? -(RANK_INDEX[card.rank] * CARD_W) : 0
   const bgY = card ? -(SUIT_INDEX[card.suit] * CARD_H) : -(4 * CARD_H)
@@ -35,3 +37,10 @@ export default function CardSprite({ card, className = '', highlight = false, ..
     </svg>
   )
 }
+
+// Memoized: cards are rendered 7–13 times per table (board + hole cards)
+// and the parent re-renders on every WS state change. Props are primitive
+// or stable card objects, so memo's shallow compare prevents wasted SVG
+// reconciliation per tick.
+const CardSprite = memo(CardSpriteImpl)
+export default CardSprite

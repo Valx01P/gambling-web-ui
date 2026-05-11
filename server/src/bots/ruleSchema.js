@@ -190,9 +190,22 @@ export function validateTextColor(textColor) {
   }
 }
 
+// Bot names are shown alongside human usernames at the table — same Unicode
+// spoof / control-char surface. Reuse the shared sanitizer instead of
+// duplicating its regex (the duplicate had a copy-paste bug that silently
+// stripped spaces, which broke "Pablo v3" → "Pablov3"). The shared util has
+// no runtime dependencies, so importing it here is safe.
+//
+// We sanitize with a generous maxLength then enforce the bot-specific 32-char
+// bound separately. That preserves the original "names over 32 chars are an
+// explicit invalid-input error" contract instead of silently truncating —
+// the route's 400-with-detail response is more useful to the user than a
+// surprise name change.
+import { sanitizeDisplayString } from '../utils/sanitize.js'
+
 export function validateName(name) {
   if (typeof name !== 'string') fail('name', 'must be a string')
-  const trimmed = name.trim()
+  const trimmed = sanitizeDisplayString(name, { maxLength: 256 })
   if (trimmed.length < 1 || trimmed.length > 32) {
     fail('name', 'must be between 1 and 32 characters')
   }

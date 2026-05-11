@@ -1,4 +1,4 @@
-import { query, withTransaction } from '../db/pool.js'
+import { query } from '../db/pool.js'
 
 const PUBLIC_FIELDS = `
   b.id, b.owner_user_id, b.name, b.color, b.text_color, b.rules, b.phrases, b.is_public,
@@ -10,18 +10,31 @@ const PUBLIC_FIELDS = `
   b.created_at, b.updated_at
 `
 
+// Slim shape for list endpoints. Excludes the heavy fields (rules, phrases,
+// code) which the leaderboard and "my bots" page never display. With ~5KB
+// average code size × 50 rows that's 250KB saved per leaderboard hit.
+const LIST_FIELDS = `
+  b.id, b.owner_user_id, b.name, b.color, b.text_color, b.is_public,
+  b.code_enabled,
+  b.is_clone, b.clone_tier, b.clone_hands_used,
+  b.elo, b.hands_played, b.hands_voluntary, b.hands_won,
+  b.showdowns_played, b.showdowns_won,
+  b.bluffs_attempted, b.bluffs_succeeded, b.bluff_wins, b.chips_won_total,
+  b.created_at, b.updated_at
+`
+
 function toApi(row, ownerName = null) {
   if (!row) return null
-  return {
+  // `rules`, `phrases`, `code` are only present on full reads. List shape
+  // omits them — readers should not assume they exist. We pass undefined
+  // through so JSON.stringify drops them rather than emitting null payloads.
+  const out = {
     id: row.id,
     ownerUserId: row.owner_user_id,
     ownerDisplayName: ownerName,
     name: row.name,
     color: row.color,
     textColor: row.text_color || 'auto',
-    rules: row.rules,
-    phrases: row.phrases,
-    code: row.code || '',
     codeEnabled: Boolean(row.code_enabled),
     isPublic: row.is_public,
     elo: row.elo,
@@ -42,6 +55,10 @@ function toApi(row, ownerName = null) {
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }
+  if ('rules' in row) out.rules = row.rules
+  if ('phrases' in row) out.phrases = row.phrases
+  if ('code' in row) out.code = row.code || ''
+  return out
 }
 
 export async function createBot({
@@ -206,9 +223,12 @@ export async function countBotsByOwner(ownerUserId) {
 }
 
 export async function listBotsByOwner(ownerUserId) {
+  // LIST_FIELDS excludes rules/phrases/code — saves ~5KB/row over the wire
+  // and skips the JSONB parse on the client. Edit/Run paths use getBotById
+  // which still returns the full shape.
   const { rows } = await query(
     `
-    SELECT ${PUBLIC_FIELDS}, u.display_name AS owner_display_name
+    SELECT ${LIST_FIELDS}, u.display_name AS owner_display_name
       FROM bots b
       JOIN users u ON u.id = b.owner_user_id
      WHERE b.owner_user_id = $1
@@ -222,12 +242,16 @@ export async function listBotsByOwner(ownerUserId) {
 export async function listPublicBots({ limit = 50, offset = 0 } = {}) {
   const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100)
   const safeOffset = Math.max(parseInt(offset, 10) || 0, 0)
+  // Leaderboard query — heaviest one in the system, runs anytime the public
+  // bot list loads. With the partial covering index added in migration 007
+  // (elo DESC, created_at DESC) WHERE is_public AND NOT is_clone, this scans
+  // O(LIMIT) index entries instead of the full public set.
   const { rows } = await query(
     `
-    SELECT ${PUBLIC_FIELDS}, u.display_name AS owner_display_name
+    SELECT ${LIST_FIELDS}, u.display_name AS owner_display_name
       FROM bots b
       JOIN users u ON u.id = b.owner_user_id
-     WHERE b.is_public = TRUE
+     WHERE b.is_public = TRUE AND b.is_clone = FALSE
      ORDER BY b.elo DESC, b.created_at DESC
      LIMIT $1 OFFSET $2
     `,
@@ -258,47 +282,23 @@ export async function recordHandResult({
   performanceScore = null
 }) {
   if (!botId) return
-  await withTransaction(async (client) => {
-    await client.query(
-      `INSERT INTO bot_hand_results
-         (bot_id, table_id, chips_delta, went_to_showdown, won, folded_preflop,
-          voluntarily_in, was_bluff_win, preflop_score, performance_score)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [
-        botId,
-        String(tableId).slice(0, 64),
-        Math.max(-2_000_000_000, Math.min(2_000_000_000, Math.floor(chipsDelta || 0))),
-        Boolean(wentToShowdown),
-        Boolean(won),
-        Boolean(foldedPreflop),
-        Boolean(voluntarilyIn),
-        Boolean(bluffWin),
-        preflopScore != null ? Number(preflopScore) : null,
-        performanceScore != null ? Number(performanceScore) : null
-      ]
-    )
-    await client.query(
-      `UPDATE bots
-          SET hands_played    = hands_played    + 1,
-              hands_voluntary = hands_voluntary + $2,
-              hands_won       = hands_won       + $3,
-              showdowns_played= showdowns_played+ $4,
-              showdowns_won   = showdowns_won   + $5,
-              bluff_wins      = bluff_wins      + $6,
-              chips_won_total = chips_won_total + $7,
-              elo             = GREATEST(300, elo + $8),
-              updated_at      = NOW()
-        WHERE id = $1`,
-      [
-        botId,
-        voluntarilyIn ? 1 : 0,
-        won ? 1 : 0,
-        wentToShowdown ? 1 : 0,
-        (wentToShowdown && won) ? 1 : 0,
-        bluffWin ? 1 : 0,
-        Math.floor(chipsDelta || 0),
-        Math.floor(eloChange || 0)
-      ]
-    )
-  })
+  // Stored procedure does the INSERT + UPDATE in one statement (migration 007).
+  // Replaces a 4-roundtrip transaction (BEGIN, INSERT, UPDATE, COMMIT) with
+  // one. With 4 bots at a table that's 16 RTTs → 4 per hand.
+  await query(
+    `SELECT record_bot_hand($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [
+      botId,
+      String(tableId).slice(0, 64),
+      Math.max(-2_000_000_000, Math.min(2_000_000_000, Math.floor(chipsDelta || 0))),
+      Boolean(wentToShowdown),
+      Boolean(won),
+      Boolean(foldedPreflop),
+      Boolean(voluntarilyIn),
+      Math.floor(eloChange || 0),
+      Boolean(bluffWin),
+      preflopScore != null ? Number(preflopScore) : null,
+      performanceScore != null ? Number(performanceScore) : null
+    ]
+  )
 }

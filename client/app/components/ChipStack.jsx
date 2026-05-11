@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import PokerChip from './PokerChip'
 
 const MAX_BET_CHIPS = 8
@@ -82,7 +82,7 @@ function makeThrowLayout(chips, seed, origin) {
   })
 }
 
-export function BetChips({ amount, thrown = false, animationKey = '', origin = 'bottom' }) {
+function BetChipsImpl({ amount, thrown = false, animationKey = '', origin = 'bottom' }) {
   const chips = useMemo(
     () => (amount > 0 ? chipBreakdown(amount, MAX_BET_CHIPS) : []),
     [amount]
@@ -134,7 +134,12 @@ export function BetChips({ amount, thrown = false, animationKey = '', origin = '
   )
 }
 
-export function PotChips({ amount }) {
+// BetChips renders per-seat under every player. With 5 seats × ~10 chips
+// each, parent re-rendering every WS tick redoes a lot of SVG work — memo
+// keeps the stack stable until amount or animationKey actually changes.
+export const BetChips = memo(BetChipsImpl)
+
+function PotChipsImpl({ amount }) {
   if (amount <= 0) return null
   const count = Math.min(Math.ceil(amount / 50), 10)
   const chips = chipBreakdown(amount, count)
@@ -161,3 +166,5 @@ export function PotChips({ amount }) {
     </div>
   )
 }
+
+export const PotChips = memo(PotChipsImpl)

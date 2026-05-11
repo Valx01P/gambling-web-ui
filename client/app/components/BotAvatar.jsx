@@ -1,5 +1,7 @@
 'use client'
 
+import { memo } from 'react'
+
 function readableTextColor(hex) {
   const c = (hex || '').replace('#', '')
   if (c.length !== 6) return '#fff'
@@ -17,7 +19,10 @@ export function resolveTextColor(bgHex, choice) {
   return readableTextColor(bgHex)
 }
 
-export default function BotAvatar({ name, color = '#3b82f6', textColor = 'auto', size = 40, className = '' }) {
+// Avatar repaints on every parent re-render even though its props rarely
+// change. Memoizing eliminates wasted reconciliation across the 5 seated
+// players on every WS tick.
+function BotAvatarImpl({ name, color = '#3b82f6', textColor = 'auto', size = 40, className = '' }) {
   const initials = (name || '?').trim().slice(0, 2).toUpperCase()
   return (
     <div
@@ -35,3 +40,6 @@ export default function BotAvatar({ name, color = '#3b82f6', textColor = 'auto',
     </div>
   )
 }
+
+const BotAvatar = memo(BotAvatarImpl)
+export default BotAvatar

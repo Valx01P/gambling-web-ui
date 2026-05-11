@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo, useDeferredValue, startTransition } from 'react'
 import PokerChip from '../components/PokerChip'
 import CardSprite from '../components/CardSprite'
 import { BetChips, PotChips } from '../components/ChipStack'
@@ -353,6 +353,12 @@ export default function PokerPage() {
   const [statsMode, setStatsMode] = useState(false)
   const [statsExpansion, setStatsExpansion] = useState('minimized')
   const statsPanelRef = useRef(null)
+  // Stable handler so the memoized StatsPanel doesn't re-render every tick
+  // from a fresh inline arrow reference.
+  const closeStatsPanel = useCallback(() => {
+    setStatsMode(false)
+    setStatsExpansion('minimized')
+  }, [])
   const [tableList, setTableList] = useState([])
   const [spectatorBlindMode, setSpectatorBlindMode] = useState(false)
   const [spectatorVisibleIdSet, setSpectatorVisibleIdSet] = useState(() => new Set())
@@ -435,6 +441,11 @@ export default function PokerPage() {
     const eventId = `${event.playerId}-${event.actionId || Date.now()}`
     const nextEvent = { ...event, eventId }
 
+    // Cancel any pending dismissal for the same id so the new event gets a
+    // fresh 1.5s window instead of expiring against the prior timer.
+    const existingTimer = throwTimersRef.current.get(eventId)
+    if (existingTimer) clearTimeout(existingTimer)
+
     setChipThrowEvents(prev => [...prev.filter(e => e.eventId !== eventId).slice(-10), nextEvent])
 
     const timerId = setTimeout(() => {
@@ -457,7 +468,13 @@ export default function PokerPage() {
     const eventId = `${event.playerId}-${event.emoteId || Date.now()}`
     const nextEvent = { ...event, eventId }
 
-    setEmoteEvents(prev => [...prev.slice(-18), nextEvent])
+    // Cancel any stale timer for the same id so we don't orphan it when an
+    // event id repeats inside the dismissal window.
+    const existingTimer = emoteTimersRef.current.get(eventId)
+    if (existingTimer) clearTimeout(existingTimer)
+
+    // Drop any prior entry with the same id and keep the bounded window.
+    setEmoteEvents(prev => [...prev.filter(e => e.eventId !== eventId).slice(-18), nextEvent])
 
     const timerId = setTimeout(() => {
       setEmoteEvents(prev => prev.filter(e => e.eventId !== eventId))
@@ -530,7 +547,12 @@ export default function PokerPage() {
     const eventId = `${event.playerId}-${event.yellId || Date.now()}`
     const nextEvent = { ...event, eventId }
 
-    setYellEvents(prev => [...prev.slice(-14), nextEvent])
+    // Cancel any stale timer for the same id (mirrors addTableEmote /
+    // addChipThrow). Prevents orphaned setTimeouts when an event id repeats.
+    const existingTimer = yellTimersRef.current.get(eventId)
+    if (existingTimer) clearTimeout(existingTimer)
+
+    setYellEvents(prev => [...prev.filter(e => e.eventId !== eventId).slice(-14), nextEvent])
 
     const timerId = setTimeout(() => {
       setYellEvents(prev => prev.filter(e => e.eventId !== eventId))
@@ -687,7 +709,9 @@ export default function PokerPage() {
           clearSplitPotNotice()
           break
         case 'table_list':
-          setTableList(msg.data.tables || [])
+          // Lobby refresh — non-urgent. Wrap in startTransition so it can't
+          // preempt a click or input the user is making at the lobby form.
+          startTransition(() => setTableList(msg.data.tables || []))
           break
         case 'game_state':
           applyGameState(msg.data)
@@ -911,17 +935,23 @@ export default function PokerPage() {
     activeTurnTimeRemaining <= (gameState?.activeTurnWarningMs || 10000) &&
     phase !== 'waiting' &&
     phase !== 'showdown'
+  // useDeferredValue lets the heavy stats recompute run AT lower priority
+  // than urgent updates (input, action button clicks). The table UI still
+  // sees the latest gameState immediately; stats catches up a tick later,
+  // which is imperceptible to the user but keeps input responsive even
+  // mid-recompute. Big win on slower devices.
+  const deferredGameState = useDeferredValue(gameState)
   const statistics = useMemo(
-    () => statsMode ? buildPokerStatistics(gameState, playerId, { includeDetails: statsExpansion === 'detailed' }) : null,
-    [statsMode, statsExpansion, gameState, playerId]
+    () => statsMode ? buildPokerStatistics(deferredGameState, playerId, { includeDetails: statsExpansion === 'detailed' }) : null,
+    [statsMode, statsExpansion, deferredGameState, playerId]
   )
   const allInOddsByPlayer = useMemo(() => {
     if (!statistics?.allIn?.players) return new Map()
     return new Map(statistics.allIn.players.map((player) => [player.id, player]))
   }, [statistics])
   const spectatorStatistics = useMemo(
-    () => isSpectator ? buildSpectatorStatistics(gameState, { blindMode: spectatorBlindMode }) : null,
-    [isSpectator, gameState, spectatorBlindMode]
+    () => isSpectator ? buildSpectatorStatistics(deferredGameState, { blindMode: spectatorBlindMode }) : null,
+    [isSpectator, deferredGameState, spectatorBlindMode]
   )
   const spectatorOddsByPlayer = useMemo(() => {
     if (!spectatorStatistics?.players) return new Map()
@@ -2708,10 +2738,7 @@ export default function PokerPage() {
               statistics={statistics}
               expansion={statsExpansion}
               onSetExpansion={setStatsExpansion}
-              onClose={() => {
-                setStatsMode(false)
-                setStatsExpansion('minimized')
-              }}
+              onClose={closeStatsPanel}
             />
           </div>
         )}

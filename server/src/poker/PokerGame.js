@@ -3,7 +3,7 @@ import { GAME_PHASES, POKER_CONFIG, MESSAGE_TYPES } from '../config/constants.js
 import { evaluateHand, compareHands, getHandName } from './handEvaluator.js'
 
 export class PokerGame {
-  constructor(onBroadcast, onStateBroadcast = null) {
+  constructor(onBroadcast, onStateBroadcast = null, onTurnTimeout = null) {
     this.deck = new Deck()
     this.phase = GAME_PHASES.WAITING
     this.communityCards = []
@@ -43,6 +43,11 @@ export class PokerGame {
     this._activeGameTimers = new Map()
     this.onBroadcast = onBroadcast || (() => {})
     this.onStateBroadcast = onStateBroadcast
+    // Per-turn inactivity timer. Replaces the old 1s global polling sweep —
+    // we now schedule one setTimeout when a turn begins and fire the callback
+    // exactly once at the limit. Paused arenas defer; handleAction clears.
+    this.onTurnTimeout = onTurnTimeout
+    this._turnTimeoutHandle = null
 
     // Bot/strategy intelligence: history of actions in the current hand and a
     // ring buffer of recent completed hands. Per-player aggregated stats live
@@ -52,6 +57,14 @@ export class PokerGame {
     this.handActionHistory = []
     this.handHistory = []
     this.playerStats = new Map() // playerId -> { handsPlayed, vpip, aggressive, foldedToBet, profit }
+
+    // Cached deep-clone of the last 25 completed hands, shared across every
+    // bot decision until the next hand finishes. Without this, each bot at
+    // the table re-clones the same hand-history payload (cards, actions,
+    // winners, profits) on every turn — same data, repeated work. Reset to
+    // null whenever handHistory mutates; signals.js fills it on first read.
+    this._handHistorySnapshot = null
+    this._boardTextureCache = null
   }
 
   // Toggle the pause flag. When pausing we cancel every game-driven timer and
@@ -72,6 +85,8 @@ export class PokerGame {
       this._activeGameTimers.clear()
       this.runOutBoardTimeout = null
       this.nextHandTimeout = null
+      // Also cancel the turn-inactivity timer — pause shouldn't auto-fold.
+      this._clearTurnTimeout()
     } else {
       // Resume: drain everything we deferred. Each entry is a thunk that
       // re-runs the original auto-advance call. We fire them serially in
@@ -81,6 +96,9 @@ export class PokerGame {
       for (const fn of drained) {
         try { fn() } catch (err) { console.error('[poker-pause] resume error:', err) }
       }
+      // Resume the per-turn timer with a fresh full window — pausing shouldn't
+      // count against the active player's think time.
+      this._scheduleTurnTimeout()
     }
   }
 
@@ -132,6 +150,33 @@ export class PokerGame {
   setActiveIndex(index) {
     this.activeIndex = index
     this.lastTurnChange = Date.now()
+    this._scheduleTurnTimeout()
+  }
+
+  _clearTurnTimeout() {
+    if (this._turnTimeoutHandle) {
+      clearTimeout(this._turnTimeoutHandle)
+      this._turnTimeoutHandle = null
+    }
+  }
+
+  _scheduleTurnTimeout() {
+    this._clearTurnTimeout()
+    if (!this.onTurnTimeout) return
+    if (this.paused) return
+    if (this.phase === GAME_PHASES.WAITING || this.phase === GAME_PHASES.SHOWDOWN) return
+    const player = this.players[this.activeIndex]
+    if (!player) return
+    const playerId = player.id
+    this._turnTimeoutHandle = setTimeout(() => {
+      this._turnTimeoutHandle = null
+      // Stale check — only fire if it's still this player's turn.
+      const stillActive = this.players[this.activeIndex]?.id === playerId
+      if (!stillActive) return
+      try { this.onTurnTimeout(playerId) } catch (err) {
+        console.error('[poker] turn timeout cb:', err)
+      }
+    }, POKER_CONFIG.TURN_LIMIT_MS)
   }
 
   ensurePokerBankroll(player) {
@@ -206,6 +251,7 @@ export class PokerGame {
 
   resetToWaiting() {
     clearTimeout(this.runOutBoardTimeout)
+    this._clearTurnTimeout()
     this.players = this.getSeatedPlayers()
     this.communityCards = []
     this.pot = 0
@@ -456,6 +502,10 @@ export class PokerGame {
       return { success: false, error: 'Cannot act' }
     }
 
+    // Player acted in time — cancel the turn-inactivity timer. afterAction
+    // calls setActiveIndex for the next player which schedules a fresh one.
+    this._clearTurnTimeout()
+
     const playerBet = this.playerBets.get(playerId) || 0
     const toCall = this.currentBet - playerBet
     let chipThrowEvent = null
@@ -609,8 +659,12 @@ export class PokerGame {
     if (action === 'fold' && toCall > 0) stats.foldsToBet += 1
     // Track recent raise sizes for opponent profiling.
     if (action === 'raise' || action === 'all_in') {
-      stats.recentBetSizes.push(this.playerBets.get(playerId) || 0)
-      if (stats.recentBetSizes.length > 10) stats.recentBetSizes.shift()
+      const arr = stats.recentBetSizes
+      arr.push(this.playerBets.get(playerId) || 0)
+      if (arr.length > 10) {
+        // Avoid shift() — copy the tail in one go.
+        stats.recentBetSizes = arr.slice(arr.length - 10)
+      }
     }
 
     this.afterAction()
@@ -754,6 +808,9 @@ export class PokerGame {
         this.phase = GAME_PHASES.SHOWDOWN
         break
     }
+    // Board changed → bot signals derived from the board must be recomputed
+    // on the next decision.
+    this._boardTextureCache = null
   }
 
   advancePhase() {
@@ -915,6 +972,7 @@ export class PokerGame {
     })
 
     this.phase = GAME_PHASES.SHOWDOWN
+    this._clearTurnTimeout()
     this.recordCompletedHand({
       type: 'showdown',
       winners: Array.from(winnersOutput.values()),
@@ -976,6 +1034,7 @@ export class PokerGame {
     if (winner) winner.chips += this.pot
 
     this.phase = GAME_PHASES.SHOWDOWN
+    this._clearTurnTimeout()
     this.recordCompletedHand({
       type: 'fold_out',
       winners: [{ playerId: winnerId, username: winner?.username, chips: this.pot, handName: 'Won by fold' }],
@@ -1039,8 +1098,18 @@ export class PokerGame {
     const actionsByPlayer = {}
     const winnerIds = new Set(winners.map(w => w.playerId))
 
+    // Pre-bucket actions by playerId in one O(N) pass. Previously this used
+    // `.filter(a => a.playerId === p.id)` inside a per-player loop —
+    // O(players × actions) — which the downstream summary readers in
+    // PokerRoom._recordBotHandResults / _recordHumanHandResults then walked
+    // through again.
+    for (const p of this.players) actionsByPlayer[p.id] = []
+    for (const a of this.handActionHistory) {
+      const bucket = actionsByPlayer[a.playerId]
+      if (bucket) bucket.push(a)
+    }
+
     for (const p of this.players) {
-      actionsByPlayer[p.id] = this.handActionHistory.filter(a => a.playerId === p.id)
       const folded = this.foldedPlayers.has(p.id)
       const removed = this.removedPlayers.has(p.id)
       if (type === 'showdown' && !folded && !removed) {
@@ -1086,16 +1155,24 @@ export class PokerGame {
       }
     }
     this.handHistory.push(summary)
-    if (this.handHistory.length > 50) this.handHistory.shift()
+    // Bounded to 50 hands. shift() is O(n) on a 50-entry array — drop the
+    // oldest by replacing with the tail slice (V8 elides this on small arrays).
+    if (this.handHistory.length > 50) {
+      this.handHistory = this.handHistory.slice(this.handHistory.length - 50)
+    }
+    // Invalidate caches that depend on the completed-hand stream.
+    this._handHistorySnapshot = null
   }
 
-  getGameState(forPlayerId = null, options = {}) {
+  // Build everything in the game-state envelope that's shared across viewers.
+  // The per-viewer `players[]` array gets attached separately so we can swap
+  // only the `cards` slot per recipient instead of rebuilding the whole tree.
+  _buildStateEnvelope() {
     const visiblePlayers = this.getSeatedPlayers()
     const dealerPlayerId = this.players[this.dealerIndex]?.id || null
     const visibleDealerIndex = visiblePlayers.findIndex(p => p.id === dealerPlayerId)
     const activePlayer = this.players[this.activeIndex]
     const runoutLocked = this.exposeRunoutHands || this.shouldExposeRunoutHands()
-    const revealAllCards = Boolean(options.revealAllCards)
     const activePlayerId = activePlayer && !this.removedPlayers.has(activePlayer.id) && activePlayer.isConnected
       ? activePlayer.id
       : null
@@ -1106,45 +1183,150 @@ export class PokerGame {
     )
 
     return {
-      phase: this.phase,
-      pot: this.pot,
-      currentBet: this.currentBet,
-      smallBlind: this.smallBlind,
-      bigBlind: this.bigBlind,
-      communityCards: this.communityCards,
+      visiblePlayers,
+      visibleDealerIndex,
       runoutLocked,
-      dealerIndex: visibleDealerIndex,
       activePlayerId,
-      activeTurnStartedAt: hasTimedActiveTurn ? this.lastTurnChange : null,
-      activeTurnExpiresAt: hasTimedActiveTurn ? this.lastTurnChange + POKER_CONFIG.TURN_LIMIT_MS : null,
-      activeTurnLimitMs: POKER_CONFIG.TURN_LIMIT_MS,
-      activeTurnWarningMs: POKER_CONFIG.TURN_WARNING_MS,
+      hasTimedActiveTurn,
+      envelope: {
+        phase: this.phase,
+        pot: this.pot,
+        currentBet: this.currentBet,
+        smallBlind: this.smallBlind,
+        bigBlind: this.bigBlind,
+        communityCards: this.communityCards,
+        runoutLocked,
+        dealerIndex: visibleDealerIndex,
+        activePlayerId,
+        activeTurnStartedAt: hasTimedActiveTurn ? this.lastTurnChange : null,
+        activeTurnExpiresAt: hasTimedActiveTurn ? this.lastTurnChange + POKER_CONFIG.TURN_LIMIT_MS : null,
+        activeTurnLimitMs: POKER_CONFIG.TURN_LIMIT_MS,
+        activeTurnWarningMs: POKER_CONFIG.TURN_WARNING_MS
+      }
+    }
+  }
+
+  // Build a single player record without cards. cards is attached by the
+  // caller depending on what the viewer is allowed to see.
+  _buildPlayerSeat(p) {
+    return {
+      id: p.id,
+      username: p.username,
+      avatarId: p.avatarId || null,
+      avatarUrl: p.avatarUrl || null,
+      isBot: Boolean(p.isBot),
+      botId: p.botId || null,
+      botColor: p.botColor || null,
+      botTextColor: p.botTextColor || null,
+      addedByPlayerId: p.addedByPlayerId || null,
+      ownerDisplayName: p.ownerDisplayName || null,
+      chips: p.chips,
+      bet: this.playerBets.get(p.id) || 0,
+      totalBet: this.playerTotalBets.get(p.id) || 0,
+      profit: p.chips + (this.playerTotalBets.get(p.id) || 0) - (p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS),
+      buyIn: p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS,
+      lastAction: this.playerActions.get(p.id) || null,
+      folded: this.foldedPlayers.has(p.id),
+      allIn: this.allInPlayers.has(p.id),
+      waitingNextHand: this.waitingNextHand.has(p.id),
+      isConnected: p.isConnected
+    }
+  }
+
+  // Decide what `cards` array a viewer should see for a given seat. Mirrors
+  // the original inline rule in getGameState — extracted so the broadcast
+  // path can compute it once per (viewer, seat) pair.
+  _cardsForViewer(seatPlayer, forPlayerId, runoutLocked, revealAllCards) {
+    const handPresent = this.playerHands.has(seatPlayer.id) && (this.playerHands.get(seatPlayer.id) || []).length > 0
+    const folded = this.foldedPlayers.has(seatPlayer.id)
+    const waitingNext = this.waitingNextHand.has(seatPlayer.id)
+    const visible =
+      forPlayerId === seatPlayer.id ||
+      (revealAllCards && !waitingNext) ||
+      (runoutLocked && !folded && !waitingNext) ||
+      (this.phase === GAME_PHASES.SHOWDOWN && !folded && !waitingNext)
+    if (visible) return this.playerHands.get(seatPlayer.id) || []
+    return handPresent ? [null, null] : []
+  }
+
+  // Backwards-compatible single-shot game state (still used by routes/tests
+  // and by spectator joins that need a one-off snapshot). Broadcast hot path
+  // goes through buildBroadcastViews below instead.
+  getGameState(forPlayerId = null, options = {}) {
+    const { visiblePlayers, envelope, runoutLocked } = this._buildStateEnvelope()
+    const revealAllCards = Boolean(options.revealAllCards)
+    return {
+      ...envelope,
       serverTime: Date.now(),
       players: visiblePlayers.map(p => ({
-        id: p.id,
-        username: p.username,
-        avatarId: p.avatarId || null,
-        avatarUrl: p.avatarUrl || null,
-        isBot: Boolean(p.isBot),
-        botId: p.botId || null,
-        botColor: p.botColor || null,
-        botTextColor: p.botTextColor || null,
-        addedByPlayerId: p.addedByPlayerId || null,
-        ownerDisplayName: p.ownerDisplayName || null,
-        chips: p.chips,
-        bet: this.playerBets.get(p.id) || 0,
-        totalBet: this.playerTotalBets.get(p.id) || 0,
-        profit: p.chips + (this.playerTotalBets.get(p.id) || 0) - (p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS),
-        buyIn: p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS,
-        lastAction: this.playerActions.get(p.id) || null,
-        folded: this.foldedPlayers.has(p.id),
-        allIn: this.allInPlayers.has(p.id),
-        waitingNextHand: this.waitingNextHand.has(p.id),
-        isConnected: p.isConnected,
-        cards: (forPlayerId === p.id || (revealAllCards && !this.waitingNextHand.has(p.id)) || (runoutLocked && !this.foldedPlayers.has(p.id) && !this.waitingNextHand.has(p.id)) || (this.phase === GAME_PHASES.SHOWDOWN && !this.foldedPlayers.has(p.id) && !this.waitingNextHand.has(p.id)))
-          ? (this.playerHands.get(p.id) || [])
-          : (this.playerHands.has(p.id) && this.playerHands.get(p.id).length > 0 ? [null, null] : [])
+        ...this._buildPlayerSeat(p),
+        cards: this._cardsForViewer(p, forPlayerId, runoutLocked, revealAllCards)
       }))
+    }
+  }
+
+  // Hot-path: build the views we'll need for one broadcast tick.
+  // Returns:
+  //   - sharedView: object for any recipient who gets the "everyone reveals"
+  //     view (spectators always, and seated players when phase=SHOWDOWN or
+  //     runoutLocked — those cases collapse to a single shared payload).
+  //   - perPlayerView(seatId): builds the seat's view, reusing the cached
+  //     "no-cards" seats array and only swapping in that seat's hole cards.
+  //
+  // Designed so the caller can JSON.stringify each unique view ONCE and reuse
+  // the resulting string for every recipient.
+  buildBroadcastViews() {
+    const { visiblePlayers, envelope, runoutLocked } = this._buildStateEnvelope()
+    const isSharedReveal = runoutLocked || this.phase === GAME_PHASES.SHOWDOWN
+    const baseSeats = visiblePlayers.map(p => this._buildPlayerSeat(p))
+    const now = Date.now()
+
+    // Spectator view (revealAllCards = true). Same shape for every spectator.
+    const spectatorSeats = baseSeats.map((seat, i) => ({
+      ...seat,
+      cards: this._cardsForViewer(visiblePlayers[i], null, runoutLocked, true)
+    }))
+    const spectatorView = { ...envelope, serverTime: now, players: spectatorSeats }
+
+    // If we're in a shared-reveal phase, every seated player sees the same
+    // thing spectators do (apart from `revealAllCards` semantics which are
+    // moot here). Reuse the spectator view as the player view.
+    if (isSharedReveal) {
+      return {
+        spectatorView,
+        sharedPlayerView: spectatorView,
+        perPlayerView: () => spectatorView
+      }
+    }
+
+    // Normal play: build seats with no cards revealed, then for each player
+    // shallow-clone the seats array and swap in that player's hole cards.
+    const hiddenSeats = baseSeats.map((seat, i) => ({
+      ...seat,
+      cards: this._cardsForViewer(visiblePlayers[i], null, runoutLocked, false)
+    }))
+
+    const seatIndexById = new Map(visiblePlayers.map((p, i) => [p.id, i]))
+
+    const perPlayerView = (playerId) => {
+      const idx = seatIndexById.get(playerId)
+      if (idx === undefined) {
+        // Caller is seated but not yet in visiblePlayers (e.g. just removed).
+        // Hand them the hidden-cards view; nothing personal to reveal.
+        return { ...envelope, serverTime: now, players: hiddenSeats }
+      }
+      const seats = hiddenSeats.slice()
+      seats[idx] = {
+        ...hiddenSeats[idx],
+        cards: this.playerHands.get(playerId) || []
+      }
+      return { ...envelope, serverTime: now, players: seats }
+    }
+
+    return {
+      spectatorView,
+      sharedPlayerView: null,
+      perPlayerView
     }
   }
 

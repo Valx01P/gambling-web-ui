@@ -8,10 +8,14 @@ function generateRoomCode() {
 }
 
 export class RoomManager {
-  constructor() {
+  constructor(options = {}) {
     this.rooms = new Map()
     this.roomCounter = 0
     this.privateRooms = new Map() // code -> roomId
+    // (room, playerId) callback invoked when a seated player's turn timer
+    // elapses. WebSocketServer wires this to its boot/auto-fold logic so we
+    // don't need a global polling interval.
+    this.onTurnTimeout = typeof options.onTurnTimeout === 'function' ? options.onTurnTimeout : null
   }
 
   createRoom(isPrivate = false, options = {}) {
@@ -20,7 +24,8 @@ export class RoomManager {
     const room = new PokerRoom(roomId, isPrivate, {
       isArena: !!options.isArena,
       ownerUserId: options.ownerUserId || null,
-      onArenaExpire: (expiredRoom) => this._destroyRoom(expiredRoom)
+      onArenaExpire: (expiredRoom) => this._destroyRoom(expiredRoom),
+      onTurnTimeout: this.onTurnTimeout
     })
 
     if (isPrivate) {

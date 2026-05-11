@@ -24,6 +24,7 @@ import {
   RATING_FLOOR
 } from '../bots/runtime/eloEngine.js'
 import { preflopHandScore } from '../bots/runtime/equity.js'
+import { sanitizeDisplayString } from '../utils/sanitize.js'
 
 // Default rating to assume for any seat that isn't a bot when calculating
 // per-hand ELO updates. Aligned with the new STARTING_RATING so a bot
@@ -119,6 +120,14 @@ export class PokerRoom {
     // 30s timer that fires when the last spectator leaves an arena. The arena
     // is destroyed entirely on expiry.
     this.arenaEmptyTimer = null
+    // Bot Arenas are spectator-controlled and shouldn't auto-fold seats — the
+    // callback no-ops for arenas so a paused arena doesn't penalize bots.
+    const onTurnTimeout = this.isArena
+      ? null
+      : (typeof options.onTurnTimeout === 'function'
+          ? (playerId) => options.onTurnTimeout(this, playerId)
+          : null)
+
     this.game = new PokerGame(
       (msg) => {
         this.broadcast(msg)
@@ -136,7 +145,8 @@ export class PokerRoom {
           )
         }
       },
-      () => this.broadcastGameState()
+      () => this.broadcastGameState(),
+      onTurnTimeout
     )
     this._lastBroadcastPhase = GAME_PHASES.WAITING
     this._cleanupGuard = false
@@ -568,6 +578,11 @@ export class PokerRoom {
     const ratingFor = (p) => p.isBot ? (p.bot?.elo ?? HUMAN_DEFAULT_RATING) : HUMAN_DEFAULT_RATING
     const bigBlind = this.game.bigBlind || 10
 
+    // Build per-bot persistence work in memory first, then fan the DB writes out
+    // in parallel. Previously this was an await-inside-for loop, so 4 bots at a
+    // table = 4 sequential transactions even on a fast DB.
+    const writes = []
+
     for (const seat of allSeats) {
       if (!seat.isBot || !seat.bot?.id) continue
 
@@ -642,8 +657,8 @@ export class PokerRoom {
         bluffWins: liveBluffWins
       }
 
-      try {
-        await recordHandResult({
+      writes.push(
+        recordHandResult({
           botId: seat.bot.id,
           tableId: this.roomId,
           chipsDelta,
@@ -655,11 +670,13 @@ export class PokerRoom {
           bluffWin,
           preflopScore,
           performanceScore: score
+        }).catch(err => {
+          console.error(`[bot-elo] persist failed for ${seat.bot.name}:`, err.message)
         })
-      } catch (err) {
-        console.error(`[bot-elo] persist failed for ${seat.bot.name}:`, err.message)
-      }
+      )
     }
+
+    if (writes.length > 0) await Promise.all(writes)
   }
 
   // Same idea as _recordBotHandResults but for signed-in humans. Captures a
@@ -1001,7 +1018,7 @@ export class PokerRoom {
       return { success: false, error: 'Only seated players can yell' }
     }
 
-    const message = String(data?.message || '').trim().substring(0, 80)
+    const message = sanitizeDisplayString(data?.message || '', { maxLength: 80 })
     const timestamp = Date.now()
 
     if (!message) {
@@ -1306,17 +1323,43 @@ export class PokerRoom {
       }
     }
 
-    for (const player of this.players.values()) {
-      player.send({
-        type: MESSAGE_TYPES.GAME_STATE,
-        data: this.game.getGameState(player.id)
-      })
+    // Build all broadcast views once. Pre-stringify the spectator view (and,
+    // during shared-reveal phases, the unified player view) so we don't pay
+    // a JSON.stringify per recipient. Bots receive the object directly since
+    // their `send()` introspects message.data instead of parsing JSON.
+    const views = this.game.buildBroadcastViews()
+    const spectatorMsg = { type: MESSAGE_TYPES.GAME_STATE, data: views.spectatorView }
+    const spectatorJson = JSON.stringify(spectatorMsg)
+
+    let sharedPlayerJson = null
+    if (views.sharedPlayerView) {
+      sharedPlayerJson = views.sharedPlayerView === views.spectatorView
+        ? spectatorJson
+        : JSON.stringify({ type: MESSAGE_TYPES.GAME_STATE, data: views.sharedPlayerView })
     }
+
+    for (const player of this.players.values()) {
+      if (player.isBot) {
+        // Bots run logic on the data object — give them the per-seat view.
+        const data = views.sharedPlayerView || views.perPlayerView(player.id)
+        player.send({ type: MESSAGE_TYPES.GAME_STATE, data })
+        continue
+      }
+      if (sharedPlayerJson && typeof player.sendRaw === 'function') {
+        player.sendRaw(sharedPlayerJson)
+        continue
+      }
+      const data = views.perPlayerView(player.id)
+      if (typeof player.sendRaw === 'function') {
+        player.sendRaw(JSON.stringify({ type: MESSAGE_TYPES.GAME_STATE, data }))
+      } else {
+        player.send({ type: MESSAGE_TYPES.GAME_STATE, data })
+      }
+    }
+
     for (const spectator of this.spectators.values()) {
-      spectator.send({
-        type: MESSAGE_TYPES.GAME_STATE,
-        data: this.game.getGameState(null, { revealAllCards: true })
-      })
+      if (typeof spectator.sendRaw === 'function') spectator.sendRaw(spectatorJson)
+      else spectator.send(spectatorMsg)
     }
 
     this._lastBroadcastPhase = currentPhase
@@ -1330,17 +1373,59 @@ export class PokerRoom {
   }
 
   broadcastRoomUpdate() {
-    for (const player of this.players.values()) {
-      player.send({
-        type: MESSAGE_TYPES.ROOM_UPDATE,
-        data: this.getRoomData(player.id)
-      })
+    // Same idea as broadcastGameState — build the heavy per-recipient pieces
+    // (gameState) once via buildBroadcastViews and reuse the shared roomData
+    // shell across viewers.
+    const views = this.game.buildBroadcastViews()
+    const playerList = this.getPlayerList()
+    const spectatorList = this.getSpectatorList()
+    const contestMode = this.contestModeSummary()
+    const shell = {
+      roomId: this.roomId,
+      isPrivate: this.isPrivate,
+      inviteCode: this.inviteCode,
+      isArena: this.isArena,
+      arenaRunning: this.arenaRunning,
+      arenaStartingChips: this.arenaStartingChips,
+      players: playerList,
+      spectators: spectatorList,
+      contestMode
     }
+
+    const spectatorData = { ...shell, isSpectator: true, gameState: views.spectatorView }
+    const spectatorMsg = { type: MESSAGE_TYPES.ROOM_UPDATE, data: spectatorData }
+    const spectatorJson = JSON.stringify(spectatorMsg)
+
+    let sharedPlayerJson = null
+    if (views.sharedPlayerView) {
+      const sharedData = { ...shell, isSpectator: false, gameState: views.sharedPlayerView }
+      sharedPlayerJson = views.sharedPlayerView === views.spectatorView
+        ? JSON.stringify({ type: MESSAGE_TYPES.ROOM_UPDATE, data: sharedData })
+        : JSON.stringify({ type: MESSAGE_TYPES.ROOM_UPDATE, data: sharedData })
+    }
+
+    for (const player of this.players.values()) {
+      if (player.isBot) {
+        const gameState = views.sharedPlayerView || views.perPlayerView(player.id)
+        player.send({ type: MESSAGE_TYPES.ROOM_UPDATE, data: { ...shell, isSpectator: false, gameState } })
+        continue
+      }
+      if (sharedPlayerJson && typeof player.sendRaw === 'function') {
+        player.sendRaw(sharedPlayerJson)
+        continue
+      }
+      const gameState = views.perPlayerView(player.id)
+      const data = { ...shell, isSpectator: false, gameState }
+      if (typeof player.sendRaw === 'function') {
+        player.sendRaw(JSON.stringify({ type: MESSAGE_TYPES.ROOM_UPDATE, data }))
+      } else {
+        player.send({ type: MESSAGE_TYPES.ROOM_UPDATE, data })
+      }
+    }
+
     for (const spectator of this.spectators.values()) {
-      spectator.send({
-        type: MESSAGE_TYPES.ROOM_UPDATE,
-        data: this.getRoomData(spectator.id)
-      })
+      if (typeof spectator.sendRaw === 'function') spectator.sendRaw(spectatorJson)
+      else spectator.send(spectatorMsg)
     }
   }
 
