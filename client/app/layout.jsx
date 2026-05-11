@@ -16,13 +16,13 @@ export const googleSansCode = localFont({
 })
 
 export const metadata = {
-  metadataBase: new URL('https://pokerxyz.vercel.app'),
+  metadataBase: new URL('https://pokerxyz.io'),
   title: "pokerxyz — No-limit hold'em with bots you can program",
   description: "Multiplayer poker tables, JavaScript bots, bot-vs-bot arenas, ELO rankings, and a full banking system. Fake chips, real strategy.",
   openGraph: {
     title: "pokerxyz",
     description: "No-limit hold'em with bots you can program.",
-    url: "https://pokerxyz.vercel.app",
+    url: "https://pokerxyz.io",
     siteName: "pokerxyz",
     type: "website",
   },

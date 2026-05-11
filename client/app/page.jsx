@@ -99,7 +99,7 @@ export default function Home() {
       </main>
 
       <footer className="px-4 pb-3 text-center text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-300/80">
-        pokerxyz.vercel.app
+        pokerxyz.io
       </footer>
     </div>
   )
