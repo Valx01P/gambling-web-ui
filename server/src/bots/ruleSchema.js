@@ -199,7 +199,11 @@ export function validateName(name) {
   return trimmed
 }
 
-const MAX_CODE_LENGTH = 32_768
+// Bumped 32 KB → 128 KB so a complex strategy with the full reference comment
+// + sizable lookup tables (e.g., per-opponent opening charts, hand ranges as
+// data) comfortably fits. The sandbox compile/run timeouts still cap CPU; the
+// length cap is purely about keeping the bot row small in the database.
+const MAX_CODE_LENGTH = 131_072
 
 export function validateCode(code) {
   if (code === undefined || code === null) return

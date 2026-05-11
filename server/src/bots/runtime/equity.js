@@ -20,6 +20,7 @@
 
 import { evaluateHand, compareHands } from '../../poker/handEvaluator.js'
 import { GAME_PHASES } from '../../config/constants.js'
+import { preflopScore as analyzerPreflopScore } from './handAnalyzer.js'
 
 const RANK_VALS = {
   '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
@@ -40,38 +41,21 @@ function cardKey(c) {
 
 // --- Preflop hand scoring -------------------------------------------------
 
-// Numeric strength for any 2-card preflop hand. Loosely follows the Chen
-// formula, normalized to [0, 1]. Big pairs and AKs cluster near the top,
-// small offsuit gappers near the bottom.
+// Numeric strength for any 2-card preflop hand, on a 0..1 scale. Delegates
+// to the canonical handAnalyzer table (preflopScore) so every consumer in
+// the bot stack sees the same value. Why this matters: the previous formula
+// rated AKo at ~0.62, which sat below the 'strong' bot-template branch and
+// caused AK to fold preflop in spots where it should never fold.
 //
-// This isn't an equity number — it's a deterministic ordering used to define
-// "top X%" ranges. The actual equity calc is the Monte Carlo below.
+// Score → tier breakpoints used downstream:
+//   >= 0.85  premium      AA, KK, QQ, JJ, TT, AKs, AKo, AQs
+//   >= 0.70  strong       99-77, KQs/AJs/KJs/ATs/KTs/QJs/AQo
+//   >= 0.55  medium       small pairs, broadways, suited aces
+//   >= 0.40  weak         suited connectors, weak Ax offsuit
+//   else     trash
 export function preflopHandScore(c1, c2) {
-  const a = RANK_VALS[c1.rank]
-  const b = RANK_VALS[c2.rank]
-  if (!a || !b) return 0
-  const high = Math.max(a, b)
-  const low = Math.min(a, b)
-  const suited = c1.suit === c2.suit
-  const pair = a === b
-
-  if (pair) {
-    // AA → 1.00, KK → 0.96, …, 22 → 0.55. Pairs always rank ahead of unpaired.
-    return 0.55 + ((high - 2) / 12) * 0.45
-  }
-
-  // Weighted average of the two ranks (high card matters more), normalized so
-  // AK ≈ 0.86 before suited/connector bonuses.
-  let score = (high * 0.6 + low * 0.4) / 14 * 0.55
-  if (suited) score += 0.06
-  const gap = high - low
-  if (gap === 1) score += 0.03           // connectors
-  else if (gap === 2) score += 0.015      // 1-gappers
-  else if (gap >= 5) score -= 0.04        // big gap penalty
-  if (high === 14) score += 0.04          // ace bonus
-  if (high === 13) score += 0.02          // king bonus
-  // Clamp so unpaired hands stay under the lowest pair.
-  return Math.max(0, Math.min(0.93, score))
+  if (!c1 || !c2) return 0
+  return analyzerPreflopScore(c1, c2)
 }
 
 // --- Range inference ------------------------------------------------------

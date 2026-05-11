@@ -346,7 +346,9 @@ export default function PokerPage() {
   const [chipThrowEvents, setChipThrowEvents] = useState([])
   const [emoteEvents, setEmoteEvents] = useState([])
   const [yellEvents, setYellEvents] = useState([])
-  const [splitPotNotice, setSplitPotNotice] = useState('')
+  // Array of lines so the notice can show "Main pot: Alice" and "Side pot: Bob"
+  // on separate rows. Single-pot messages render as a 1-element array.
+  const [splitPotNotice, setSplitPotNotice] = useState([])
   const [selectedAvatarId, setSelectedAvatarId] = useState('op1')
   const [statsMode, setStatsMode] = useState(false)
   const [statsExpansion, setStatsExpansion] = useState('minimized')
@@ -476,24 +478,48 @@ export default function PokerPage() {
       clearTimeout(splitNoticeTimerRef.current)
       splitNoticeTimerRef.current = null
     }
-    setSplitPotNotice('')
+    setSplitPotNotice([])
   }, [])
 
-  const showSplitPotNotice = useCallback((winners) => {
-    if (!winners?.length || winners.length < 2) return
+  // Render the pot-breakdown notice. Three shapes:
+  //   • Single pot, single winner   → "Winner: Alice · Aces full"
+  //   • Single pot, multiple winners → "Split pot: Alice / Bob"
+  //   • Multiple pots               → "Main pot: Alice · Side pot: Bob"
+  // Last form is the important fix — main vs side pot was getting collapsed
+  // into a misleading "Split pot" label even when distinct players took each.
+  const showSplitPotNotice = useCallback((winners, potBreakdown) => {
+    if (!winners?.length) return
 
-    const names = winners
+    const fmtList = (ws) => ws
       .map(w => w.username || w.playerId?.substring(0, 6))
       .filter(Boolean)
       .slice(0, 4)
       .join(' / ')
 
-    if (!names) return
+    let lines = []
+    const breakdown = Array.isArray(potBreakdown) ? potBreakdown.filter(p => p.winners?.length > 0) : []
+
+    if (breakdown.length >= 2) {
+      // Multi-pot showdown. One line per pot so main vs side are clearly
+      // distinguishable rather than mashed onto a single line.
+      lines = breakdown.map(pot => {
+        const label = pot.potIndex === 0 ? 'Main pot'
+                    : breakdown.length > 2 ? `Side pot ${pot.potIndex}`
+                    : 'Side pot'
+        return `${label}: ${fmtList(pot.winners)}`
+      })
+    } else if (winners.length >= 2) {
+      // Single pot, multiple winners (true chop).
+      lines = [`Split pot: ${fmtList(winners)}`]
+    } else {
+      // Single winner — no notice; the WINNER badge over their seat is enough.
+      return
+    }
 
     if (splitNoticeTimerRef.current) clearTimeout(splitNoticeTimerRef.current)
-    setSplitPotNotice(`Split pot: ${names}`)
+    setSplitPotNotice(lines)
     splitNoticeTimerRef.current = setTimeout(() => {
-      setSplitPotNotice('')
+      setSplitPotNotice([])
       splitNoticeTimerRef.current = null
     }, 4500)
   }, [])
@@ -741,7 +767,7 @@ export default function PokerPage() {
               }, ...prev].slice(0, 30))
             }
             if (msg.data.winners?.length) {
-              showSplitPotNotice(msg.data.winners)
+              showSplitPotNotice(msg.data.winners, msg.data.potBreakdown)
               msg.data.winners.forEach(w => {
                 const name = w.username || w.playerId.substring(0, 6);
                 addSys(`Winner: ${name} (+${w.chips}) — ${w.handName}`)
@@ -2310,9 +2336,11 @@ export default function PokerPage() {
             <div className="font-black text-2xl sm:text-3xl text-white drop-shadow-md">{gameState?.pot || 0}</div>
           </div>
 
-          {splitPotNotice && (
-            <div className="absolute top-[34%] left-1/2 z-50 -translate-x-1/2 rounded-md border border-amber-300/70 bg-zinc-950/90 px-3 py-1.5 text-center text-[10px] sm:text-xs font-black uppercase tracking-wide text-amber-100 shadow-xl">
-              {splitPotNotice}
+          {splitPotNotice.length > 0 && (
+            <div className="absolute top-[34%] left-1/2 z-50 -translate-x-1/2 rounded-md border border-amber-300/70 bg-zinc-950/90 px-3 py-1.5 text-center text-[10px] sm:text-xs font-black uppercase tracking-wide text-amber-100 shadow-xl space-y-0.5">
+              {splitPotNotice.map((line, i) => (
+                <div key={i}>{line}</div>
+              ))}
             </div>
           )}
 
@@ -2331,7 +2359,12 @@ export default function PokerPage() {
             const pos = SEATS[seatIndex]
             if (!pos) return null
             const isMe = player.id === playerId
-            const isActive = gameState?.activePlayerId === player.id
+            // Active-player highlight is only meaningful during live action.
+            // Once the phase flips to showdown, `activePlayerId` still points
+            // at the last actor (the engine doesn't clear it) — and we'd
+            // otherwise leave them lit up next to the actual winner. Gate on
+            // phase so showdown only highlights the winners.
+            const isActive = gameState?.activePlayerId === player.id && phase !== 'showdown'
             // Arenas don't enforce a turn timer (bots can't be kicked), so the
             // red "running out of time" pulse never makes sense there — keep
             // the active highlight amber.
@@ -2340,6 +2373,10 @@ export default function PokerPage() {
             const isPlayerWaiting = player.waitingNextHand
 
             const isWinner = phase === 'showdown' && showdownData?.winners?.some(w => w.playerId === player.id)
+            // Drives the yellow ring + bouncing arrow. During the hand it
+            // follows the active player; on showdown it jumps to the
+            // winner(s) so the table can see who scooped the pot.
+            const isHighlighted = isActive || isWinner
             const wonAmount = showdownData?.winners?.find(w => w.playerId === player.id)?.chips
             const handName = showdownData?.playerHandNames?.[player.id]
             const playerChipThrowEvents = chipThrowEvents.filter(event => event.playerId === player.id)
@@ -2406,7 +2443,7 @@ export default function PokerPage() {
                     transition-all border z-10 relative bg-zinc-800/95
                     ${player.folded && !isPlayerWaiting ? 'opacity-50' : ''}
                     ${isPlayerWaiting ? 'opacity-60' : ''}
-                    ${isActive
+                    ${isHighlighted
                       ? isTurnWarning
                         ? 'ring-4 ring-red-400 border-red-400/80 shadow-[0_0_30px_rgba(239,68,68,0.85)] bg-red-950/70'
                         : 'ring-4 ring-amber-300 border-amber-300/80 shadow-[0_0_28px_rgba(251,191,36,0.85)] bg-amber-900/40'
@@ -2416,7 +2453,7 @@ export default function PokerPage() {
                       emotes={playerEmotes}
                       className="absolute -top-3 -left-2 sm:-top-3.5 sm:-left-2.5 z-40"
                     />
-                    {isActive && (
+                    {isHighlighted && (
                       <div className={`absolute -top-4 sm:-top-5 left-1/2 -translate-x-1/2 text-xs sm:text-sm animate-bounce ${isTurnWarning ? 'text-red-500' : 'text-amber-400'}`}>▼</div>
                     )}
                     <div className="text-[10px] sm:text-sm font-bold truncate text-white flex items-center justify-center gap-1 whitespace-nowrap">
@@ -2443,15 +2480,10 @@ export default function PokerPage() {
                         `${player.chips} chips`
                       )}
                     </div>
-                    {player.isBot && player.addedByPlayerId === playerId && (
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); removeBotFromTable(player.id) }}
-                        className="mt-1 rounded-md border border-red-500/40 bg-red-500/10 px-1.5 py-0.5 text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-red-200 hover:bg-red-500/20"
-                      >
-                        Remove
-                      </button>
-                    )}
+                    {/* Bot Remove button removed from the table nameplate — bots
+                        can only be removed via the Add Bot panel (regular tables)
+                        or the Arena tools panel (arenas). Keeps the table chrome
+                        clean and the remove flow centralized. */}
                     <div className={`mt-0.5 text-[8px] sm:text-[10px] font-black leading-none ${profitClass(playerProfit)}`}>
                       P/L {formatProfit(playerProfit)}
                     </div>

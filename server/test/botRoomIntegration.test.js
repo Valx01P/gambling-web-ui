@@ -121,6 +121,43 @@ test('bot inherits adder chips with 1000 floor', () => {
   assert.equal(seat2.chips, 1000)
 })
 
+test('bot added mid-action queues for the next hand (waitingNextHand)', () => {
+  const room = new PokerRoom('test-room-queue', false)
+  const a = makeFakePlayer('a', 'Alice')
+  const b = makeFakePlayer('b', 'Bob')
+  room.addPlayer(a)
+  room.addPlayer(b)
+
+  // Start a hand and put it past preflop action so the can-join-current-hand
+  // gate (preflop && !actionStarted) is closed.
+  room.game.startHand()
+  room.game.actionStarted = true
+  room.game.phase = 'flop'
+
+  const r = room.addBotForPlayer(a.id, botRecord('LateJoiner', '#84cc16'))
+  assert.equal(r.success, true, 'mid-action bot still seats (no rejection)')
+  assert.equal(r.queuedForNextHand, true, 'queue flag returned')
+  const seat = room.players.get(r.bot.id)
+  assert.ok(seat, 'bot is in the room')
+  assert.equal(room.game.waitingNextHand.has(seat.id), true, 'engine marks waitingNextHand')
+})
+
+test('bot added preflop pre-action joins the current hand immediately', () => {
+  const room = new PokerRoom('test-room-prejoin', false)
+  const a = makeFakePlayer('a', 'Alice')
+  const b = makeFakePlayer('b', 'Bob')
+  room.addPlayer(a)
+  room.addPlayer(b)
+  room.game.startHand()
+  // Hand is preflop, no voluntary action yet (still blinds being posted).
+  room.game.actionStarted = false
+  const r = room.addBotForPlayer(a.id, botRecord('EarlyBird', '#3b82f6'))
+  assert.equal(r.success, true)
+  assert.equal(r.queuedForNextHand, false, 'should NOT be queued — preflop pre-action allows current-hand join')
+  const seat = room.players.get(r.bot.id)
+  assert.equal(room.game.waitingNextHand.has(seat.id), false)
+})
+
 test('bot at 0 chips is auto-removed when room returns to WAITING', () => {
   const room = new PokerRoom('test-room-5', false)
   const human = makeFakePlayer('h', 'Human')

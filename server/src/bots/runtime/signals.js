@@ -7,6 +7,8 @@ import {
   calculateRangeEquity,
   inferRangesForOpponents
 } from './equity.js'
+import { computeOpponentPatterns, summarizeTable } from './opponentPatterns.js'
+import { analyzeHand } from './handAnalyzer.js'
 
 const ROUND_INDEX = {
   [GAME_PHASES.PREFLOP]: 0,
@@ -101,6 +103,99 @@ function classifyPreflopAction(handActions) {
   if (raises === 1) return 'opened'
   if (raises === 2) return 'three_bet'
   return 'four_bet_plus'
+}
+
+// Classify the board texture. Cheap math, big leverage — bots that condition
+// their c-bet sizing on dry vs wet boards play meaningfully better.
+// Returns null preflop (no board), otherwise a structured object with the
+// breakdown plus a single 'wetness' summary string for bots that just want
+// a label.
+function computeBoardTexture(communityCards) {
+  if (!Array.isArray(communityCards) || communityCards.length < 3) return null
+  const ranks = communityCards.map(c => RANK_VALS[c.rank]).filter(Boolean).sort((a, b) => b - a)
+  const suits = communityCards.map(c => c.suit)
+
+  // Pairing: count repeated ranks.
+  const rankCounts = {}
+  for (const r of ranks) rankCounts[r] = (rankCounts[r] || 0) + 1
+  const pairs = Object.values(rankCounts).filter(c => c >= 2).length
+  const trips = Object.values(rankCounts).some(c => c >= 3)
+
+  // Suit profile.
+  const suitCounts = {}
+  for (const s of suits) suitCounts[s] = (suitCounts[s] || 0) + 1
+  const maxSuit = Math.max(...Object.values(suitCounts))
+  const monotone = maxSuit === communityCards.length     // all one suit
+  const twoTone  = !monotone && maxSuit >= 2 && (communityCards.length - maxSuit) >= 1
+
+  // Connectedness: gaps between consecutive board ranks. Smaller gaps =
+  // more straight draws available.
+  const uniqRanks = [...new Set(ranks)].sort((a, b) => b - a)
+  const span = uniqRanks.length >= 2 ? uniqRanks[0] - uniqRanks[uniqRanks.length - 1] : 0
+  const connected = uniqRanks.length >= 2 && span <= 4
+  // Ace-low wheel possibility (A-5-x straight draw).
+  const aceLow = uniqRanks.includes(14) && uniqRanks.some(r => r <= 5)
+
+  const highCard = uniqRanks[0] || 0
+  const drawHeavy = monotone || twoTone || connected || aceLow
+
+  // Coarse wetness label most bot authors will reach for first.
+  let wetness = 'dry'
+  if (monotone || (connected && twoTone)) wetness = 'volatile'
+  else if (drawHeavy) wetness = 'wet'
+
+  return {
+    cards: communityCards.length,
+    paired: pairs > 0,
+    pairsCount: pairs,
+    trips,
+    monotone,
+    twoTone,
+    rainbow: maxSuit === 1,
+    maxSuitCount: maxSuit,
+    connected,
+    span,
+    aceLow,
+    drawHeavy,
+    highCard,                // 14 = A, 13 = K, …
+    wetness                  // 'dry' | 'wet' | 'volatile'
+  }
+}
+
+// Snapshot of what this player revealed at past showdowns this session.
+// Combs through handHistory for entries where p.id has a non-null cards
+// array (server only fills cards for non-folded participants at showdown).
+function revealedShowdownsFor(handHistory, playerId) {
+  const out = []
+  for (const h of handHistory) {
+    const cards = h.cards?.[playerId]
+    if (!cards || cards.length !== 2) continue
+    out.push({
+      handIndex: h.handIndex,
+      cards: cards.map(c => ({ ...c })),
+      won: (h.winners || []).some(w => w.playerId === playerId),
+      handName: h.playerHandNames?.[playerId] || null,
+      pot: h.pot
+    })
+  }
+  return out
+}
+
+// Average milliseconds it took this player to act, across their actions in
+// the (rolling) handHistory + the current hand. Provides a tell against
+// humans — bots act on a fixed schedule so this number is mostly useful
+// against people. Returns null when there isn't enough data.
+function avgActionTime(allActions, playerId) {
+  let total = 0
+  let count = 0
+  for (const a of allActions) {
+    if (a.playerId !== playerId) continue
+    if (typeof a.tookMs !== 'number') continue
+    if (a.tookMs <= 0 || a.tookMs > 120_000) continue   // ignore outliers
+    total += a.tookMs
+    count += 1
+  }
+  return count > 0 ? Math.round(total / count) : null
 }
 
 // Pure: takes the live PokerGame + the bot's seat. Returns the full ctx the
@@ -264,6 +359,11 @@ export function buildContext(game, bot) {
     handIndex: h.handIndex,
     type: h.type,
     pot: h.pot,
+    // Per-hand blind levels — surfaced because the table can vote new
+    // blinds mid-session via contest mode, so historical pots aren't
+    // necessarily on the same scale as the current one.
+    smallBlind: h.smallBlind ?? null,
+    bigBlind: h.bigBlind ?? null,
     communityCards: (h.communityCards || []).map(c => ({ ...c })),
     winners: h.winners.slice(),
     profit: h.profitsByPlayer[bot.id] ?? 0,
@@ -278,6 +378,7 @@ export function buildContext(game, bot) {
           Object.entries(h.actionsByPlayer).map(([pid, list]) => [pid, list.slice()])
         )
       : {},
+    playerHandNames: { ...(h.playerHandNames || {}) },
     actions: (h.actions || []).slice()
   }))
 
@@ -333,6 +434,87 @@ export function buildContext(game, bot) {
   // Preflop story: did anyone open? Did it get 3-bet? 4-bet+?
   const preflopActionProfile = classifyPreflopAction(actionHistory)
 
+  // --- Per-opponent enrichments -------------------------------------------
+  // Now that handHistory + actionHistory are available, layer in everything
+  // a bot author might want to peek at per opponent. All of this is derived
+  // from public information — never from cards the opponent didn't reveal.
+  const allHistoricalActions = handHistory.flatMap(h => h.actions || [])
+  for (const o of opponents) {
+    // Their action history in the *current* hand (preserves chronological order).
+    o.currentHandActions = actionHistory.filter(a => a.playerId === o.id).map(a => ({
+      seq: a.seq, phase: a.phase, action: a.action, amount: a.amount,
+      potBefore: a.potBefore, toCallBefore: a.toCallBefore, tookMs: a.tookMs || 0
+    }))
+    // How long they took on their most recent action this hand.
+    const lastA = o.currentHandActions[o.currentHandActions.length - 1]
+    o.lastActionTookMs = lastA?.tookMs ?? 0
+    // Lifetime average action time (across handHistory + current hand). Most
+    // useful vs humans — bots have a fixed think delay so this is constant.
+    o.avgActionTimeMs = avgActionTime([...allHistoricalActions, ...actionHistory], o.id)
+    // Stack position relative to the table.
+    o.isChipLeader = chipLeader?.id === o.id
+    o.isShortStack = shortStack?.id === o.id
+    o.chipRank = Math.max(1, seatChipsList.findIndex(s => s.id === o.id) + 1)
+    // M-ratio (effective for cash games too, just blinds-only since we don't run antes).
+    o.mRatio = bigBlind + smallBlind > 0 ? o.chips / (bigBlind + smallBlind) : null
+    // Session profit derived from handHistory.
+    o.sessionProfit = handHistory.reduce((sum, h) => sum + (h.profitByPlayer?.[o.id] ?? 0), 0)
+    // Head-to-head profit vs me. Useful for "is this player exploiting me?"
+    // reads. Sums profitByPlayer for both seats across handHistory entries
+    // where both were active; positive = they're up on me.
+    o.vsMeProfit = handHistory.reduce((sum, h) => {
+      const oppP = h.profitByPlayer?.[o.id]
+      const myP = h.profitByPlayer?.[bot.id]
+      if (typeof oppP !== 'number' || typeof myP !== 'number') return sum
+      // Only count hands where both players were involved (nonzero profit
+      // on either side means at least one of them had skin in).
+      if (oppP === 0 && myP === 0) return sum
+      return sum + oppP
+    }, 0)
+    o.wonLastHand = handHistory.length > 0 &&
+      handHistory[handHistory.length - 1].winners?.some(w => w.playerId === o.id)
+    // Cards they've shown down this session, oldest-first.
+    o.revealedShowdowns = revealedShowdownsFor(handHistory, o.id)
+    // Convenience: how many times we've seen them at showdown this session
+    // (above stat field also exposes this lifetime, but session is what the
+    // generated clone bot's range-inference cares about).
+    o.showdownsThisSession = o.revealedShowdowns.length
+    // Stable-ish session identity: the WS player id is unique for the
+    // session. Re-exposed here next to `name` so a bot can build a
+    // "players I've seen" Map without doing the lookup itself.
+    o.stableId = o.id
+    // Stack pressure expressed two ways. effectiveStackBB (already set
+    // above) compares against the bot's stack; stackBB is the player's
+    // OWN stack in BBs so a bot can ask "how many BBs are they from
+    // losing" without doing the math.
+    o.stackBB = bigBlind > 0 ? o.chips / bigBlind : 0
+    o.bbToBust = o.stackBB
+    // Compute behavior patterns. Cheap — see opponentPatterns.js for the
+    // full breakdown. Bots that want raw data still have ctx.actionHistory
+    // and the player's stats; this is for the common case of "what kind of
+    // player is this and how should I react".
+    const rawStats = game.playerStats?.get(o.id)
+    o.patterns = computeOpponentPatterns({
+      playerId: o.id,
+      rawStats,
+      currentHandActions: o.currentHandActions || [],
+      handHistory,
+      bigBlind,
+      myChips: me.chips,
+      oppChips: o.chips,
+      oppRevealedShowdowns: o.revealedShowdowns
+    })
+  }
+
+  // Table-level rollup of those patterns. Lets a bot ask "is this a tight
+  // table?" or "are most seats tilted?" with one field.
+  const tableProfile = summarizeTable(opponents.map(o => o.patterns).filter(Boolean))
+
+  // --- Board texture ------------------------------------------------------
+  // Computed once per call; bots that condition c-bet sizing on dryness vs
+  // wetness can read this directly instead of re-walking the cards.
+  const boardTexture = computeBoardTexture(communityCards)
+
   // Flush / straight draws postflop with a coarse outs estimate.
   const draws = computeDraws(holeCards, communityCards)
 
@@ -356,9 +538,17 @@ export function buildContext(game, bot) {
     handStrengthIndex: tierIndex(handStrength),
     handCategory: handStrength,
     // Numeric strength (0-1) for bots that want a sharper signal than the
-    // 5-bucket category. Preflop = Chen-style score; postflop = made-hand
-    // baseline by rank class.
+    // 5-bucket category. Preflop = lookup-table score (AA=1.0, AKo=0.87,
+    // 22≈0.56, 72o≈0.13). Postflop = made-hand baseline by rank class.
     handStrengthScore,
+    // Full industry-grade analyzer output:
+    //   handAnalysis.preflop  — always present when 2 hole cards exist
+    //   handAnalysis.postflop — null preflop; rich made-hand + draws + reads
+    // The label/tier fields here are the canonical source of truth for
+    // "what kind of hand do I have right now". Bots branch on
+    // handAnalysis.preflop.neverFoldPreflop, handAnalysis.postflop.valueClass,
+    // etc., instead of recomputing rank thresholds from the raw cards.
+    handAnalysis: analyzeHand(holeCards, communityCards),
     // Range-aware equity (0-1) vs each unfolded opponent's estimated range.
     // Null when there's no opponent action yet (e.g., we're first to act
     // preflop with no information). Bots SHOULD use this to size bets and
@@ -443,7 +633,109 @@ export function buildContext(game, bot) {
     draws,
     handsSinceLastWin,
 
-    dealerSeatIndex: game.dealerIndex
+    dealerSeatIndex: game.dealerIndex,
+
+    // --- New: per-street boolean shortcuts ---------------------------------
+    // Same info as `phase` / `roundIndex`, but as plain booleans for cleaner
+    // branching. `if (ctx.streetIsRiver) ...` reads better than `phase ===`.
+    streetIsFlop: phase === GAME_PHASES.FLOP,
+    streetIsTurn: phase === GAME_PHASES.TURN,
+    streetIsRiver: phase === GAME_PHASES.RIVER,
+
+    // --- New: aggressor & position derivatives -----------------------------
+    // True when I was the most recent preflop raiser. Anchor for c-bet logic
+    // ("I opened, the flop checked to me, do I fire?").
+    iWasPreflopAggressor: (() => {
+      for (const a of actionHistory) {
+        if (a.phase !== GAME_PHASES.PREFLOP) break
+        if ((a.action === 'raise' || a.action === 'all_in') && a.playerId === bot.id) return true
+        if (a.action === 'raise' || a.action === 'all_in') return false
+      }
+      return false
+    })(),
+    // I'm last to act this round if no active opponent still needs to act
+    // after me. Useful for free showdowns / position bluffs.
+    isInPosition: (() => {
+      // Active opponents not folded / all-in.
+      const active = players.filter(p => p.id !== bot.id &&
+        !game.foldedPlayers.has(p.id) && !game.allInPlayers.has(p.id) && !game.removedPlayers.has(p.id))
+      if (active.length === 0) return true
+      // If everyone else has already acted this round, I'm closing the action.
+      return active.every(p => game.roundActed?.has?.(p.id))
+    })(),
+    // Convenience boolean cluster around position.
+    isLatePosition: positionFor(myIdx, game.dealerIndex, total) === 'btn' ||
+                    positionFor(myIdx, game.dealerIndex, total) === 'late',
+    isBlind: positionFor(myIdx, game.dealerIndex, total) === 'sb' ||
+             positionFor(myIdx, game.dealerIndex, total) === 'bb',
+
+    // --- New: pot-odds / EV / fold-equity convenience ----------------------
+    // breakevenEquity — the equity you need to break even on this call.
+    // Identical to potOdds, just named so the math reads cleaner.
+    breakevenEquity: facingBet ? toCall / (game.pot + toCall) : 0,
+    // EV of a call in chips, using the range-aware equity number.
+    // Positive = +EV call; negative = -EV call. Multiply by hand frequency to
+    // get session EV.
+    evCallChips: (() => {
+      if (!facingBet || equity == null) return 0
+      const winShare = (game.pot + toCall) * equity
+      const loseCost = toCall * (1 - equity)
+      return Math.round(winShare - loseCost)
+    })(),
+    // Quick boolean — equity exceeds the price.
+    profitableCall: facingBet && equity != null && equity > (toCall / (game.pot + toCall)),
+    // Fold rate needed for a bluff at potBetSize × pot to break even.
+    // Pot-sized bluff break-even is 50%. The map is exposed so a bot can
+    // pick its sizing based on the opponent's foldEquityScore.
+    bluffBreakEven: {
+      half:    1 / 3,    // bet 0.5 × pot → needs 33% fold rate
+      twoThirds: 0.4,    // bet 0.66 × pot → needs 40%
+      pot:     0.5,      // bet 1 × pot → needs 50%
+      overbet: 0.6       // bet 1.5 × pot → needs 60%
+    },
+    // myTotalBet / my starting stack — separate from `committed` which is
+    // a boolean. Use this for graduated commitment decisions.
+    commitmentRatio: (me.chips + myTotalBet) > 0 ? myTotalBet / (me.chips + myTotalBet) : 0,
+
+    // --- New: table identity ------------------------------------------------
+    // Stable for the session — lets a bot maintain a per-table memory map
+    // (e.g., "every time I see Player X at table arena_47 they 3-bet 30%").
+    tableId: bot.room?.roomId ?? null,
+    tableType: bot.room?.isArena ? 'arena'
+              : bot.room?.isPrivate ? 'private'
+              : 'public',
+    tableSize: total,
+    maxSeats: 5,
+    // Server's wall-clock at build time. Combined with `activeTurnStartedAt`
+    // on game_state this lets a bot compute exact think-time of the player
+    // who's currently acting (useful for tells vs humans).
+    serverTime: Date.now(),
+    activeTurnStartedAt: game.lastTurnChange ?? null,
+
+    // --- New: board texture -------------------------------------------------
+    // null preflop. Postflop, holds paired/monotone/wetness/etc. so bots
+    // don't have to re-walk the cards every decision.
+    boardTexture,
+
+    // --- New: hand-strength label (mirrors the categorical bucket) ---------
+    // Convenience derivative of `handStrengthScore`. Bots that want a single
+    // word can read this; the numeric is still there for granular logic.
+    handStrengthLabel: handStrength,
+
+    // --- New: revealed-cards index by playerId -----------------------------
+    // Aggregation of every showdown reveal this session. Same data lives on
+    // each opponent, but having a single map indexed by id is easier for
+    // bots that maintain their own "seen hands" table.
+    revealedShowdownsByPlayer: opponents.reduce((acc, o) => {
+      if (o.revealedShowdowns.length > 0) acc[o.id] = o.revealedShowdowns
+      return acc
+    }, {}),
+
+    // --- New: table-wide pattern summary -----------------------------------
+    // Rollup of per-opponent archetypes so a bot can ask "tight table?",
+    // "maniac table?", "tilted seats?" in one read. Each per-opponent
+    // detail lives on opponents[i].patterns.
+    tableProfile
   }
 
   return freezeDeep(context)

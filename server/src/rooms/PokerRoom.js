@@ -485,9 +485,9 @@ export class PokerRoom {
     if (this.countBotsAddedBy(addingPlayerId) >= MAX_BOTS_PER_PLAYER) {
       return { success: false, error: `You can only add ${MAX_BOTS_PER_PLAYER} bots at a time` }
     }
-    if (this.game.phase !== GAME_PHASES.WAITING && this.game.hasPlayerActionStarted()) {
-      return { success: false, error: 'Wait for the current hand to finish' }
-    }
+    // No mid-hand gate. PokerGame.addPlayer parks mid-hand additions in
+    // waitingNextHand and they get dealt in on the next preflop. Users
+    // don't have to time the click to a hand boundary.
 
     const startingChips = Math.max(POKER_CONFIG.STARTING_CHIPS, adder.chips)
     const seatId = `bot-${randomUUID()}`
@@ -507,14 +507,22 @@ export class PokerRoom {
     }
 
     this.players.set(seatId, botPlayer)
+    // Tell the table whether the bot is in the current hand or has to wait
+    // for the next one. waitingNextHand is set by game.addPlayer when the
+    // bot couldn't join mid-action.
+    const queued = this.game.waitingNextHand?.has?.(seatId)
     this.broadcast({
       type: MESSAGE_TYPES.SYSTEM_MESSAGE,
-      data: { message: `${adder.username} added bot ${bot.name}.` }
+      data: {
+        message: queued
+          ? `${adder.username} added bot ${bot.name}. Sitting in next hand.`
+          : `${adder.username} added bot ${bot.name}.`
+      }
     })
     botPlayer.emitPhrase('joined_table')
     this.broadcastRoomUpdate()
     this.scheduleStartHand()
-    return { success: true, bot: botPlayer.toJSON() }
+    return { success: true, bot: botPlayer.toJSON(), queuedForNextHand: queued }
   }
 
   removeBotForPlayer(requestingPlayerId, botSeatId) {

@@ -572,6 +572,14 @@ export class PokerGame {
 
     // Record into the hand's action log so bots can reason about what's happened
     // so far. We keep this small and append-only.
+    // Wall-clock timestamp + tookMs for bot timing analysis. tookMs is the
+    // gap since the previous action's timestamp (or the turn-start time if
+    // this is the first action of the hand) — useful for bots playing humans
+    // since think-time correlates with hand strength on tells.
+    const now = Date.now()
+    const lastAt = this.handActionHistory.length > 0
+      ? (this.handActionHistory[this.handActionHistory.length - 1].at || this.lastTurnChange)
+      : this.lastTurnChange
     this.handActionHistory.push({
       seq: ++this.actionSequence,
       phase: this.phase,
@@ -580,7 +588,9 @@ export class PokerGame {
       action,
       amount: action === 'fold' || action === 'check' ? 0 : (this.playerBets.get(playerId) || 0),
       toCallBefore: toCall,
-      potBefore: this.pot - (action === 'fold' || action === 'check' ? 0 : (this.playerBets.get(playerId) - playerBet))
+      potBefore: this.pot - (action === 'fold' || action === 'check' ? 0 : (this.playerBets.get(playerId) - playerBet)),
+      at: now,
+      tookMs: Math.max(0, now - lastAt)
     })
 
     // Per-player aggregated stats
@@ -845,29 +855,48 @@ export class PokerGame {
     
     const winnersOutput = new Map()
     const playerHandNames = {}
-    
+    // Per-pot breakdown so the client can render "Main pot: Alice · Side pot:
+    // Bob" instead of just "Split pot" when winners differ across pots.
+    // pots[0] is the main pot, pots[1+] are progressively higher side pots.
+    const potBreakdown = []
+
     evaluated.forEach(e => {
       playerHandNames[e.playerId] = getHandName(e.hand)
     })
 
-    for (const pot of pots) {
+    pots.forEach((pot, potIndex) => {
       const eligibleEvaluated = evaluated.filter(e => pot.eligiblePlayers.includes(e.playerId))
-      if (eligibleEvaluated.length === 0) continue
-      
+      if (eligibleEvaluated.length === 0) return
+
       eligibleEvaluated.sort((a, b) => compareHands(b.hand, a.hand))
       const best = eligibleEvaluated[0]
       const potWinners = eligibleEvaluated.filter(e => compareHands(e.hand, best.hand) === 0)
-      
+
       const share = Math.floor(pot.amount / potWinners.length)
       let remainder = pot.amount % potWinners.length
-      
+
+      const breakdownEntry = {
+        // potIndex 0 = main pot, 1+ = side pots (smallest stack first).
+        potIndex,
+        potLabel: potIndex === 0 ? 'main' : (pots.length > 2 ? `side-${potIndex}` : 'side'),
+        amount: pot.amount,
+        winners: []
+      }
+
       for (const w of potWinners) {
         const player = this.players.find(p => p.id === w.playerId)
         if (player) {
           const wonAmount = share + (remainder > 0 ? 1 : 0)
           player.chips += wonAmount
           remainder = Math.max(0, remainder - 1)
-          
+
+          breakdownEntry.winners.push({
+            playerId: w.playerId,
+            username: player.username,
+            chips: wonAmount,
+            handName: getHandName(w.hand)
+          })
+
           if (winnersOutput.has(w.playerId)) {
             winnersOutput.get(w.playerId).chips += wonAmount
           } else {
@@ -882,7 +911,8 @@ export class PokerGame {
           }
         }
       }
-    }
+      potBreakdown.push(breakdownEntry)
+    })
 
     this.phase = GAME_PHASES.SHOWDOWN
     this.recordCompletedHand({
@@ -896,7 +926,8 @@ export class PokerGame {
       data: {
         winners: Array.from(winnersOutput.values()),
         hands: Object.fromEntries(active.map(p => [p.id, this.playerHands.get(p.id)])),
-        playerHandNames
+        playerHandNames,
+        potBreakdown
       }
     })
 
@@ -1024,10 +1055,15 @@ export class PokerGame {
       phaseEnded: this.phase,
       type, // 'showdown' | 'fold_out'
       pot: this.pot,
+      smallBlind: this.smallBlind,
+      bigBlind: this.bigBlind,
       communityCards: [...this.communityCards],
       actions: this.handActionHistory.slice(),
       actionsByPlayer,
       cards: cardsByPlayer,
+      // playerHandNames at the summary level too so the bot context can
+      // attach "Two Pair", "Flush", etc. to each revealed-showdown entry.
+      playerHandNames: { ...(playerHandNames || {}) },
       winners: winners.map(w => ({
         playerId: w.playerId,
         username: w.username,
