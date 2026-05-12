@@ -91,6 +91,13 @@ export class Player {
     this.achievements   = []     // array of achievement ids
     this.skinId         = 0      // 0 = default; 1-9 = presets; 10 = custom
     this.customSkin     = null   // {colors, direction} when skinId === 10
+
+    // Peer-to-peer loans this player is party to AT THIS TABLE. Cleared on
+    // table leave (the engine settles each one with the counterparty first
+    // — see peerLoanEngine.handlePlayerLeave). Shape per entry:
+    //   { id, lenderId, borrowerId, lenderName, borrowerName,
+    //     principal, rate, owed, takenAtHand }
+    this.peerLoans = []
   }
 
   // --- Derived stats -------------------------------------------------------
@@ -149,16 +156,22 @@ export class Player {
       }
     }
     const interestRate = this.effectiveRateFor(bank)
-    // Interest accrues every turn at 1/10 of the locked-in rate, against the
-    // original principal — so even after partial payback the per-turn drag
-    // stays the same. That's the joke: scammy fixed amount that never shrinks.
-    const perTurnInterest = Math.max(1, Math.round(LOAN_AMOUNT * interestRate / LOAN_INTEREST_HAND_INTERVAL))
+    // Compound interest: each hand the owed balance is multiplied by
+    // (1 + perTurnRate). `perTurnRate` is `interestRate / INTERVAL`, so a
+    // 5% annualized-style rate becomes 0.5% per hand at default credit.
+    // Worst credit (10× multiplier) drives that to 5% per hand → owed
+    // doubles every 14 hands and blows past 100× principal in 100 hands.
+    // perTurnInterest is kept on the loan record for the initial-tick
+    // display ("you owe +$N this hand") but the engine reads perTurnRate.
+    const perTurnRate = interestRate / LOAN_INTEREST_HAND_INTERVAL
+    const perTurnInterest = Math.max(1, Math.round(LOAN_AMOUNT * perTurnRate))
     const loan = {
       bankId,
       bankName: bank.name,
       principal: LOAN_AMOUNT,
       originalPrincipal: LOAN_AMOUNT,
       interestRate,
+      perTurnRate,
       perTurnInterest,
       owed: LOAN_AMOUNT,
       autoPay: 0,
@@ -233,8 +246,20 @@ export class Player {
     this.handsAtSession += 1
     const events = []
     for (const loan of [...this.loans]) {
-      loan.owed += loan.perTurnInterest
-      events.push({ kind: 'interest', bankName: loan.bankName, amount: loan.perTurnInterest, owedAfter: loan.owed })
+      // Compound interest. New balance = owed × (1 + perTurnRate). For
+      // legacy loans (taken before this code change) perTurnRate may be
+      // missing — fall back to deriving it from interestRate / INTERVAL.
+      // The minimum-1-chip guard catches floors where the rate is so low
+      // that floor(owed × rate) rounds to 0; without it small loans at
+      // good credit would never accrue anything.
+      const rate = (typeof loan.perTurnRate === 'number' && loan.perTurnRate >= 0)
+        ? loan.perTurnRate
+        : (loan.interestRate || 0) / LOAN_INTEREST_HAND_INTERVAL
+      const before = loan.owed
+      const grown = Math.max(loan.owed + 1, Math.floor(loan.owed * (1 + rate)))
+      loan.owed = grown
+      const delta = loan.owed - before
+      events.push({ kind: 'interest', bankName: loan.bankName, amount: delta, owedAfter: loan.owed })
 
       if (loan.autoPay > 0 && this.chips > 0) {
         const pay = Math.min(loan.autoPay, loan.owed, this.chips)
@@ -361,7 +386,15 @@ export class Player {
       dailiesCompleted: this.dailiesCompleted || 0,
       achievements: Array.isArray(this.achievements) ? this.achievements : [],
       skinId: this.skinId || 0,
-      customSkin: this.customSkin || null
+      customSkin: this.customSkin || null,
+      // Active peer loans this player is party to (both sides — borrowed
+      // and lent — show up here). The client filters by lenderId/borrowerId
+      // for display in the profile popover and loan UI.
+      peerLoans: Array.isArray(this.peerLoans) ? this.peerLoans : [],
+      // Chips parked in unresolved side-bet positions. Surfaced so the
+      // spectator bankroll badge can fold them into the P/L display
+      // (unresolved bets aren't realized losses, see luckStats.js).
+      openSideBetStake: this.openSideBetStake || 0
     }
   }
 }

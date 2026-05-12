@@ -304,15 +304,33 @@ export class SideBetEngine {
     const payouts = []  // for the broadcast event
     for (const [playerId, bag] of this.positions) {
       const player = this._findPlayer(playerId)
-      // Hedge positions live at key `${propId}::yes|no`; normal positions at
-      // `propId`. Visit every key that points at this prop.
+      // Spectators mark-to-market on a void (early hand end) instead of
+      // getting their stake refunded. They had no say in the hand ending,
+      // but they don't get a "rescue" either — the market price at the
+      // moment of void is the realized result, whether that's up or down.
+      // Seated players keep the refund-on-void behavior because they're
+      // part of the action that ended the hand.
+      const holderIsSpectator = !!this.room?.spectators?.has?.(playerId)
       for (const [key, pos] of [...bag.entries()]) {
         if (pos.propId !== propId) continue
         let credit = 0
         let label = ''
         if (outcome === 'void') {
-          credit = pos.costPaid
-          label = 'void'
+          if (holderIsSpectator) {
+            // Use the prop's last computed sell price for the relevant
+            // side. The engine refreshes these on every state-change tick,
+            // so by the time we reach hand-end these reflect the most
+            // recent fair-prob snapshot.
+            const sellPx = pos.side === 'yes' ? prop.sellYesPrice : prop.sellNoPrice
+            credit = Math.max(0, Math.floor(pos.shares * sellPx))
+            // Same label-shape the client expects: 'win' if the realized
+            // price beat cost, 'loss' otherwise. 'void' would imply a
+            // refund — we're not refunding here.
+            label = credit >= pos.costPaid ? 'win' : 'loss'
+          } else {
+            credit = pos.costPaid
+            label = 'void'
+          }
         } else if (pos.side === outcome) {
           credit = Math.round(pos.shares)
           label = 'win'

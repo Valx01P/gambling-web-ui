@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PokerRoom } from '../src/rooms/PokerRoom.js'
 import { defaultRules } from '../src/bots/ruleSchema.js'
+import { POKER_CONFIG } from '../src/config/constants.js'
 
 // Minimal stand-in for the websocket Player class — enough to seat a human alongside bots.
 function makeFakePlayer(id, name) {
@@ -103,22 +104,30 @@ test('only the player who added a bot can remove it', async () => {
   assert.equal(room.players.has(bot.id), false, 'bot seat removed')
 })
 
-test('bot inherits adder chips with 1000 floor', () => {
+test('bot inherits adder chips with STARTING_CHIPS floor', () => {
+  // Tests two paths: adder above the floor → bot inherits the adder's
+  // stack; adder below the floor → bot gets STARTING_CHIPS instead. The
+  // floor value tracks POKER_CONFIG.STARTING_CHIPS, not a hardcoded
+  // number, so a balance tweak in constants doesn't require touching the
+  // test.
+  const ABOVE_FLOOR = POKER_CONFIG.STARTING_CHIPS + 1000
+  const BELOW_FLOOR = Math.floor(POKER_CONFIG.STARTING_CHIPS / 4)
+
   const room = new PokerRoom('test-room-3', false)
   const rich = makeFakePlayer('rich', 'Rich')
-  rich.chips = 4242
+  rich.chips = ABOVE_FLOOR
   room.addPlayer(rich)
   const { bot } = room.addBotForPlayer(rich.id, botRecord('Bot1', '#3b82f6'))
   const seat = room.players.get(bot.id)
-  assert.equal(seat.chips, 4242)
+  assert.equal(seat.chips, ABOVE_FLOOR)
 
   const room2 = new PokerRoom('test-room-4', false)
   const poor = makeFakePlayer('poor', 'Poor')
-  poor.chips = 250
+  poor.chips = BELOW_FLOOR
   room2.addPlayer(poor)
   const { bot: bot2 } = room2.addBotForPlayer(poor.id, botRecord('Bot2', '#3b82f6'))
   const seat2 = room2.players.get(bot2.id)
-  assert.equal(seat2.chips, 1000)
+  assert.equal(seat2.chips, POKER_CONFIG.STARTING_CHIPS)
 })
 
 test('bot added mid-action queues for the next hand (waitingNextHand)', () => {

@@ -199,6 +199,21 @@ export class PokerGame {
       // Stale check — only fire if it's still this player's turn.
       const stillActive = this.players[this.activeIndex]?.id === playerId
       if (!stillActive) return
+      // Re-validate the "kick condition" AT FIRE TIME, not at arm time.
+      // Bots always fire (stuck-fold safety net — they need the timeout
+      // to recover if their decision scheduler hangs). Humans only fire
+      // when another human is still at the table; otherwise the leftover
+      // timer from a now-disconnected opponent would boot the remaining
+      // solo human against bots, which violates the "no kicks vs bots"
+      // rule. Checking at fire time means a mid-turn disconnect by the
+      // last other human cleanly defuses the armed timer.
+      const activePlayer = this.players[this.activeIndex]
+      if (activePlayer && !activePlayer.isBot) {
+        const otherHumanPresent = this.players.some(p =>
+          p && p.id !== playerId && !p.isBot && p.isConnected
+        )
+        if (!otherHumanPresent) return
+      }
       try { this.onTurnTimeout(playerId) } catch (err) {
         console.error('[poker] turn timeout cb:', err)
       }
@@ -588,11 +603,11 @@ export class PokerGame {
       case 'raise': {
         const minRaise = this.currentBet === 0 ? this.bigBlind : this.currentBet * 2;
         const raiseTarget = amount
-        
+
         if (raiseTarget < minRaise && currentPlayer.chips > (raiseTarget - playerBet)) {
           return { success: false, error: `Min raise is ${minRaise}` }
         }
-        
+
         const raiseAmt = Math.min(raiseTarget - playerBet, currentPlayer.chips)
         if (raiseAmt <= 0) return { success: false, error: 'Invalid raise' }
         currentPlayer.chips -= raiseAmt
@@ -601,21 +616,34 @@ export class PokerGame {
         this.playerBets.set(playerId, newBet)
         this.playerTotalBets.set(playerId, (this.playerTotalBets.get(playerId) || 0) + raiseAmt)
         const isRaise = newBet > this.currentBet
+        const isAllIn = currentPlayer.chips === 0
         if (isRaise) {
           this.currentBet = newBet
           this.roundActed.clear()
-        }
-
-        this.aggressionCount++
-        if (isRaise) {
+          // Only a real raise counts as aggression. A short-stack player
+          // submitting a "raise" amount they don't have chips for ends up
+          // matching (or staying below) currentBet — that's a call (or a
+          // call all-in), not a raise, and shouldn't bump aggressionCount
+          // or update currentBetContext (which would mis-flag the next
+          // caller as facing a re-raise).
+          this.aggressionCount++
           this.currentBetContext = {
             playerId,
             isReRaise: this.aggressionCount >= 3,
-            isAllIn: false
+            isAllIn
           }
         }
-        this.playerActions.set(playerId, { action: 'raise', amount: newBet, text: this.getAggressionLabel(false) })
-        if (currentPlayer.chips === 0) this.allInPlayers.add(playerId)
+
+        // Action label: real raise → standard aggression label.
+        // Forced call (raise amount ≤ currentBet): "Call All-In" if shoving
+        // the rest of the stack, "CALL" if somehow it landed at exactly
+        // currentBet without going all-in (e.g. raise amount equal to
+        // current bet — odd but reachable).
+        const text = isRaise
+          ? this.getAggressionLabel(isAllIn)
+          : (isAllIn ? 'Call All-In' : 'CALL')
+        this.playerActions.set(playerId, { action: 'raise', amount: newBet, text })
+        if (isAllIn) this.allInPlayers.add(playerId)
         break
       }
 
@@ -1294,8 +1322,16 @@ export class PokerGame {
       && !this.allInPlayers.has(activePlayer.id)
       && activePlayer.isConnected
     const activePlayerId = activeIsActionable ? activePlayer.id : null
+    // The turn deadline only ticks when there's another human at the
+    // table — same condition as _scheduleTurnTimeout. Without this gate
+    // the client would still show the red-ring warning even in solo-vs-
+    // bots games where the server has nothing it'd actually auto-fold.
+    const otherHumanPresent = activePlayerId && this.players.some(p =>
+      p && p.id !== activePlayerId && !p.isBot && p.isConnected
+    )
     const hasTimedActiveTurn = Boolean(
       activePlayerId &&
+      otherHumanPresent &&
       this.phase !== GAME_PHASES.WAITING &&
       this.phase !== GAME_PHASES.SHOWDOWN
     )

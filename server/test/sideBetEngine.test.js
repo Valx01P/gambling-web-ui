@@ -129,26 +129,69 @@ test('buy YES, prop resolves NO → player loses stake (no credit)', () => {
   assert.equal(player.chips, 900, 'lost stake stays gone')
 })
 
-test('void refunds the original stake', () => {
+test('void refunds the original stake for SEATED players', () => {
   const player = { id: 'p1', chips: 1000, username: 'alice' }
   const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, username: 'bob' }] })
   const { engine } = makeEngine(game)
   engine.onHandStart()
-  // Pick a card-runout prop with `handEnded → void` behavior (river_red is
-  // a turn-window prop so we'd need to advance phase first; use ace_on_board
-  // which voids on fold-out before river).
   const aceProp = spawnUntil(engine, game, 'ace_on_board')
   engine.placeBet('p1', aceProp.id, 'yes', 200)
   assert.equal(player.chips, 800)
 
   // Hand ends fold-out style: phase advances to showdown but the board
-  // never gets to 5 cards. Engine's onHandEnd should VOID + refund.
+  // never gets to 5 cards. Engine's onHandEnd should VOID + refund for
+  // seated players (they were part of the action that ended the hand).
   game.phase = 'showdown'
   engine.onHandEnd({ reachedShowdown: false })
 
   assert.equal(aceProp.status, 'resolved')
   assert.equal(aceProp.outcome, 'void')
-  assert.equal(player.chips, 1000, 'stake refunded')
+  assert.equal(player.chips, 1000, 'seated stake refunded')
+})
+
+test('void marks-to-market for SPECTATORS (no refund-rescue)', () => {
+  // Spectators didn't trigger the hand end, but they don't get a refund
+  // either — the engine settles their position at whatever sell price the
+  // market had at that moment. Set up a spectator (not in game.players)
+  // and place a bet on their behalf; on void the credit must equal
+  // round(shares * sellYesPrice), not costPaid.
+  const seatedPlayer = { id: 'p1', chips: 5000, username: 'alice' }
+  const spectator   = { id: 's1', chips: 5000, username: 'bob' }
+  const game = makeFakeGame({ players: [seatedPlayer, { id: 'p2', chips: 5000, username: 'pat' }] })
+  // The engine's _findPlayer fallback hits room.players AND room.spectators
+  // — supply both maps so the spectator's chips can be credited.
+  const fakeRoom = {
+    players: new Map([['p1', seatedPlayer], ['p2', game.players[1]]]),
+    spectators: new Map([['s1', spectator]]),
+  }
+  const broadcasts = []
+  const engine = new SideBetEngine({
+    room: fakeRoom,
+    game,
+    broadcast: (msg) => broadcasts.push(msg),
+  })
+  engine.onHandStart()
+  const aceProp = spawnUntil(engine, game, 'ace_on_board')
+
+  // Spectator buys YES; capture the prop's current sell price so we know
+  // what the mark-to-market payout should look like.
+  engine.placeBet('s1', aceProp.id, 'yes', 500)
+  const sharesBought = engine.positions.get('s1').get(aceProp.id).shares
+  const sellPriceAtVoid = aceProp.sellYesPrice
+  const expectedMark = Math.max(0, Math.floor(sharesBought * sellPriceAtVoid))
+
+  const stackBefore = spectator.chips
+  game.phase = 'showdown'
+  engine.onHandEnd({ reachedShowdown: false })
+
+  assert.equal(aceProp.status, 'resolved')
+  assert.equal(aceProp.outcome, 'void')
+  // Crucial: not a 500-chip refund. The engine paid the mark-to-market
+  // value of the position at the moment of void.
+  assert.equal(spectator.chips, stackBefore + expectedMark,
+    `spectator should be credited mark-to-market ($${expectedMark}), not their original $500 stake`)
+  assert.notEqual(spectator.chips, stackBefore + 500,
+    'spectator must NOT get a stake refund')
 })
 
 test('cheap YES that auto-resolves true returns the headline ~10x ROI', () => {

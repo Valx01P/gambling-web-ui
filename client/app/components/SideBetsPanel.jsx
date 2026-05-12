@@ -37,6 +37,10 @@ const SideBetsPanel = memo(function SideBetsPanel({
   onSell,
   expanded = false,
   onToggleExpanded,
+  // Optional close-the-dock handler. When provided, an × button appears
+  // in the header so users can dismiss the panel without hunting in the
+  // Tools menu. Toggled state persists in page.jsx's localStorage hook.
+  onClose,
 }) {
   const props = sideBets?.props || []
   const positions = sideBets?.positions || []
@@ -80,6 +84,17 @@ const SideBetsPanel = memo(function SideBetsPanel({
               className="rounded-md border border-zinc-600/60 bg-zinc-800/80 px-1.5 py-0.5 text-xs font-bold text-zinc-200 transition-colors hover:bg-zinc-700 active:scale-95"
             >
               {expanded ? '↙' : '⤢'}
+            </button>
+          )}
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close side bets"
+              title="Close (re-open from Tools)"
+              className="rounded-md border border-zinc-600/60 bg-zinc-800/80 px-1.5 py-0.5 text-xs font-bold text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white active:scale-95"
+            >
+              ×
             </button>
           )}
         </div>

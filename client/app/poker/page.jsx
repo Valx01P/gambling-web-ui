@@ -48,17 +48,36 @@ const AVATAR_STORAGE_KEY = 'poker_avatar_id'
 // flipped when the user explicitly turns it off via Tools, so we treat any
 // stored value other than '0' as "show chat" and only '0' as "hidden".
 const CHAT_VISIBLE_STORAGE_KEY = 'poker_chat_visible'
+// Same on/off semantics as chat: missing key = on (default), '0' = off.
+// Keeping the tool's last state across reloads matches the user's mental
+// model — they shouldn't have to re-enable side bets every session.
+const SIDE_BETS_VISIBLE_STORAGE_KEY = 'poker_side_bets_visible'
+// Last blind level the user successfully applied to a table. Used as the
+// preferred default when they next create / propose at a table.
+const BLIND_LEVEL_PREF_STORAGE_KEY = 'poker_blind_level_pref'
 // Zoom-related constants come from useZoom — single source of truth.
 const POKER_STARTING_CHIPS = 1000
 
+// Mirrors server/src/config/constants.js BLIND_LEVELS — keep both lists
+// in lockstep. Adding new tiers? Edit the server-side list first so the
+// proposal validator accepts them, then sync this one.
+//
+// `label` is client-only — purely cosmetic flavor for the blinds picker.
+// One unique title per tier (no bucketing) so the highest stakes don't
+// keep saying the same "Mythic" tag.
 const BLIND_LEVELS = [
-  { id: '5_10',     small: 5,    big: 10   },
-  { id: '15_25',    small: 15,   big: 25   },
-  { id: '25_50',    small: 25,   big: 50   },
-  { id: '50_100',   small: 50,   big: 100  },
-  { id: '100_200',  small: 100,  big: 200  },
-  { id: '250_500',  small: 250,  big: 500  },
-  { id: '500_1000', small: 500,  big: 1000 }
+  { id: '5_10',         small: 5,     big: 10,    label: 'Penny ante'         },
+  { id: '15_25',        small: 15,    big: 25,    label: 'Garage night'       },
+  { id: '25_50',        small: 25,    big: 50,    label: 'Coffee-shop reg'    },
+  { id: '50_100',       small: 50,    big: 100,   label: 'Weekend grinder'    },
+  { id: '100_200',      small: 100,   big: 200,   label: 'Local crusher'      },
+  { id: '250_500',      small: 250,   big: 500,   label: 'Backroom pro'       },
+  { id: '500_1000',     small: 500,   big: 1000,  label: 'High roller'        },
+  { id: '1000_2000',    small: 1000,  big: 2000,  label: 'Whale tank'         },
+  { id: '2000_4000',    small: 2000,  big: 4000,  label: 'Hedge fund energy'  },
+  { id: '4000_8000',    small: 4000,  big: 8000,  label: 'Family office'      },
+  { id: '8000_16000',   small: 8000,  big: 16000, label: 'Oligarch grade'     },
+  { id: '16000_32000',  small: 16000, big: 32000, label: 'Mythic'             }
 ]
 
 function formatProfit(value) {
@@ -435,7 +454,14 @@ export default function PokerPage() {
   const [chatDockVisible, setChatDockVisible] = useState(true)
   // Side-bets panel visibility — same opt-in pattern as chat. Default on so
   // new players discover the prop markets without having to hunt the menu.
-  const [sideBetsDockVisible, setSideBetsDockVisible] = useState(true)
+  // Mirror chat-dock persistence: store '0' for hidden, anything else (or
+  // absent) means visible. Lazy initial state reads localStorage once so
+  // we don't flash the dock open before the saved-off preference applies.
+  const [sideBetsDockVisible, setSideBetsDockVisible] = useState(() => {
+    if (typeof window === 'undefined') return true
+    try { return window.localStorage.getItem(SIDE_BETS_VISIBLE_STORAGE_KEY) !== '0' }
+    catch { return true }
+  })
   // Inline vertical expansion — the dock grows upward to show every live
   // bet without scrolling. Stays anchored at the same horizontal slot so the
   // table render doesn't shift; just consumes more vertical room.
@@ -452,6 +478,11 @@ export default function PokerPage() {
   const [runoutSubmissions, setRunoutSubmissions] = useState([])
   const [runoutStepBanner, setRunoutStepBanner] = useState(null)
   const runoutStepBannerTimerRef = useRef(null)
+  // Peer-loan negotiations open at this table (any pair, any state). The
+  // PlayerProfilePopover filters by counterparty; we just mirror what the
+  // server broadcasts. Loans themselves live on each player's seat in
+  // gameState.players[*].peerLoans — fetched from there at render time.
+  const [peerNegotiations, setPeerNegotiations] = useState([])
   
   // New room feature states
   // 'general' | 'private' | 'spectate'. `private` is a UI tab only — the
@@ -743,6 +774,33 @@ export default function PokerPage() {
           applyGameState(msg.data.gameState)
           setIsPrivate(msg.data.isPrivate || false)
           setInviteCode(msg.data.inviteCode || null)
+          // Auto-apply saved blind-level preference for "you started this
+          // table"-style joins. Conditions:
+          //   1. We have a saved preference,
+          //   2. Current blinds at the table don't match it,
+          //   3. We're seated (spectators can't propose),
+          //   4. We're the only human seated (so the server's solo path
+          //      auto-applies without a multi-human vote).
+          // Multi-human tables intentionally fall back to the existing
+          // proposal flow — we don't auto-propose new blinds to other
+          // humans without their input.
+          if (!msg.data.isSpectator && typeof window !== 'undefined') {
+            try {
+              const prefId = window.localStorage.getItem(BLIND_LEVEL_PREF_STORAGE_KEY)
+              const pref = prefId && BLIND_LEVELS.find(l => l.id === prefId)
+              const seats = msg.data.gameState?.players || []
+              const me = seats.find(p => p.id === playerIdRef.current)
+              const otherHumans = seats.filter(p => !p?.isBot && p?.id !== playerIdRef.current && p?.isConnected !== false)
+              const gs = msg.data.gameState
+              const isFresh = gs && pref
+                && me && !me.isBot
+                && (gs.smallBlind !== pref.small || gs.bigBlind !== pref.big)
+                && otherHumans.length === 0
+              if (isFresh) {
+                send('poker_propose_blinds', { small: pref.small, big: pref.big })
+              }
+            } catch {}
+          }
           // Hydrate the side-bets panel with whatever markets are live at
           // join time — fresh joiners see the same prop set as everyone else.
           if (msg.data.sideBets) setSideBetsState(msg.data.sideBets)
@@ -763,6 +821,11 @@ export default function PokerPage() {
               // — they're not in gameState.players, so the side-bets panel
               // & bank UI read their stack out of bankState instead.
               chips: me.chips ?? prev.chips,
+              // Persistent buy-in and open-stake values feed the spectator
+              // bankroll badge's P/L calc. Server is authoritative — the
+              // client just renders.
+              pokerBuyIn: me.pokerBuyIn ?? prev.pokerBuyIn,
+              openSideBetStake: me.openSideBetStake ?? prev.openSideBetStake ?? 0,
               // Daily / cosmetic state — server is authoritative, just
               // mirror what comes off the wire.
               dailyProgress: me.dailyProgress ?? prev.dailyProgress ?? 0,
@@ -838,6 +901,11 @@ export default function PokerPage() {
               // — they're not in gameState.players, so the side-bets panel
               // & bank UI read their stack out of bankState instead.
               chips: me.chips ?? prev.chips,
+              // Persistent buy-in and open-stake values feed the spectator
+              // bankroll badge's P/L calc. Server is authoritative — the
+              // client just renders.
+              pokerBuyIn: me.pokerBuyIn ?? prev.pokerBuyIn,
+              openSideBetStake: me.openSideBetStake ?? prev.openSideBetStake ?? 0,
               // Daily / cosmetic state — server is authoritative, just
               // mirror what comes off the wire.
               dailyProgress: me.dailyProgress ?? prev.dailyProgress ?? 0,
@@ -952,6 +1020,18 @@ export default function PokerPage() {
             addSys('No vote in time — running once.')
           }
           break
+        case 'peer_loan:state':
+          // Full negotiation state mirror — only the open ones; active
+          // loans flow in via the players[].peerLoans array on the next
+          // room_update (broadcast right after on the engine side).
+          setPeerNegotiations(Array.isArray(msg.data?.negotiations) ? msg.data.negotiations : [])
+          break
+        case 'peer_loan:resolved':
+          // Optional toast for closed negotiations. Quietly drop replaced
+          // / accepted ones — accepted already triggers a system message.
+          if (msg.data?.outcome === 'declined') addSys('Peer loan declined.')
+          else if (msg.data?.outcome === 'expired') addSys('Peer loan offer expired.')
+          break
         case 'runout_step':
           // Each runout's "boom" reveal. Show a short-lived banner naming
           // the runout index, winners, and total. Server is already pushing
@@ -1003,6 +1083,14 @@ export default function PokerPage() {
           setPendingBlindsProposal(null)
           if (msg.data?.outcome === 'applied') {
             addSys(`Blinds set to $${msg.data.small}/$${msg.data.big}.`)
+            // Remember whatever blinds the user just applied as their
+            // preference. The lobby reads this back at table-create time
+            // so a returning player lands at "their" stakes by default.
+            // Stored as the BLIND_LEVELS id (e.g. '100_200') for stability.
+            const match = BLIND_LEVELS.find(l => l.small === msg.data.small && l.big === msg.data.big)
+            if (match) {
+              try { window.localStorage.setItem(BLIND_LEVEL_PREF_STORAGE_KEY, match.id) } catch {}
+            }
           } else if (msg.data?.outcome === 'rejected') {
             addSys(`Blinds proposal rejected${msg.data.byName ? ' by ' + msg.data.byName : ''}.`)
           } else if (msg.data?.outcome === 'expired') {
@@ -1215,10 +1303,12 @@ export default function PokerPage() {
   const activeTurnTimeRemaining = gameState?.activeTurnExpiresAt
     ? gameState.activeTurnExpiresAt - estimatedServerTime
     : null
-  // Only flag a turn timeout when there's a real social cost to stalling —
-  // i.e., 3+ humans waiting on the actor. Solo-with-bots and heads-up
-  // (1–2 humans) sessions are casual; the red urgency ring there is just
-  // noise and makes the table feel hostile.
+  // Only flag a turn timeout when there's another human waiting on the
+  // actor. Solo-vs-bots games have no social cost to stalling; the red
+  // urgency ring just makes the table feel hostile when the only thing
+  // waiting is a bot. The server also skips scheduling the auto-kick in
+  // this mode (see _scheduleTurnTimeout + the hasTimedActiveTurn gate in
+  // _buildStateEnvelope) — this client check is the visual mirror.
   const seatedHumanCount = (gameState?.players || []).filter(
     p => p && !p.isBot && p.isConnected !== false
   ).length
@@ -1226,7 +1316,7 @@ export default function PokerPage() {
     activeTurnTimeRemaining <= (gameState?.activeTurnWarningMs || 10000) &&
     phase !== 'waiting' &&
     phase !== 'showdown' &&
-    seatedHumanCount >= 3
+    seatedHumanCount >= 2
   // useDeferredValue lets the heavy stats recompute run AT lower priority
   // than urgent updates (input, action button clicks). The table UI still
   // sees the latest gameState immediately; stats catches up a tick later,
@@ -1404,7 +1494,17 @@ export default function PokerPage() {
   // localStorage yet; the dock state resets to "on" on every reload to
   // promote the feature.
   function toggleSideBetsDock() {
-    setSideBetsDockVisible(prev => !prev)
+    setSideBetsDockVisible(prev => {
+      const next = !prev
+      // Same persistence shape as chat — absent key = on, '0' = off. The
+      // close button on the dock itself runs through this same path so
+      // either entry point keeps the preference consistent.
+      try {
+        if (next) window.localStorage.removeItem(SIDE_BETS_VISIBLE_STORAGE_KEY)
+        else window.localStorage.setItem(SIDE_BETS_VISIBLE_STORAGE_KEY, '0')
+      } catch {}
+      return next
+    })
   }
 
   function callBigYahu() {
@@ -1726,6 +1826,32 @@ export default function PokerPage() {
                     Add Bot
                   </button>
                 )}
+                {/* One-click auto-fill: seats top-ELO bots into every
+                    empty seat. Available at both regular tables (seated
+                    players) and arenas (spectators). Hidden for spectators
+                    at regular tables — they can't add bots there. The
+                    server validates eligibility either way. */}
+                {(!isSpectator || isArena) && (() => {
+                  const seatedCount = gameState?.players?.length ?? 0
+                  const openSlots = Math.max(0, 5 - seatedCount)
+                  const label = openSlots === 0
+                    ? 'Auto-Fill Bots · Full'
+                    : `Auto-Fill ${openSlots} Empty Seat${openSlots === 1 ? '' : 's'}`
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (openSlots === 0) return
+                        send('poker_auto_fill_bots')
+                        setTableMenuOpen(false)
+                      }}
+                      disabled={openSlots === 0}
+                      className="block w-full px-3 py-2 text-left text-xs font-bold text-amber-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      ★ {label}
+                    </button>
+                  )
+                })()}
                 {/* Bank is open to spectators too — they can take loans and
                     place side bets on the runout even without a seat at the
                     table. Their chips persist across sessions just like a
@@ -2260,7 +2386,11 @@ export default function PokerPage() {
                       : `${humansWithMe} humans at the table. Need ${needs}/${humansWithMe} approvals to change.`}
                   </div>
                 </div>
-                <div className="space-y-1.5">
+                {/* Scroll wrap — the list now goes up to 16k/32k so cap
+                    height and let users scroll instead of pushing other
+                    tools panel content offscreen. overscroll-contain so
+                    flicks don't bubble into the page scroll. */}
+                <div className="max-h-[60dvh] overflow-y-auto overscroll-contain space-y-1.5 pr-1">
                   {BLIND_LEVELS.map(level => {
                     const isCurrent = level.small === currentSmall && level.big === currentBig
                     return (
@@ -2277,13 +2407,7 @@ export default function PokerPage() {
                       >
                         <div>
                           <div className="text-sm font-black text-white">${level.small.toLocaleString()} / ${level.big.toLocaleString()}</div>
-                          <div className="text-[10px] font-bold text-zinc-300">
-                            {level.small <= 10 ? 'Casual'
-                              : level.small <= 50 ? 'Mid stakes'
-                              : level.small <= 200 ? 'High stakes'
-                              : level.small <= 500 ? 'Whale tank'
-                              : 'Degenerate territory'}
-                          </div>
+                          <div className="text-[10px] font-bold text-zinc-300">{level.label}</div>
                         </div>
                         <span className={`shrink-0 rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-widest ${
                           isCurrent
@@ -2353,6 +2477,28 @@ export default function PokerPage() {
                       ))}
                     </div>
                   )}
+
+                  {/* One-click auto-fill: server figures out how many seats
+                      are empty and seats the top distinct-ELO bots from
+                      the public catalog into each. Skips bots already at
+                      the table (no duplicates). Disabled when no slots
+                      remain. */}
+                  {(() => {
+                    const totalSeats = 5  // mirrors POKER_CONFIG.MAX_PLAYERS
+                    const openSlots = Math.max(0, totalSeats - seatedBots.length)
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => send('poker_auto_fill_bots')}
+                        disabled={openSlots === 0}
+                        className="mb-2 w-full rounded-md border border-amber-400/60 bg-amber-500/15 px-2 py-1.5 text-[11px] font-black text-amber-100 transition-colors hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {openSlots === 0
+                          ? 'Arena full'
+                          : `★ Fill ${openSlots} empty seat${openSlots === 1 ? '' : 's'} with top bots`}
+                      </button>
+                    )
+                  })()}
                   {/* Multi-pick: tap a bot to push it onto the queue. Same bot
                       can be queued multiple times. Hit "Add N bots" to commit. */}
                   {(() => {
@@ -2462,7 +2608,10 @@ export default function PokerPage() {
                     <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Blinds</span>
                     <span className="text-[10px] font-bold text-zinc-400">${currentSmall.toLocaleString()} / ${currentBig.toLocaleString()}</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5">
+                  {/* 12 tiers won't fit two-up without overflow; wrap in
+                      a height-capped scroll so the rest of the arena tools
+                      panel stays visible. */}
+                  <div className="max-h-44 overflow-y-auto overscroll-contain grid grid-cols-2 gap-1.5 pr-1">
                     {BLIND_LEVELS.map(level => {
                       const isCurrent = level.small === currentSmall && level.big === currentBig
                       return (
@@ -2511,7 +2660,7 @@ export default function PokerPage() {
                   ) : (
                     <div className="space-y-1.5">
                       <div className="text-[10px] font-bold text-zinc-400">Pick a starting tier — blinds escalate every {cm.handsPerLevel ?? 10} hands.</div>
-                      <div className="grid grid-cols-2 gap-1.5">
+                      <div className="max-h-44 overflow-y-auto overscroll-contain grid grid-cols-2 gap-1.5 pr-1">
                         {BLIND_LEVELS.map(level => (
                           <button
                             key={level.id}
@@ -2579,19 +2728,25 @@ export default function PokerPage() {
                 {!cm.enabled && (
                   <div className="space-y-1.5">
                     <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Start at</div>
-                    {BLIND_LEVELS.map(level => (
-                      <button
-                        key={level.id}
-                        type="button"
-                        onClick={() => toggleContestMode(true, level.id)}
-                        className="flex w-full items-center justify-between gap-2 rounded-md border border-zinc-600/60 bg-zinc-900 px-3 py-2 text-left transition-colors hover:bg-zinc-800"
-                      >
-                        <span className="text-sm font-black text-white">${level.small.toLocaleString()} / ${level.big.toLocaleString()}</span>
-                        <span className="rounded-md border border-emerald-500/50 bg-emerald-600 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-white">
-                          Start
-                        </span>
-                      </button>
-                    ))}
+                    {/* 12-row picker fits the tools-panel max-height
+                        budget on most viewports; cap + scroll keeps the
+                        big-stakes tiers reachable without pushing other
+                        controls offscreen. */}
+                    <div className="max-h-[55dvh] overflow-y-auto overscroll-contain space-y-1.5 pr-1">
+                      {BLIND_LEVELS.map(level => (
+                        <button
+                          key={level.id}
+                          type="button"
+                          onClick={() => toggleContestMode(true, level.id)}
+                          className="flex w-full items-center justify-between gap-2 rounded-md border border-zinc-600/60 bg-zinc-900 px-3 py-2 text-left transition-colors hover:bg-zinc-800"
+                        >
+                          <span className="text-sm font-black text-white">${level.small.toLocaleString()} / ${level.big.toLocaleString()}</span>
+                          <span className="rounded-md border border-emerald-500/50 bg-emerald-600 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-white">
+                            Start
+                          </span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
 
@@ -2989,6 +3144,44 @@ export default function PokerPage() {
         </div>
       </div>
 
+      {/* Spectator bankroll badge — only renders in spectator mode. Shows
+          current chips + session P/L so the user can see what they have
+          to gamble with on side bets and where they stand vs the starting
+          stack. Floats top-center so it's visible at every layout but
+          doesn't fight the Tools / Lobby buttons on the right. */}
+      {isSpectator && (() => {
+        const chips = bankState.chips ?? 0
+        const openStake = bankState.openSideBetStake || 0
+        // P/L mirrors the server's getProfit(): realized chips + unsold
+        // side-bet stake − initial buy-in. Falls back to STARTING_CHIPS
+        // (10,000) if pokerBuyIn hasn't reached the client yet.
+        const buyIn = bankState.pokerBuyIn ?? 10000
+        const pl = chips + openStake - buyIn
+        const sign = pl >= 0 ? '+' : '−'
+        const plClass = pl >= 0 ? 'text-emerald-300' : 'text-red-300'
+        return (
+          <div className="pointer-events-none fixed left-1/2 top-3 z-30 -translate-x-1/2 rounded-xl border border-zinc-600/60 bg-zinc-900/95 px-3 py-1.5 shadow-2xl backdrop-blur-md sm:top-4">
+            <div className="flex items-center gap-3 text-[11px] font-bold text-zinc-100">
+              <span><span className="text-[9px] uppercase tracking-wider text-zinc-500 mr-1">Chips</span>${chips.toLocaleString()}</span>
+              <span className="text-zinc-700">·</span>
+              <span>
+                <span className="text-[9px] uppercase tracking-wider text-zinc-500 mr-1">P/L</span>
+                <span className={plClass}>{sign}${Math.abs(pl).toLocaleString()}</span>
+              </span>
+              {openStake > 0 && (
+                <>
+                  <span className="text-zinc-700">·</span>
+                  <span className="text-amber-200">
+                    <span className="text-[9px] uppercase tracking-wider text-zinc-500 mr-1">Open</span>
+                    ${openStake.toLocaleString()}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
       {isSpectator && (
         <SpectatorPanel
           players={orderedPlayers}
@@ -3017,6 +3210,15 @@ export default function PokerPage() {
         seat={popoverSeat}
         anchorSeatId={popoverSeatId}
         onClose={() => { setPopoverSeat(null); setPopoverSeatId(null) }}
+        // Peer-loan wiring — viewer's id + chips, every open negotiation,
+        // and viewer's own peerLoans (pulled off their seat). The popover
+        // hands these to PeerLoanPanel which filters by counterparty.
+        myId={playerId}
+        myChips={myPlayer?.chips ?? bankState.chips ?? 0}
+        myPeerLoans={(myPlayer?.peerLoans) || []}
+        negotiations={peerNegotiations}
+        onPeerLoanSend={(type, data) => send(type, data)}
+        viewerIsSpectator={isSpectator}
       />
 
       {/* Run-it-twice flow: vote modal (server starts when both humans are
@@ -3248,7 +3450,11 @@ export default function PokerPage() {
             // Heights stay independent of the action panel.
             return (
               <>
-                {sideBetsDockVisible && !isArena && (
+                {/* Side bets dock — visible to spectators at both regular
+                    tables AND bot arenas. The engine spawns props for every
+                    hand regardless of room type, so arena spectators have
+                    a market to gamble on while watching the bots play. */}
+                {sideBetsDockVisible && (
                   <div className={`fixed safe-bottom-offset right-3 z-40 sm:right-4 w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0 `}>
                     <SideBetsPanel
                       sideBets={sideBetsState}
@@ -3258,6 +3464,7 @@ export default function PokerPage() {
                       onSell={sellSideBet}
                       expanded={sideBetsExpanded}
                       onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
+                      onClose={toggleSideBetsDock}
                     />
                   </div>
                 )}
@@ -3274,8 +3481,9 @@ export default function PokerPage() {
           // yell input on the left now. On md+, anchored to the bottom-right
           // of the bottom-row container so it shares the action panel's
           // baseline and grows upward when expanded without inflating the
-          // row's height.
-          if (!sideBetsDockVisible || isArena) return null
+          // row's height. Arenas don't reach this branch (seated humans
+          // aren't a thing in arenas) but no need to gate explicitly here.
+          if (!sideBetsDockVisible) return null
           return (
             <div className="w-[92%] max-w-[360px] mx-auto md:absolute md:bottom-0 md:right-0 md:mx-0 md:w-auto md:max-w-none md:z-30 flex flex-col items-end gap-3 shrink-0">
               <div className={`w-full md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
@@ -3287,6 +3495,7 @@ export default function PokerPage() {
                   onSell={sellSideBet}
                   expanded={sideBetsExpanded}
                   onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
+                  onClose={toggleSideBetsDock}
                 />
               </div>
             </div>

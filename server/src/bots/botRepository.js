@@ -262,6 +262,34 @@ export async function listPublicBots({ limit = 50, offset = 0 } = {}) {
   return rows.map(r => toApi(r, r.owner_display_name))
 }
 
+// Top N bots by ELO with one bot per ELO tier — used by the arena's
+// auto-fill tool. DISTINCT ON keeps the first row per b.elo according to
+// the ORDER BY, so starting the ORDER BY with `b.elo DESC, b.created_at
+// DESC` gives us the most recently created bot per ELO tier. LIMIT takes
+// the top N tiers from that already-sorted stream. Single query, no N+1,
+// no client-side dedup.
+//
+// (An earlier wrapped-subquery version referenced `b.*` columns in the
+// outer SELECT where the alias was out of scope — Postgres rejected it
+// and the engine silently fell back to "no bots available." Don't
+// reintroduce the wrapper.)
+export async function listTopUniqueEloBots({ limit = 5 } = {}) {
+  const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 5, 1), 20)
+  const { rows } = await query(
+    `
+    SELECT DISTINCT ON (b.elo) ${LIST_FIELDS},
+           u.display_name AS owner_display_name
+      FROM bots b
+      JOIN users u ON u.id = b.owner_user_id
+     WHERE b.is_public = TRUE AND b.is_clone = FALSE
+     ORDER BY b.elo DESC, b.created_at DESC
+     LIMIT $1
+    `,
+    [safeLimit]
+  )
+  return rows.map(r => toApi(r, r.owner_display_name))
+}
+
 // Atomic per-hand update for a bot at a poker table. Inserts the hand result
 // row + bumps every aggregate counter on `bots`. ELO floor is 300 (matches
 // eloEngine.RATING_FLOOR) — a bot stuck on a losing streak still has room

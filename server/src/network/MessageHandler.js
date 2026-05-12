@@ -1,5 +1,5 @@
-import { BANKS, GAME_PHASES, MESSAGE_TYPES, POKER_CONFIG } from "../config/constants.js"
-import { getBotById } from "../bots/botRepository.js"
+import { GAME_PHASES, MESSAGE_TYPES, POKER_CONFIG } from "../config/constants.js"
+import { getBotById, listTopUniqueEloBots } from "../bots/botRepository.js"
 import { verify as verifyJwt } from "../auth/jwt.js"
 import { sanitizeDisplayString } from "../utils/sanitize.js"
 import { findUserById, touchLastActive } from "../users/userRepository.js"
@@ -74,6 +74,9 @@ export class MessageHandler {
         case MESSAGE_TYPES.POKER_ARENA_SET_STARTING_CHIPS:
           return this.handleArenaSetStartingChips(player, data)
 
+        case MESSAGE_TYPES.POKER_AUTO_FILL_BOTS:
+          return this.handleAutoFillBots(player)
+
         case MESSAGE_TYPES.AUTH_HELLO:
           return this.handleAuthHello(player, data)
 
@@ -98,6 +101,14 @@ export class MessageHandler {
 
         case MESSAGE_TYPES.RUNOUT_VOTE_SUBMIT:
           return this.handleRunoutVoteSubmit(player, data)
+
+        case 'peer_loan:open':
+        case 'peer_loan:counter':
+        case 'peer_loan:accept':
+        case 'peer_loan:decline':
+        case 'peer_loan:cancel':
+        case 'peer_loan:repay':
+          return this.handlePeerLoan(player, type, data)
 
         default:
           return this.error('Unknown message type', player)
@@ -444,6 +455,34 @@ export class MessageHandler {
     return result
   }
 
+  async handleAutoFillBots(player) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') {
+      return this.error('Not at a poker table', player)
+    }
+    // Fill every empty seat. We compute the slot count server-side instead
+    // of trusting a client param so the room can never over-seat past
+    // MAX_PLAYERS. Fetch slotsLeft + buffer so duplicates (bots already at
+    // the table) can be skipped and we still hit the target.
+    const slotsLeft = Math.max(0, POKER_CONFIG.MAX_PLAYERS - room.players.size)
+    if (slotsLeft === 0) {
+      return this.error(room.isArena ? 'Arena is full.' : 'Table is full.', player)
+    }
+    const fetchN = Math.min(20, slotsLeft + POKER_CONFIG.MAX_PLAYERS)
+    let bots
+    try { bots = await listTopUniqueEloBots({ limit: fetchN }) }
+    catch (err) {
+      console.error('[autofill] bot lookup failed:', err.message)
+      return this.error('Could not load top bots.', player)
+    }
+    if (!bots.length) return this.error('No public bots available.', player)
+    const result = room.autoFillWithTopBots(player.id, bots)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    }
+    return result
+  }
+
   handleToggleContestMode(player, data) {
     const room = this.roomManager.getPlayerRoom(player)
     if (!room || room.roomType !== 'poker') return this.error('Not at a poker table', player)
@@ -599,6 +638,28 @@ export class MessageHandler {
     })
     if (!result.success) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeSideBetError(result.error) } })
+    }
+    return result
+  }
+
+  handlePeerLoan(player, type, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker' || !room.peerLoanEngine) {
+      return this.error('Peer loans only work at a poker table.', player)
+    }
+    const engine = room.peerLoanEngine
+    let result
+    switch (type) {
+      case 'peer_loan:open':    result = engine.open(player.id, data || {}); break
+      case 'peer_loan:counter': result = engine.counter(player.id, data || {}); break
+      case 'peer_loan:accept':  result = engine.accept(player.id, data || {}); break
+      case 'peer_loan:decline': result = engine.decline(player.id, data || {}); break
+      case 'peer_loan:cancel':  result = engine.cancel(player.id, data || {}); break
+      case 'peer_loan:repay':   result = engine.repay(player.id, data || {}); break
+      default: return this.error('Unknown peer-loan action', player)
+    }
+    if (result && !result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
     }
     return result
   }

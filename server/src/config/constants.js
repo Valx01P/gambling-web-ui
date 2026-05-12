@@ -1,7 +1,12 @@
 export const POKER_CONFIG = {
   MAX_PLAYERS: 5,
   MIN_PLAYERS: 2,
-  STARTING_CHIPS: 1000,
+  // Initial bankroll for every Player object — seated AND spectator. Same
+  // pool funds both poker bets and side-bet props, so the number has to be
+  // generous enough for a spectator to gamble all evening without needing
+  // a bank loan immediately. Side bets + run-it-twice are calibrated to
+  // this size (run-it-twice triggers at 10k pot, side-bets min bet 10).
+  STARTING_CHIPS: 10000,
   SMALL_BLIND: 5,
   BIG_BLIND: 10,
   MIN_RAISE: 10,
@@ -10,15 +15,22 @@ export const POKER_CONFIG = {
 }
 
 // Allowed blind levels at the table. Validated server-side so a malicious
-// client can't propose arbitrary numbers.
+// client can't propose arbitrary numbers. Tail end of the list (1k/2k
+// through 16k/32k) is for deep-stack contest mode / late tournament feel
+// — the buy-in at STARTING_CHIPS=10k makes these reachable in normal play.
 export const BLIND_LEVELS = [
-  { id: '5_10',     small: 5,    big: 10   },
-  { id: '15_25',    small: 15,   big: 25   },
-  { id: '25_50',    small: 25,   big: 50   },
-  { id: '50_100',   small: 50,   big: 100  },
-  { id: '100_200',  small: 100,  big: 200  },
-  { id: '250_500',  small: 250,  big: 500  },
-  { id: '500_1000', small: 500,  big: 1000 }
+  { id: '5_10',         small: 5,     big: 10     },
+  { id: '15_25',        small: 15,    big: 25     },
+  { id: '25_50',        small: 25,    big: 50     },
+  { id: '50_100',       small: 50,    big: 100    },
+  { id: '100_200',      small: 100,   big: 200    },
+  { id: '250_500',      small: 250,   big: 500    },
+  { id: '500_1000',     small: 500,   big: 1000   },
+  { id: '1000_2000',    small: 1000,  big: 2000   },
+  { id: '2000_4000',    small: 2000,  big: 4000   },
+  { id: '4000_8000',    small: 4000,  big: 8000   },
+  { id: '8000_16000',   small: 8000,  big: 16000  },
+  { id: '16000_32000',  small: 16000, big: 32000  }
 ]
 
 // Approvals required to apply a blinds change, indexed by # of seated humans
@@ -109,6 +121,10 @@ export const MESSAGE_TYPES = {
   // Bot Arena
   POKER_ARENA_SET_RUNNING: 'poker_arena_set_running',
   POKER_ARENA_SET_STARTING_CHIPS: 'poker_arena_set_starting_chips',
+  // Auto-fill works at both arenas (spectator-initiated) and regular
+  // tables (seated-player-initiated). Generic name reflects the
+  // broader scope; the previous POKER_ARENA_AUTO_FILL was arena-only.
+  POKER_AUTO_FILL_BOTS: 'poker_auto_fill_bots',
 
   // Auth handshake — client sends a JWT after connect so the server knows
   // which signed-in user this socket belongs to (needed for arena creation).
@@ -148,10 +164,24 @@ export const MESSAGE_TYPES = {
 // Bank loans: each bank lends $10k principal once at a base rate. The number of
 // active loans you may carry expands as your |P/L| swings widen — banks get more
 // generous when you're tilting, and credit gets pricier the deeper you go.
+//
+// Interest model: COMPOUND. Every hand the owed balance is multiplied by
+// (1 + perTurnRate), so a forgotten loan blows up exponentially — and the
+// per-turn rate scales with the credit-score multiplier, which itself can
+// climb to 10× at the floor. A bad-credit player carrying 5 loans through
+// 50+ hands easily hits thousands-of-percent territory, which is the
+// thematic goal (predatory banking, by design).
 export const LOAN_AMOUNT = 10_000
-export const LOAN_INTEREST_HAND_INTERVAL = 10  // turns/hands between interest charges
+// Kept for backward-compat (how often interest USED to fire) — accrual now
+// runs every hand, so this constant scales the per-turn rate instead.
+// Effective per-turn rate = baseRate * creditMultiplier / LOAN_INTEREST_HAND_INTERVAL.
+export const LOAN_INTEREST_HAND_INTERVAL = 10
 export const CREDIT_SCORE_DEFAULT = 700
-export const CREDIT_SCORE_MIN = 300
+// Credit can go negative once a player is deep underwater + carrying many
+// loans. The -1 floor is intentional: lets the credit-score badge bottom
+// out at a memorable number and makes the credit-multiplier curve hit its
+// max (10×) at exactly that point.
+export const CREDIT_SCORE_MIN = -1
 export const CREDIT_SCORE_MAX = 850
 
 // Sticky bank-unlock tiers. Once you swing past the threshold (in either
@@ -188,8 +218,13 @@ export const BANKS = [
   { id: 'fidelity',       name: 'Fidelity',             tagline: 'Smart move, big bet',                   baseRate: 0.07  }
 ]
 
-// Map a credit score to a multiplier on the bank's base rate.
-// 850 → 0.5x (great credit halves the rate), 700 → 1x, 300 → 3x.
+// Map a credit score to a multiplier on the bank's base (per-turn) rate.
+// Linear in each direction off the default:
+//   850 (MAX) → 0.5×   great credit halves the per-turn rate
+//   700 (DEFAULT) → 1× base behavior
+//   -1  (MIN) → 10×    "loan shark mode" — combined with compounding,
+//                       lets a forgotten loan reach thousands-of-percent
+//                       owed inside a single session.
 export function creditScoreRateMultiplier(score) {
   const clamped = Math.max(CREDIT_SCORE_MIN, Math.min(CREDIT_SCORE_MAX, score))
   if (clamped >= CREDIT_SCORE_DEFAULT) {
@@ -197,7 +232,10 @@ export function creditScoreRateMultiplier(score) {
     return 1.0 - 0.5 * t
   }
   const t = (CREDIT_SCORE_DEFAULT - clamped) / (CREDIT_SCORE_DEFAULT - CREDIT_SCORE_MIN)
-  return 1.0 + 2.0 * t
+  // Peaks at 10× at the very bottom; previously was 3×. The bigger
+  // multiplier is what gets the compounding into "thousands of %" range
+  // over a hand session for a player who's actually in distress.
+  return 1.0 + 9.0 * t
 }
 
 export function effectiveLoanRate(bank, creditScore) {

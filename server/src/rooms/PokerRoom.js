@@ -28,6 +28,7 @@ import { preflopHandScore } from '../bots/runtime/equity.js'
 import { sanitizeDisplayString } from '../utils/sanitize.js'
 import { SideBetEngine } from '../sidebets/sideBetEngine.js'
 import { scoreHandForPlayer } from '../dailies/dailyEngine.js'
+import { PeerLoanEngine } from '../peerLoans/peerLoanEngine.js'
 
 // Default rating to assume for any seat that isn't a bot when calculating
 // per-hand ELO updates. Aligned with the new STARTING_RATING so a bot
@@ -176,6 +177,11 @@ export class PokerRoom {
       game: this.game,
       broadcast: (msg) => this.broadcast(msg)
     })
+    // Peer loans between human players at this table. Engine handles
+    // open/counter/accept/decline plus per-hand interest accrual via the
+    // existing broadcastGameState tick, and on-leave settlement (lender
+    // collects from borrower's chips, capped at what borrower has).
+    this.peerLoanEngine = new PeerLoanEngine({ room: this })
     this._lastBroadcastPhase = GAME_PHASES.WAITING
     this._cleanupGuard = false
     this.blindsProposal = null
@@ -1076,6 +1082,10 @@ export class PokerRoom {
     const spectatorPlayer = this.spectators.get(playerId)
 
     if (wasPlayer) {
+      // Settle peer loans BEFORE deleting the seat. Engine needs the
+      // leaver still in this.players to read their chips for transfer.
+      try { this.peerLoanEngine?.handlePlayerLeave(playerId) }
+      catch (err) { console.error('[peer-loan] leave settle failed:', err.message) }
       this.players.delete(playerId)
       if (player) player.isSpectator = false
       this.game.removePlayer(playerId)
@@ -1291,6 +1301,97 @@ export class PokerRoom {
     return { success: true, chips: n }
   }
 
+  // Auto-fill — seat the top N bots (one per ELO tier) into every empty
+  // seat. Works at both arenas (caller is a spectator) AND regular tables
+  // (caller is a seated player). Batched: every bot is created + seated
+  // in one pass and we broadcast ONCE at the end. Skips bots already at
+  // the table (by botId) so re-running the command tops up empty seats
+  // instead of adding duplicates.
+  autoFillWithTopBots(callerId, bots) {
+    // Caller eligibility:
+    //   • Arena → must be a spectator (mirrors addBotForArenaSpectator).
+    //   • Regular table → must be a seated player (mirrors addBotForPlayer
+    //     — at regular tables only the human at the seat decides who else
+    //     comes to the table, not random spectators in the gallery).
+    const isSeated = this.players.has(callerId)
+    const isSpectator = this.spectators.has(callerId)
+    const caller = this.players.get(callerId) || this.spectators.get(callerId)
+    if (!caller) return { success: false, error: 'You must be at the table to auto-fill.' }
+    if (caller.isBot) return { success: false, error: 'Bots can\'t add bots.' }
+    if (!this.isArena && !isSeated) {
+      return { success: false, error: 'Only seated players can add bots at a regular table.' }
+    }
+    if (this.isArena && !isSpectator) {
+      // Arenas have no humans seated, so a seated "caller" would mean a
+      // bot — already handled above — or some state we don't expect.
+      return { success: false, error: 'Arena auto-fill is for spectators.' }
+    }
+
+    if (!Array.isArray(bots) || bots.length === 0) {
+      return { success: false, error: 'No bots available.' }
+    }
+
+    const seatedBotIds = new Set(
+      [...this.players.values()].filter(p => p.isBot).map(p => p.botId).filter(Boolean)
+    )
+    const slotsLeft = POKER_CONFIG.MAX_PLAYERS - this.players.size
+    if (slotsLeft <= 0) {
+      return { success: false, error: this.isArena ? 'Arena is full.' : 'Table is full.' }
+    }
+
+    // Starting chips mirror the existing single-bot-add paths:
+    //   Arena → fixed `arenaStartingChips`.
+    //   Regular table → bot inherits the adder's stack with a STARTING_CHIPS
+    //                   floor (same rule as addBotForPlayer).
+    const startingChips = this.isArena
+      ? this.arenaStartingChips
+      : Math.max(POKER_CONFIG.STARTING_CHIPS, caller.chips || POKER_CONFIG.STARTING_CHIPS)
+
+    const added = []
+    for (const bot of bots) {
+      if (added.length >= slotsLeft) break
+      if (!bot || !bot.id) continue
+      if (seatedBotIds.has(bot.id)) continue
+      const seatId = `bot-${randomUUID()}`
+      const botPlayer = new BotPlayer({
+        id: seatId,
+        bot,
+        addedByPlayerId: callerId,
+        room: this,
+        ownerDisplayName: bot.ownerDisplayName,
+        startingChips
+      })
+      const seated = this.game.addPlayer(botPlayer)
+      if (!seated) { botPlayer.destroy(); continue }
+      this.players.set(seatId, botPlayer)
+      seatedBotIds.add(bot.id)
+      added.push(botPlayer.toJSON())
+      // Per-bot phrase still fires; it goes through the bot's own emit
+      // path, not a broadcast, so it doesn't cost a room-wide round-trip.
+      botPlayer.emitPhrase('joined_table')
+    }
+
+    if (added.length === 0) {
+      return { success: false, error: 'No bots could be seated (all already at the table?).' }
+    }
+
+    // Single summary message + single broadcast — avoids the N×broadcast
+    // cost of calling addBotFor* in a loop.
+    const venue = this.isArena ? 'arena' : 'table'
+    this.broadcast({
+      type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+      data: { message: `${caller.username} auto-filled the ${venue} with ${added.length} top-rated bot${added.length === 1 ? '' : 's'}.` }
+    })
+    this.broadcastRoomUpdate()
+    // Arenas need an explicit start-hand kick when running; regular
+    // tables auto-start any time the seat count crosses MIN_PLAYERS via
+    // the existing scheduleStartHand inside addPlayer / addBotForPlayer.
+    // Either way, calling it again is idempotent (it bails out if already
+    // pending or not eligible).
+    this.scheduleStartHand()
+    return { success: true, added }
+  }
+
   // Arena spectators can add bots even though they're not seated. Mirrors
   // addBotForPlayer but with arena-aware sourcing of the starting stack.
   addBotForArenaSpectator(spectatorId, bot) {
@@ -1462,13 +1563,20 @@ export class PokerRoom {
     const previousPhase = this._lastBroadcastPhase
     const currentPhase = this.game.phase
 
-    // PREFLOP transition = "a new hand just started" — tick each seated human's
+    // PREFLOP transition = "a new hand just started" — tick each human's
     // session counter and apply per-turn loan interest + auto-pay.
     let anyTickHadLoans = false
     if (currentPhase === GAME_PHASES.PREFLOP && previousPhase !== GAME_PHASES.PREFLOP) {
       // Contest mode: escalate blinds every N hands.
       this._maybeEscalateContestBlinds()
-      for (const p of this.players.values()) {
+      // Iterate seated AND spectator humans. Spectators can hold loans
+      // too (Bank panel works for them, side bets ride on the same chip
+      // pool), so their balances need to accrue interest on the same
+      // per-hand cadence as seated players. Previously this loop only
+      // covered seated players, which is why a spectator's loan never
+      // appeared to grow.
+      const audience = [...this.players.values(), ...this.spectators.values()]
+      for (const p of audience) {
         if (p.isBot || typeof p.tickHandCounter !== 'function') continue
         const events = p.tickHandCounter()
         if (events.length > 0) anyTickHadLoans = true
@@ -1488,6 +1596,11 @@ export class PokerRoom {
           }
         }
       }
+      // Peer-loan interest accrues on the same per-hand cadence as bank
+      // loans. Engine internally caps growth at 3× principal so an
+      // un-repaid loan can't spiral indefinitely.
+      try { this.peerLoanEngine?.tickInterest() }
+      catch (err) { console.error('[peer-loan] accrual failed:', err.message) }
     }
 
     // Build all broadcast views once. Pre-stringify the spectator view (and,

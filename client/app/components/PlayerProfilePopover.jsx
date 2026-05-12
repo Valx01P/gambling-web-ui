@@ -6,6 +6,7 @@ import { api } from '../lib/api'
 import { useAuth } from '../lib/useAuth'
 import { ProfileAvatar } from './ProfileSelector'
 import AchievementsGrid from './AchievementsGrid'
+import PeerLoanPanel from './PeerLoanPanel'
 
 // Seat-click popover. Two modes:
 //   * Linked  — `publicUserId` is set: we fetch the public slice from the
@@ -56,7 +57,19 @@ export default function PlayerProfilePopover({
   open,
   onClose,
   anchorSeatId,  // id of the seat to follow — looked up via [data-seat-id]
-  seat           // { publicUserId, username, avatarUrl, avatarId, chips, pokerBuyIn, isBot, ... }
+  seat,          // { publicUserId, username, avatarUrl, avatarId, chips, pokerBuyIn, isBot, ... }
+  // Peer-loan props — optional. When provided the panel renders an
+  // offer / counter / accept / repay UI against this seat. Wired by
+  // poker/page.jsx; safe to omit on screens that don't have a room.
+  // `viewerIsSpectator` hides the panel for spectators — peer loans are
+  // strictly a seated-player thing (the server rejects them anyway, but
+  // hiding the UI keeps spectators from seeing buttons that always fail).
+  myId,
+  myChips,
+  myPeerLoans,
+  negotiations,
+  onPeerLoanSend,
+  viewerIsSpectator = false,
 }) {
   const { user: viewer } = useAuth()
   const [info, setInfo] = useState(null)
@@ -304,6 +317,22 @@ export default function PlayerProfilePopover({
             Anonymous players don't keep an ELO — they'd need to "Play as YOU" from the lobby for their hands to count.
           </div>
         </div>
+      )}
+
+      {/* Peer loans live outside the linked/anonymous split — works the
+          same whether the target seat published their userId or not.
+          Spectators don't get the panel: they can't lend OR borrow at
+          the table (server-side _validateParties rejects on missing
+          seat anyway, but the UI gate keeps the option from showing). */}
+      {onPeerLoanSend && !viewerIsSpectator && seat?.id !== myId && !seat?.isBot && (
+        <PeerLoanPanel
+          myId={myId}
+          myChips={myChips}
+          targetSeat={seat}
+          negotiations={negotiations}
+          myPeerLoans={myPeerLoans}
+          onSend={onPeerLoanSend}
+        />
       )}
     </div>,
     document.body

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PokerRoom } from '../src/rooms/PokerRoom.js'
 import { RoomManager } from '../src/rooms/RoomManager.js'
-import { MESSAGE_TYPES } from '../src/config/constants.js'
+import { MESSAGE_TYPES, POKER_CONFIG } from '../src/config/constants.js'
 
 function makePlayer(id) {
   return {
@@ -301,19 +301,24 @@ test('throws chips when calling an all-in raise', () => {
 })
 
 test('tracks poker profit through automatic rebuys', () => {
+  // Verifies the auto-rebuy flow: chips drained to 0 → rebuy adds
+  // STARTING_CHIPS back, pokerBuyIn rises by the same amount, and the
+  // resulting P/L is exactly −STARTING_CHIPS (one rebuy worth of loss).
+  // Values track POKER_CONFIG so a balance tweak doesn't break the test.
+  const SC = POKER_CONFIG.STARTING_CHIPS
   const room = new PokerRoom('room')
   const [player] = addPlayers(room, 2)
 
   player.chips = 0
-  assert.equal(player.pokerBuyIn, 1000)
+  assert.equal(player.pokerBuyIn, SC)
   assert.equal(room.game.rebuyIfNeeded(player), true)
 
   const playerState = room.game.getGameState(player.id).players.find(p => p.id === player.id)
 
-  assert.equal(player.chips, 1000)
-  assert.equal(player.pokerBuyIn, 2000)
-  assert.equal(playerState.buyIn, 2000)
-  assert.equal(playerState.profit, -1000)
+  assert.equal(player.chips, SC)
+  assert.equal(player.pokerBuyIn, 2 * SC)
+  assert.equal(playerState.buyIn, 2 * SC)
+  assert.equal(playerState.profit, -SC)
 })
 
 test('keeps all-in cards hidden until pending callers have acted', () => {

@@ -135,6 +135,12 @@ export default function ProfileSelector({ value = DEFAULT_AVATAR.id, onChange, o
   const fileInputRef = useRef(null)
   const [cropFile, setCropFile] = useState(null)
   const [localError, setLocalError] = useState(null)
+  // URL-paste input — only renders when the user clicks "From URL". Kept
+  // collapsed by default so the picker stays compact for the common case
+  // (file upload or preset).
+  const [urlInputOpen, setUrlInputOpen] = useState(false)
+  const [urlInput, setUrlInput] = useState('')
+  const [urlBusy, setUrlBusy] = useState(false)
 
   function selectOffset(offset) {
     const total = PROFILE_AVATARS.length
@@ -149,20 +155,93 @@ export default function ProfileSelector({ value = DEFAULT_AVATAR.id, onChange, o
     fileInputRef.current?.click()
   }
 
-  function onFileChosen(e) {
-    const f = e.target.files?.[0]
-    e.target.value = ''
-    if (!f) return
+  // Shared validation + intake for any path that produces a File/Blob —
+  // file picker, clipboard paste, URL fetch. Returns true on success.
+  function acceptFile(f) {
+    if (!f) return false
     setLocalError(null)
     if (f.size > 5 * 1024 * 1024) {
       setLocalError('Image too large — max 5MB.')
-      return
+      return false
     }
     if (!/^image\/(png|jpe?g|webp|gif)$/.test(f.type)) {
       setLocalError('Unsupported file type. Use PNG, JPEG, WebP, or GIF.')
-      return
+      return false
     }
     setCropFile(f)
+    return true
+  }
+
+  function onFileChosen(e) {
+    const f = e.target.files?.[0]
+    e.target.value = ''
+    acceptFile(f)
+  }
+
+  // Clipboard image paste. Browsers expose pasted images as DataTransferItems
+  // in `clipboardData.items`; we walk for the first image-typed item, pull
+  // it as a Blob, wrap as a File for downstream consistency.
+  function onPaste(e) {
+    if (uploading || urlBusy) return
+    const items = e.clipboardData?.items
+    if (!items || !items.length) return
+    for (const item of items) {
+      if (item.kind === 'file' && item.type?.startsWith('image/')) {
+        const blob = item.getAsFile()
+        if (!blob) continue
+        // Some browsers (Safari) emit `image.png` for every paste — fine,
+        // the crop preview and S3 PUT don't care about the original name.
+        const file = new File([blob], blob.name || `pasted-${Date.now()}.png`, { type: blob.type })
+        if (acceptFile(file)) e.preventDefault()
+        return
+      }
+    }
+    // Fall back: if the clipboard had a plain URL string, drop it into the
+    // URL field automatically so the user can hit Enter to load.
+    const text = e.clipboardData?.getData?.('text/plain')?.trim()
+    if (text && /^https?:\/\//i.test(text)) {
+      setUrlInputOpen(true)
+      setUrlInput(text)
+      e.preventDefault()
+    }
+  }
+
+  // Fetch a URL → Blob → File. Cross-origin can fail (the remote host
+  // didn't send `Access-Control-Allow-Origin`); we surface that with a
+  // helpful message instead of a generic network error.
+  async function loadFromUrl(url) {
+    const trimmed = (url || '').trim()
+    if (!trimmed) return
+    if (!/^https?:\/\//i.test(trimmed)) {
+      setLocalError('URL must start with http:// or https://')
+      return
+    }
+    setLocalError(null)
+    setUrlBusy(true)
+    try {
+      const res = await fetch(trimmed, { mode: 'cors' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const inferredType = blob.type && blob.type.startsWith('image/')
+        ? blob.type
+        : 'image/png'
+      const file = new File([blob], `from-url-${Date.now()}`, { type: inferredType })
+      if (acceptFile(file)) {
+        setUrlInputOpen(false)
+        setUrlInput('')
+      }
+    } catch (err) {
+      // CORS failures throw TypeErrors with opaque messages — point the
+      // user at the only workaround they have (save the image, then
+      // upload from disk).
+      setLocalError(
+        err?.message?.includes('Failed to fetch') || err?.name === 'TypeError'
+          ? 'That host blocks cross-origin image loads. Save the image and use Upload instead.'
+          : `Couldn't load that URL (${err?.message || 'unknown error'}).`
+      )
+    } finally {
+      setUrlBusy(false)
+    }
   }
 
   async function onCropConfirm(blob) {
@@ -187,22 +266,39 @@ export default function ProfileSelector({ value = DEFAULT_AVATAR.id, onChange, o
   }
 
   return (
-    <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/80 px-4 py-4 shadow-lg">
+    // `onPaste` on the wrapper catches Ctrl/Cmd+V anywhere inside the
+    // selector. The wrapper is in the React tree but not focusable on its
+    // own — modern browsers fire paste on the document for keyboard
+    // shortcuts when the focus is anywhere inside this subtree, including
+    // bare div clicks (Chromium 102+, Safari 16+, Firefox).
+    <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/80 px-4 py-4 shadow-lg" onPaste={onPaste}>
       <div className="mb-3 flex items-center justify-between gap-2">
         <div>
           <div className="text-sm font-black text-white">Profile</div>
           <div className="text-xs font-bold text-zinc-500">{selected.label}</div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={pickFile}
-            disabled={uploading}
+            disabled={uploading || urlBusy}
             className="rounded-md border border-amber-400/60 bg-amber-500/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-amber-100 hover:bg-amber-500/25 disabled:opacity-50"
           >
             {uploading ? 'Uploading…' : '+ Upload'}
           </button>
-          <div className="hidden sm:block text-[10px] font-black uppercase tracking-widest text-zinc-500">Character</div>
+          <button
+            type="button"
+            onClick={() => { setUrlInputOpen(v => !v); setLocalError(null) }}
+            disabled={uploading || urlBusy}
+            title="Paste an image URL"
+            className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-widest disabled:opacity-50 ${
+              urlInputOpen
+                ? 'border-zinc-400/60 bg-zinc-700/40 text-zinc-100'
+                : 'border-zinc-500/60 bg-zinc-700/20 text-zinc-200 hover:bg-zinc-700/40'
+            }`}
+          >
+            URL
+          </button>
         </div>
       </div>
       <input
@@ -212,9 +308,35 @@ export default function ProfileSelector({ value = DEFAULT_AVATAR.id, onChange, o
         className="hidden"
         onChange={onFileChosen}
       />
+      {urlInputOpen && (
+        <div className="mb-2 flex items-center gap-1.5">
+          <input
+            type="url"
+            placeholder="https://… (or just Ctrl/Cmd+V an image)"
+            value={urlInput}
+            onChange={(e) => setUrlInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); loadFromUrl(urlInput) } }}
+            disabled={urlBusy}
+            className="min-w-0 flex-1 rounded-md border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-white outline-none focus:border-amber-400/60 disabled:opacity-50"
+          />
+          <button
+            type="button"
+            onClick={() => loadFromUrl(urlInput)}
+            disabled={urlBusy || !urlInput.trim()}
+            className="shrink-0 rounded-md bg-amber-600 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-white hover:bg-amber-500 disabled:opacity-50"
+          >
+            {urlBusy ? 'Loading…' : 'Load'}
+          </button>
+        </div>
+      )}
       {(localError || uploadError) && (
         <div className="mb-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-[11px] font-bold text-red-200">
           {localError || uploadError}
+        </div>
+      )}
+      {!urlInputOpen && !localError && !uploadError && (
+        <div className="mb-2 text-[10px] text-zinc-500">
+          Tip: Paste an image (⌘V / Ctrl+V) or click URL to load from a link.
         </div>
       )}
 
