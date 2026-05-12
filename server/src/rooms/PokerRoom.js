@@ -26,6 +26,7 @@ import {
 } from '../bots/runtime/eloEngine.js'
 import { preflopHandScore } from '../bots/runtime/equity.js'
 import { sanitizeDisplayString } from '../utils/sanitize.js'
+import { SideBetEngine } from '../sidebets/sideBetEngine.js'
 
 // Default rating to assume for any seat that isn't a bot when calculating
 // per-hand ELO updates. Aligned with the new STARTING_RATING so a bot
@@ -136,6 +137,18 @@ export class PokerRoom {
         // counters. Fired exactly once per hand (showdown OR fold-out both
         // emit a `showdown` broadcast).
         if (msg?.type === 'showdown') {
+          // Side bets resolve here: card-runout props that haven't decided
+          // yet (typically because a fold-out left the board short) refund
+          // as VOID; action props (anyone_all_in, goes_to_showdown) finalize
+          // to YES/NO. Real showdown carries hands; fold-out sends an empty
+          // hands object — that's how we distinguish for the showdown flag.
+          try {
+            this.sideBetEngine?.onHandEnd({
+              reachedShowdown: Object.keys(msg.data?.hands || {}).length > 0
+            })
+          } catch (err) {
+            console.error('[sidebets] hand-end hook failed:', err.message)
+          }
           this._recordBotHandResults(msg.data).catch(err =>
             console.error('[bot-elo] hand result update failed:', err.message)
           )
@@ -149,6 +162,14 @@ export class PokerRoom {
       () => this.broadcastGameState(),
       onTurnTimeout
     )
+    // Polymarket-style in-hand prop bets. Engine owns its own per-hand state
+    // and mutates player.chips directly during buys, sells, and payouts —
+    // same server-authoritative trust model as the main betting engine.
+    this.sideBetEngine = new SideBetEngine({
+      room: this,
+      game: this.game,
+      broadcast: (msg) => this.broadcast(msg)
+    })
     this._lastBroadcastPhase = GAME_PHASES.WAITING
     this._cleanupGuard = false
     this.blindsProposal = null
@@ -1404,7 +1425,8 @@ export class PokerRoom {
       players: this.getPlayerList(),
       spectators: this.getSpectatorList(),
       gameState: this.game.getGameState(isSpectator ? null : forPlayerId, { revealAllCards: isSpectator }),
-      contestMode: this.contestModeSummary()
+      contestMode: this.contestModeSummary(),
+      sideBets: this.sideBetEngine?.getStatePayload() || null
     }
   }
 
@@ -1483,10 +1505,39 @@ export class PokerRoom {
     if (currentPhase === GAME_PHASES.WAITING && previousPhase !== GAME_PHASES.WAITING) {
       this._cleanupBrokeBots()
     }
+    // Side-bet engine ticks once per broadcast — it detects new hands via
+    // game.handIndex internally, so this single call covers handStart, every
+    // action, and every phase advance. Resolution at hand-end is driven by
+    // the onBroadcast('showdown') intercept above, not from here.
+    try {
+      this.sideBetEngine?.onStateChange()
+    } catch (err) {
+      console.error('[sidebets] state-change hook failed:', err.message)
+    }
     // After per-turn loan tick, push an extra room_update so the bank panel
     // sees the new owed/principal/credit numbers without waiting on another
     // explicit action.
     if (anyTickHadLoans) this.broadcastRoomUpdate()
+  }
+
+  // ─── Side-bets passthroughs (called by MessageHandler) ─────────────────
+
+  placeSideBet(playerId, { propId, side, amount }) {
+    if (!this.players.has(playerId)) {
+      return { success: false, error: 'You must be seated at the table to place side bets.' }
+    }
+    if (typeof propId !== 'string' || !propId) return { success: false, error: 'Missing propId.' }
+    const stake = Math.floor(Number(amount) || 0)
+    if (!Number.isFinite(stake) || stake <= 0) return { success: false, error: 'Invalid amount.' }
+    return this.sideBetEngine.placeBet(playerId, propId, side, stake)
+  }
+
+  sellSidePosition(playerId, { propId, shares }) {
+    if (!this.players.has(playerId)) {
+      return { success: false, error: 'You must be seated to manage side bets.' }
+    }
+    if (typeof propId !== 'string' || !propId) return { success: false, error: 'Missing propId.' }
+    return this.sideBetEngine.sellPosition(playerId, propId, shares)
   }
 
   broadcastRoomUpdate() {

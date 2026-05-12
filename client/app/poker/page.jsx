@@ -30,6 +30,7 @@ import {
 import Link from 'next/link'
 import StatsPanel from '../components/StatsPanel'
 import SpectatorPanel from '../components/SpectatorPanel'
+import SideBetsPanel from '../components/SideBetsPanel'
 import { buildPokerStatistics, buildSpectatorStatistics, evaluateHand, formatCard, formatPercent, getHandName } from '../lib/pokerOdds'
 // Seat geometry lives in ./lib/seatLayout — shared by spectator view, the
 // table render, and the chip-throw animation. Pure data + helpers, no state.
@@ -425,6 +426,17 @@ export default function PokerPage() {
   // Chat dock visibility — defaults to true (visible). Persisted to
   // localStorage so the user's choice survives reloads.
   const [chatDockVisible, setChatDockVisible] = useState(true)
+  // Side-bets panel visibility — same opt-in pattern as chat. Default on so
+  // new players discover the prop markets without having to hunt the menu.
+  const [sideBetsDockVisible, setSideBetsDockVisible] = useState(true)
+  // Inline vertical expansion — the dock grows upward to show every live
+  // bet without scrolling. Stays anchored at the same horizontal slot so the
+  // table render doesn't shift; just consumes more vertical room.
+  const [sideBetsExpanded, setSideBetsExpanded] = useState(false)
+  // Live snapshot from the server. Server pushes a fresh sidebet:state on
+  // hand-start, every action, every phase advance, every buy/sell, and every
+  // resolution — the client is purely a renderer.
+  const [sideBetsState, setSideBetsState] = useState(null)
   
   // New room feature states
   // 'general' | 'private' | 'spectate'. `private` is a UI tab only — the
@@ -716,6 +728,9 @@ export default function PokerPage() {
           applyGameState(msg.data.gameState)
           setIsPrivate(msg.data.isPrivate || false)
           setInviteCode(msg.data.inviteCode || null)
+          // Hydrate the side-bets panel with whatever markets are live at
+          // join time — fresh joiners see the same prop set as everyone else.
+          if (msg.data.sideBets) setSideBetsState(msg.data.sideBets)
           if (msg.data.contestMode) setContestMode(msg.data.contestMode)
           if (typeof msg.data.isArena === 'boolean') setIsArena(msg.data.isArena)
           if (typeof msg.data.arenaRunning === 'boolean') setArenaRunning(msg.data.arenaRunning)
@@ -855,6 +870,23 @@ export default function PokerPage() {
           break
         case 'chat':
           setChatMessages(prev => [...prev.slice(-50), msg.data])
+          break
+        case 'sidebet:state':
+          // Full snapshot rebroadcast on every state change. Cheap to drop in
+          // wholesale — payload tops out at ~6 props + a handful of positions.
+          setSideBetsState(msg.data)
+          break
+        case 'sidebet:resolve':
+          // Surface a system-message receipt for any payout that touched the
+          // local user so the wins/losses don't only show in the panel.
+          if (msg.data && Array.isArray(msg.data.payouts)) {
+            const mine = msg.data.payouts.filter(p => p.playerId === playerIdRef.current)
+            for (const m of mine) {
+              if (m.result === 'win') addSys(`Side bet hit: ${msg.data.question} — +${m.credit} chips.`)
+              else if (m.result === 'loss') addSys(`Side bet lost: ${msg.data.question} — −${m.costPaid} chips.`)
+              else if (m.result === 'void') addSys(`Side bet void: ${msg.data.question} — ${m.credit} refunded.`)
+            }
+          }
           break
         case 'poker_loan':
           if (msg.data?.success) {
@@ -1043,6 +1075,21 @@ export default function PokerPage() {
     if (!text) return
     send('chat', { message: text })
     setChatInput('')
+  }
+
+  // Side-bet send helpers. Server validates everything (chip balance, prop
+  // open/closed state, side string). Errors come back via the standard
+  // 'error' channel and surface as a system-message toast.
+  function placeSideBet(propId, side, amount) {
+    if (!propId || (side !== 'yes' && side !== 'no')) return
+    const stake = Math.max(10, Math.floor(Number(amount) || 0))
+    if (stake <= 0) return
+    send('sidebet:place', { propId, side, amount: stake })
+  }
+
+  function sellSideBet(propId, shares) {
+    if (!propId) return
+    send('sidebet:sell', { propId, shares: shares || 0 })
   }
   
   function getOriginalIndex(player) {
@@ -1261,6 +1308,13 @@ export default function PokerPage() {
       } catch {}
       return next
     })
+  }
+
+  // Side-bets panel toggle. Mirrors the chat-dock pattern — not persisted to
+  // localStorage yet; the dock state resets to "on" on every reload to
+  // promote the feature.
+  function toggleSideBetsDock() {
+    setSideBetsDockVisible(prev => !prev)
   }
 
   function callBigYahu() {
@@ -1584,6 +1638,14 @@ export default function PokerPage() {
                 )}
                 <button type="button" onClick={toggleChatDock} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                   Chat {chatDockVisible ? 'On' : 'Off'}
+                </button>
+                <button type="button" onClick={toggleSideBetsDock} className="block w-full px-3 py-2 text-left text-xs font-bold text-amber-200 hover:bg-zinc-800">
+                  Side Bets {sideBetsDockVisible ? 'On' : 'Off'}
+                  {sideBetsState?.props?.length ? (
+                    <span className="ml-2 rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
+                      {sideBetsState.props.filter(p => p.status === 'open').length} live
+                    </span>
+                  ) : null}
                 </button>
                 {!isSpectator && (
                   <button type="button" onClick={() => openPokerPanel('reset')} className="block w-full px-3 py-2 text-left text-xs font-bold text-red-200 hover:bg-zinc-800">
@@ -2943,36 +3005,111 @@ export default function PokerPage() {
           </div>
         )}
 
-        {/* Chat Panel — opt-out via Tools. When hidden, the spectator panel
-            (in spectator mode) falls back to its flat bottom offset because
-            there's no chat dock to clear. */}
-        {chatDockVisible && (
-        <div className={`${isSpectator ? 'fixed safe-bottom-offset left-3 right-3 z-40 sm:left-auto sm:right-4 sm:w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px]' : 'w-[92%] max-w-[360px] md:w-[280px] md:max-w-none'} flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
-          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1.5">
-            {chatMessages.length === 0 && sysMessages.length === 0 && (
-              <div className="text-xs text-zinc-600 italic">No messages...</div>
-            )}
-            {sysMessages.map((msg, i) => (
-              <div key={`s-${i}`} className="text-xs text-zinc-600 italic font-medium">{msg}</div>
-            ))}
-            {chatMessages.map((msg, i) => (
-              <div key={`c-${i}`} className="text-sm">
-                <span className={`font-bold ${msg.playerId === playerId ? 'text-white' : 'text-zinc-300'}`}>
-                  {msg.playerId === playerId ? 'You' : msg.username}{msg.isSpectator ? ' (spectator)' : ''}:
-                </span>
-                <span className="text-zinc-100 ml-1.5">{msg.message}</span>
+        {/* Side bets + chat: for spectators each panel pins itself to the
+            bottom edge (independent fixed-position docks, same as before).
+            For seated players we wrap them in a right-side column so the
+            bottom row stays balanced at any viewport — they sit side-by-side
+            on lg+ and stack vertically below lg so a narrow desktop / iPad
+            doesn't have to fit three panels in one row. */}
+        {(() => {
+          // Chat panel body — same JSX whichever shell we drop it into.
+          const chatBoxInner = (
+            <>
+              <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1.5">
+                {chatMessages.length === 0 && sysMessages.length === 0 && (
+                  <div className="text-xs text-zinc-600 italic">No messages...</div>
+                )}
+                {sysMessages.map((msg, i) => (
+                  <div key={`s-${i}`} className="text-xs text-zinc-600 italic font-medium">{msg}</div>
+                ))}
+                {chatMessages.map((msg, i) => (
+                  <div key={`c-${i}`} className="text-sm">
+                    <span className={`font-bold ${msg.playerId === playerId ? 'text-white' : 'text-zinc-300'}`}>
+                      {msg.playerId === playerId ? 'You' : msg.username}{msg.isSpectator ? ' (spectator)' : ''}:
+                    </span>
+                    <span className="text-zinc-100 ml-1.5">{msg.message}</span>
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
               </div>
-            ))}
-            <div ref={chatEndRef} />
-          </div>
-          <div className="flex border-t border-zinc-600/50 bg-zinc-900/50 shrink-0">
-            <input className="flex-1 bg-transparent px-4 py-2.5 text-sm text-white placeholder-zinc-400 outline-none"
-              placeholder="Message..." value={chatInput} onChange={e => setChatInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && sendChat()} maxLength={200} />
-            <button onClick={sendChat} className="px-4 text-sm font-bold text-white hover:bg-zinc-700 transition-colors">Send</button>
-          </div>
-        </div>
-        )}
+              <div className="flex border-t border-zinc-600/50 bg-zinc-900/50 shrink-0">
+                <input className="flex-1 bg-transparent px-4 py-2.5 text-sm text-white placeholder-zinc-400 outline-none"
+                  placeholder="Message..." value={chatInput} onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && sendChat()} maxLength={200} />
+                <button onClick={sendChat} className="px-4 text-sm font-bold text-white hover:bg-zinc-700 transition-colors">Send</button>
+              </div>
+            </>
+          )
+
+          // Sidebets dock height: collapsed matches the left action stack
+          // (action + emote row + yell input). Expanded sizes to content via
+          // h-fit so there's no empty space below — the engine maintains
+          // exactly 4 open props, so the natural height lands ~400-450px.
+          // max-h-[80dvh] caps overflow on short viewports; internal scroll
+          // kicks in past that.
+          const sidebetsHeight = sideBetsExpanded
+            ? 'h-fit max-h-[80dvh]'
+            : 'h-56 lg:h-72'
+
+          if (isSpectator) {
+            // Spectator chat + sidebets each pin to the viewport — same
+            // pattern that was already in use for the spectator chat dock.
+            // Heights stay independent of the action panel.
+            return (
+              <>
+                {sideBetsDockVisible && !isArena && (
+                  <div className={`fixed safe-bottom-offset right-3 z-40 sm:right-4 w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0 `}>
+                    <SideBetsPanel
+                      sideBets={sideBetsState}
+                      myPlayerId={playerId}
+                      myStack={myPlayer?.chips ?? 0}
+                      onPlace={placeSideBet}
+                      onSell={sellSideBet}
+                      expanded={sideBetsExpanded}
+                      onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
+                    />
+                  </div>
+                )}
+                {chatDockVisible && (
+                  <div className="fixed safe-bottom-offset left-3 right-3 z-40 sm:left-auto sm:right-4 sm:w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
+                    {chatBoxInner}
+                  </div>
+                )}
+              </>
+            )
+          }
+
+          // Non-spectator: on mobile (no md), flow inline at the bottom of
+          // the column — narrow viewports need to scroll past these to keep
+          // them all reachable. On md+, pin the right column to the viewport
+          // bottom-right with `fixed` so its height (especially when sidebets
+          // is expanded or chat stacks) does NOT inflate the bottom flex row
+          // and squeeze the table render. The action panel stays at its
+          // natural compact height next to the felt.
+          if (!sideBetsDockVisible && !chatDockVisible) return null
+          return (
+            <div className="w-[92%] max-w-[360px] mx-auto md:fixed md:bottom-3 md:right-3 md:mx-0 md:w-auto md:max-w-none md:z-40 flex flex-col lg:flex-row items-end gap-3 shrink-0">
+              {sideBetsDockVisible && !isArena && (
+                <div className={`w-full md:w-[300px] lg:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0 `}>
+                  <SideBetsPanel
+                    sideBets={sideBetsState}
+                    myPlayerId={playerId}
+                    myStack={myPlayer?.chips ?? 0}
+                    onPlace={placeSideBet}
+                    onSell={sellSideBet}
+                    expanded={sideBetsExpanded}
+                    onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
+                  />
+                </div>
+              )}
+              {chatDockVisible && (
+                <div className="w-full md:w-[300px] lg:w-[280px] flex flex-col h-40 lg:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
+                  {chatBoxInner}
+                </div>
+              )}
+            </div>
+          )
+        })()}
 
       </div>
     </div>

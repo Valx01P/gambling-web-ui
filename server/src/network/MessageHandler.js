@@ -89,6 +89,12 @@ export class MessageHandler {
         case MESSAGE_TYPES.POKER_ALL_IN:
           return this.handleAction(player, type, data)
 
+        case 'sidebet:place':
+          return this.handleSideBetPlace(player, data)
+
+        case 'sidebet:sell':
+          return this.handleSideBetSell(player, data)
+
         default:
           return this.error('Unknown message type', player)
       }
@@ -557,9 +563,56 @@ export class MessageHandler {
     return result
   }
 
+  handleSideBetPlace(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') {
+      return this.error('Side bets are only available at poker tables.', player)
+    }
+    const result = room.placeSideBet(player.id, {
+      propId: data?.propId,
+      side: data?.side,
+      amount: data?.amount
+    })
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeSideBetError(result.error) } })
+    }
+    return result
+  }
+
+  handleSideBetSell(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') {
+      return this.error('Side bets are only available at poker tables.', player)
+    }
+    const result = room.sellSidePosition(player.id, {
+      propId: data?.propId,
+      shares: data?.shares
+    })
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeSideBetError(result.error) } })
+    }
+    return result
+  }
+
   error(message, player = null) {
     console.error('Handler error:', message)
     if (player) player.send({ type: MESSAGE_TYPES.ERROR, data: { message } })
     return { success: false, error: message }
+  }
+}
+
+// Pretty-print engine error codes for the toast popups on the client.
+function humanizeSideBetError(code) {
+  if (typeof code !== 'string') return 'Side bet failed.'
+  if (code.startsWith('min_bet_')) return `Minimum side bet is ${code.split('_').pop()} chips.`
+  switch (code) {
+    case 'invalid_side': return 'Pick YES or NO.'
+    case 'prop_not_found': return 'That market is no longer available.'
+    case 'prop_closed': return 'That market has already resolved.'
+    case 'not_seated': return 'You must be seated at the table to place side bets.'
+    case 'insufficient_chips': return 'Not enough chips in your stack.'
+    case 'no_position': return 'You don\'t hold a position on that market.'
+    case 'invalid_shares': return 'Invalid share count.'
+    default: return code
   }
 }

@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 **Start here.** `STACK.md` (in this same directory) has the compact
 architecture / stack / AWS context. Read it before doing any non-trivial
 work on this repo — it'll save you 3-4 rounds of grep.
@@ -17,6 +19,27 @@ work on this repo — it'll save you 3-4 rounds of grep.
 - AWS uploads: private S3 + CloudFront with OAC. Resource IDs are in
   `STACK.md` and the env files. Server issues presigned PUT URLs; client
   uploads direct to S3.
+
+## Commands
+
+```bash
+# server/  (Node 22, no dotenv — uses --env-file-if-exists)
+npm run dev                                   # nodemon + .env
+npm start                                     # node + .env
+npm run start:prod                            # node + .env.production
+npm run migrate                               # apply pending pg migrations (idempotent)
+npm test                                      # node --test, runs server/test/*.test.js
+node --env-file-if-exists=.env --test test/handEvaluator.test.js   # single file
+node --env-file-if-exists=.env --test --test-name-pattern="straight flush"  # single case
+
+# client/  (Next.js 16)
+npm run dev                                   # :3000
+npm run build                                 # also the type/syntax sanity check after edits
+npm start
+```
+
+No linter is configured in either side; `next build` is the closest thing to one for the client.
+The client has no test runner today.
 
 ## Conventions worth keeping
 
@@ -36,8 +59,8 @@ work on this repo — it'll save you 3-4 rounds of grep.
 ## When you touch something risky
 
 - **WebSocket lifecycle** in `poker/page.jsx` — there's no reconnect
-  today; don't accidentally introduce dep churn on the WS-create effect
-  (line ~870 area).
+  today; don't accidentally introduce dep churn on the `new WebSocket(WS_URL)`
+  effect (grep for it — the file is ~3000 lines and line numbers drift).
 - **Bot save / recalc flows** in `poker/bots/[id]/page.jsx` — there's a
   known stale-load race; if you guard one path, guard the other.
 - **CORS / env**: `server/.env.production` must not include `localhost`

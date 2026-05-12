@@ -235,6 +235,24 @@ body {
   }
 }
 
+/* Side-bet card enter animation. Cards slide up with a slight scale punch
+   when the engine spawns them or when a bet locks the user into a position.
+   Kept short (260ms) so a hand-start that drops 4 cards at once doesn't feel
+   like the panel is loading. */
+@keyframes sidebet-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.animate-sidebet-enter {
+  animation: sidebet-enter 260ms ease-out;
+}
+
 /* Skip-link target. The link itself lives in layout.jsx; it's only visible
    when focused so it doesn't take up screen real estate for sighted users. */
 .skip-link {
