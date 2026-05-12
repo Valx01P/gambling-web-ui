@@ -1,6 +1,21 @@
 import { S3Client, DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
+// Direct server-side PUT (no presigning). Used by the "upload from URL"
+// flow where the server is the one holding the bytes; presigned URLs are
+// for direct-from-browser uploads. Keeps the upload pipeline single-track
+// from a security policy standpoint — same bucket, same key prefixes.
+export async function putObject({ key, contentType, body }) {
+  await getClient().send(
+    new PutObjectCommand({
+      Bucket: getBucketName(),
+      Key: key,
+      ContentType: contentType,
+      Body: body
+    })
+  )
+}
+
 // Lazy singleton — the SDK reads credentials and region from process.env
 // (AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY). We build the client
 // on first use so a server without S3 configured (e.g. local dev that

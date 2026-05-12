@@ -4,6 +4,7 @@ import { PlayerManager } from '../players/PlayerManager.js'
 import { RoomManager } from '../rooms/RoomManager.js'
 import { MessageHandler } from './MessageHandler.js'
 import { MESSAGE_TYPES } from '../config/constants.js'
+import { untrack as untrackPresence } from '../users/presence.js'
 
 // Per-IP connection cap. Caps how many concurrent WS clients one source can
 // hold open. Set generously (8) so a household behind one NAT or a power
@@ -202,6 +203,9 @@ export class WebSocketServer {
     const player = this.playerManager.getPlayer(playerId)
     if (!player) return
     player.isConnected = false
+    // Drop this WS from the presence registry first so any in-flight
+    // "is this user online?" lookups stop counting the dead socket.
+    untrackPresence(playerId)
     this.roomManager.leaveGame(player)
     this.playerManager.deletePlayer(playerId)
   }

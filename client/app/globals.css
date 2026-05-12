@@ -178,10 +178,14 @@ body {
    missing :focus-visible rings on interactive elements; this gives every
    tabbable element a subtle amber outline without the click-and-hold halo
    that :focus alone would produce for mouse users. */
+/* Keyboard-focus outline. We deliberately don't override `border-radius`
+   here — modern browsers (Chrome 94+, Safari 16+, Firefox) trace the
+   element's own border-radius for the outline, so a `rounded-full`
+   avatar gets a circular outline. Forcing a 4px radius globally would
+   draw a rounded-square outline behind a circular button. */
 :where(button, a, [role="button"], [role="link"], input, select, textarea, summary):focus-visible {
   outline: 2px solid #fcd34d;
   outline-offset: 2px;
-  border-radius: 4px;
 }
 
 /* Safe-area-inset helper for `fixed` overlays anchored to the bottom of the
@@ -209,8 +213,12 @@ body {
   bottom: calc(10.75rem + max(0.75rem, env(safe-area-inset-bottom)));
 }
 @media (min-width: 640px) {
+  /* Desktop value must match .safe-bottom-offset so toggling chat on/off
+     doesn't visibly shift the spectator panel. (On mobile the two are
+     intentionally different — chat lives below the panel and the panel
+     has to stack above it.) */
   .spectator-stack-bottom {
-    bottom: max(1rem, env(safe-area-inset-bottom));
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
   }
 }
 

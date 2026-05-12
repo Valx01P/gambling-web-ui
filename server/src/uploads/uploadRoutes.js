@@ -6,6 +6,7 @@ import {
   createPresignedUploadUrl,
   publicUrlForKey,
   deleteObject,
+  putObject,
   ALLOWED_IMAGE_CONTENT_TYPES,
   extensionForContentType,
 } from '../aws/s3.js'
@@ -156,6 +157,127 @@ export function uploadRoutes() {
   router.get('/me/pfps', authRequired, async (req, res) => {
     const pfps = await listPfps(req.user.id)
     res.json({ pfps })
+  })
+
+  // POST /api/uploads/from-url
+  // Body: { url } — server-side fetch of a remote image, validated and
+  // re-uploaded to our own S3 bucket. The browser pasting a URL can't
+  // upload it directly (presign requires a known content-type + size up
+  // front, which a third-party URL doesn't provide), so we fetch on the
+  // server and store the verified bytes.
+  //
+  // Signed-in only — anonymous URL uploads would let any visitor make us
+  // a free image-relay for arbitrary URLs. Tight rate limit + size cap
+  // + content-type allow-list close the obvious abuse paths.
+  router.post('/from-url', authRequired, presignLimiter, async (req, res) => {
+    if (!process.env.S3_BUCKET_NAME) {
+      return res.status(503).json({ error: 'uploads_not_configured' })
+    }
+    const { url } = req.body || {}
+    if (typeof url !== 'string' || url.length === 0 || url.length > 2048) {
+      return res.status(400).json({ error: 'invalid_url' })
+    }
+
+    // URL must parse cleanly + use HTTP(S). Reject loopback/private IPs
+    // to head off the obvious SSRF angles (internal services, AWS
+    // metadata endpoints, etc.). Hostname-based check is a starting
+    // point — production deployments should also be on a VPC that
+    // can't reach the metadata IP from the worker.
+    let parsed
+    try { parsed = new URL(url) } catch { return res.status(400).json({ error: 'invalid_url' }) }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return res.status(400).json({ error: 'invalid_url' })
+    }
+    const host = parsed.hostname.toLowerCase()
+    if (
+      host === 'localhost' ||
+      host === '0.0.0.0' ||
+      host.startsWith('127.') ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      host === '169.254.169.254' ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    ) {
+      return res.status(400).json({ error: 'blocked_host' })
+    }
+
+    // 8s budget for the fetch. Long enough for slow CDNs, short enough
+    // that a malicious URL pointed at a slow endpoint can't tie up a
+    // route worker.
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 8000)
+    let upstream
+    try {
+      upstream = await fetch(url, {
+        signal: controller.signal,
+        redirect: 'follow',
+        headers: { 'Accept': 'image/*' }
+      })
+    } catch (err) {
+      clearTimeout(timeout)
+      return res.status(400).json({ error: 'fetch_failed', detail: err.message })
+    }
+    clearTimeout(timeout)
+    if (!upstream.ok) {
+      return res.status(400).json({ error: 'fetch_failed', detail: `HTTP ${upstream.status}` })
+    }
+
+    const ct = (upstream.headers.get('content-type') || '').split(';')[0].trim()
+    if (!ALLOWED_IMAGE_CONTENT_TYPES.has(ct)) {
+      return res.status(400).json({ error: 'unsupported_content_type', detail: ct || '(missing)' })
+    }
+    // Content-Length header can lie (or be missing). Read the body and
+    // enforce the size cap on the actual bytes. ArrayBuffer is bounded;
+    // we abort if it exceeds the cap before allocating the full buffer.
+    const cap = maxUploadBytes()
+    const lenHeader = Number(upstream.headers.get('content-length') || 0)
+    if (lenHeader > 0 && lenHeader > cap) {
+      return res.status(413).json({ error: 'too_large', detail: `Max ${cap} bytes.` })
+    }
+    const buf = Buffer.from(await upstream.arrayBuffer())
+    if (buf.byteLength > cap) {
+      return res.status(413).json({ error: 'too_large', detail: `Max ${cap} bytes.` })
+    }
+    if (buf.byteLength === 0) {
+      return res.status(400).json({ error: 'empty_body' })
+    }
+
+    const ext = extensionForContentType(ct)
+    const objectId = randomUUID()
+    const key = `users/${req.user.id}/pfp/${objectId}.${ext}`
+    try {
+      await putObject({ key, contentType: ct, body: buf })
+    } catch (err) {
+      console.error('[uploads] from-url put failed:', err)
+      return res.status(500).json({ error: 'upload_failed' })
+    }
+
+    const publicUrl = publicUrlForKey(key)
+
+    // Save to history immediately — same fate as a PUT-presigned upload.
+    let pfp = null
+    try {
+      pfp = await createPfp(req.user.id, {
+        s3Key: key,
+        publicUrl,
+        contentType: ct,
+        byteSize: buf.byteLength
+      })
+      try {
+        const droppedKeys = await prunePfps(req.user.id, PFP_HISTORY_LIMIT)
+        for (const droppedKey of droppedKeys) {
+          deleteObject(droppedKey).catch(err =>
+            console.warn('[uploads] prune cleanup failed for', droppedKey, '—', err.message)
+          )
+        }
+      } catch (err) {
+        console.warn('[uploads] history prune failed:', err.message)
+      }
+    } catch (err) {
+      console.warn('[uploads] from-url history save failed:', err.message)
+    }
+
+    return res.status(201).json({ pfp, key, publicUrl, contentType: ct, byteSize: buf.byteLength })
   })
 
   // Soft-delete from history. The S3 object is deleted best-effort —

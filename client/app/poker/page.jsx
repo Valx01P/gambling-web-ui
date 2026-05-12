@@ -11,8 +11,10 @@ import AccountMenu from '../components/AccountMenu'
 import AuthGateModal from '../components/AuthGateModal'
 import AchievementToast from '../components/AchievementToast'
 import BotAvatar from '../components/BotAvatar'
+import PlayerProfilePopover from '../components/PlayerProfilePopover'
 import { useAuth } from '../lib/useAuth'
 import { useUpload } from '../lib/useUpload'
+import { useZoom, ZOOM_MIN, ZOOM_MAX, ZOOM_STEP } from '../lib/useZoom'
 import { api } from '../lib/api'
 import {
   BANKS,
@@ -37,14 +39,11 @@ import LobbyView from './components/LobbyView'
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001'
 const USERNAME_STORAGE_KEY = 'poker_username'
 const AVATAR_STORAGE_KEY = 'poker_avatar_id'
-const ZOOM_STORAGE_KEY = 'poker_zoom'
 // Chat dock visibility persists per-device. Default true (chat shown) — only
 // flipped when the user explicitly turns it off via Tools, so we treat any
 // stored value other than '0' as "show chat" and only '0' as "hidden".
 const CHAT_VISIBLE_STORAGE_KEY = 'poker_chat_visible'
-const ZOOM_MIN = 50
-const ZOOM_MAX = 200
-const ZOOM_STEP = 10
+// Zoom-related constants come from useZoom — single source of truth.
 const POKER_STARTING_CHIPS = 1000
 
 const BLIND_LEVELS = [
@@ -333,6 +332,11 @@ export default function PokerPage() {
   const splitNoticeTimerRef = useRef(null)
   const [connected, setConnected] = useState(false)
   const [playerId, setPlayerId] = useState('')
+  // Seat-click popover state. We anchor the popover to the nameplate's
+  // bounding rect captured at click-time — that decouples placement
+  // from re-renders of the seat (animations, chip changes, etc.).
+  const [popoverSeat, setPopoverSeat] = useState(null)
+  const [popoverAnchorRect, setPopoverAnchorRect] = useState(null)
   const [username, setUsername] = useState('')
   const [joined, setJoined] = useState(false)
   const [isSpectator, setIsSpectator] = useState(false)
@@ -413,7 +417,10 @@ export default function PokerPage() {
   const arenaRunningRef = useRef(false)
   useEffect(() => { arenaRunningRef.current = arenaRunning }, [arenaRunning])
   const [arenaStartingChips, setArenaStartingChips] = useState(1000)
-  const [pageZoom, setPageZoom] = useState(100)
+  // Page zoom is now backed by useZoom (cross-component, cross-tab sync
+  // via localStorage + a custom event). The AccountMenu has its own zoom
+  // controls that hit the same hook — both surfaces stay in lockstep.
+  const { zoom: pageZoom, adjust: adjustZoom, reset: resetZoom } = useZoom()
   const [myBotsExpanded, setMyBotsExpanded] = useState(false)
   // Chat dock visibility — defaults to true (visible). Persisted to
   // localStorage so the user's choice survives reloads.
@@ -646,7 +653,6 @@ export default function PokerPage() {
     if (typeof window !== 'undefined') {
       const savedUsername = window.localStorage.getItem(USERNAME_STORAGE_KEY)
       const savedAvatarId = window.localStorage.getItem(AVATAR_STORAGE_KEY)
-      const savedZoom = parseInt(window.localStorage.getItem(ZOOM_STORAGE_KEY) || '', 10)
       const savedChat = window.localStorage.getItem(CHAT_VISIBLE_STORAGE_KEY)
       if (savedUsername) setUsername(savedUsername)
       // Custom uploads are stored verbatim as their CloudFront URL; presets
@@ -656,9 +662,7 @@ export default function PokerPage() {
         if (/^https?:\/\//.test(savedAvatarId)) setSelectedAvatarId(savedAvatarId)
         else setSelectedAvatarId(getProfileAvatar(savedAvatarId).id)
       }
-      if (Number.isFinite(savedZoom) && savedZoom >= ZOOM_MIN && savedZoom <= ZOOM_MAX) {
-        setPageZoom(savedZoom)
-      }
+      // Zoom is now hydrated + kept in sync by useZoom — no local handling.
       // Only '0' means "user explicitly hid chat" — any other value (including
       // missing) leaves the default `true`. Keeps first-time visitors on the
       // chat-visible path.
@@ -1241,32 +1245,9 @@ export default function PokerPage() {
     send('poker_set_autopay', { bankId, amount: n })
   }
 
-  // Zoom is actually applied by ZoomLayer in layout.jsx so the FuzzyBackground
-  // canvas stays at viewport size regardless of zoom level. Here we just track
-  // the value, persist it, and notify the layer via a custom event so it can
-  // re-read localStorage and re-apply.
-  //
-  // Side effects (localStorage + dispatchEvent) live OUTSIDE the React state
-  // setter so we never trigger another component's setState during this
-  // component's update — React 19 warns about that pattern.
-  function adjustZoom(delta) {
-    const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(pageZoom + delta)))
-    if (next === pageZoom) return
-    setPageZoom(next)
-    try {
-      window.localStorage.setItem(ZOOM_STORAGE_KEY, String(next))
-      window.dispatchEvent(new Event('gwu:zoom-changed'))
-    } catch {}
-  }
-
-  function resetZoom() {
-    if (pageZoom === 100) return
-    setPageZoom(100)
-    try {
-      window.localStorage.setItem(ZOOM_STORAGE_KEY, '100')
-      window.dispatchEvent(new Event('gwu:zoom-changed'))
-    } catch {}
-  }
+  // Zoom is actually applied by ZoomLayer in layout.jsx; useZoom (above)
+  // owns the storage + event protocol so any consumer (AccountMenu, this
+  // tools panel) reads + writes the same source of truth.
 
   // Flip chat dock visibility and persist the choice. We store '0' for hidden
   // and clear the key for visible, so the on-state has no footprint and is
@@ -1529,7 +1510,7 @@ export default function PokerPage() {
                 if (nextOpen) setActivePokerPanel(null)
                 return nextOpen
               })}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
             >
               Tools
             </button>
@@ -2658,10 +2639,28 @@ export default function PokerPage() {
 
                   {/* Uniform Nameplate styling — explicit min-width so corner
                       seats (left:5%/95%) don't get squished by the parent's
-                      overflow-x-hidden context. */}
-                  <div className={`
+                      overflow-x-hidden context. Human seats are clickable
+                      to open the profile popover; bots and "you" aren't
+                      (your own profile lives behind the account menu). */}
+                  <div
+                    role={player.isBot || isMe ? undefined : 'button'}
+                    tabIndex={player.isBot || isMe ? undefined : 0}
+                    onClick={player.isBot || isMe ? undefined : (e) => {
+                      e.stopPropagation()
+                      setPopoverAnchorRect(e.currentTarget.getBoundingClientRect())
+                      setPopoverSeat(player)
+                    }}
+                    onKeyDown={player.isBot || isMe ? undefined : (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        setPopoverAnchorRect(e.currentTarget.getBoundingClientRect())
+                        setPopoverSeat(player)
+                      }
+                    }}
+                    className={`
                     px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg text-center w-[120px] sm:w-[140px] shadow-xl
                     transition-all border z-10 relative bg-zinc-800/95
+                    ${(!player.isBot && !isMe) ? 'cursor-pointer hover:border-zinc-300 focus:outline-none focus:ring-2 focus:ring-amber-300' : ''}
                     ${player.folded && !isPlayerWaiting ? 'opacity-50' : ''}
                     ${isPlayerWaiting ? 'opacity-60' : ''}
                     ${isHighlighted
@@ -2770,6 +2769,13 @@ export default function PokerPage() {
       <AchievementToast
         achievement={achievement}
         onDismiss={() => setAchievement(null)}
+      />
+
+      <PlayerProfilePopover
+        open={!!popoverSeat}
+        seat={popoverSeat}
+        anchorRect={popoverAnchorRect}
+        onClose={() => { setPopoverSeat(null); setPopoverAnchorRect(null) }}
       />
 
       {/* Natural Flow Bottom UI */}

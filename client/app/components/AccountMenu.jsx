@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../lib/useAuth'
+import { useZoom } from '../lib/useZoom'
 import { colorForKey, getInitials } from '../lib/initials'
 import { ProfileAvatar } from './ProfileSelector'
 import ProfileModal from './ProfileModal'
@@ -47,6 +48,7 @@ function InitialsCircle({ name, color }) {
 
 export default function AccountMenu() {
   const { user, signInWithGoogle, signOut } = useAuth()
+  const { zoom, adjust: adjustZoom, MIN: ZOOM_MIN, MAX: ZOOM_MAX, STEP: ZOOM_STEP } = useZoom()
   const wrapperRef = useRef(null)
   const gsiHostRef = useRef(null)
   const [open, setOpen] = useState(false)
@@ -106,11 +108,11 @@ export default function AccountMenu() {
 
   if (!user) {
     return (
-      <div ref={wrapperRef} className="relative">
+      <div ref={wrapperRef} className="relative inline-flex h-9 items-center">
         <button
           type="button"
           onClick={() => { setError(null); setOpen(prev => !prev) }}
-          className="text-xs sm:text-sm font-bold text-white bg-zinc-800/80 hover:bg-zinc-700/80 transition-colors px-2.5 sm:px-3 py-1.5 rounded-lg border border-zinc-500/50 shadow-sm"
+          className="inline-flex h-9 items-center rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-bold text-white shadow-sm transition-colors hover:bg-zinc-700/80 sm:px-3 sm:text-sm"
         >
           Sign in
         </button>
@@ -131,13 +133,23 @@ export default function AccountMenu() {
 
   const color = colorForKey(user.id || user.email)
   return (
-    <div ref={wrapperRef} className="relative">
+    // Wrapper is explicitly h-9 so it lines up flush with the sibling
+    // back-link (also h-9). Without an explicit height the wrapper
+    // auto-sized to its child but the flex parent still treated it as
+    // a block-level item which could subtly mis-baseline against the
+    // back-link in some browsers.
+    <div ref={wrapperRef} className="relative inline-flex h-9 items-center">
       <button
         type="button"
         onClick={() => setOpen(prev => !prev)}
-        title={user.displayName}
         aria-label={user.displayName}
-        className="rounded-full ring-1 ring-zinc-500/50 hover:ring-zinc-300/80 transition shadow-sm"
+        // Explicit h-9 w-9 matches the sibling Lobby/Bots back-link's
+        // rendered height (`py-1.5 text-sm` plus 2px border ≈ 36px) so
+        // the parent `flex items-center` lines them up on the same
+        // centerline. p-0 + inline-flex zero out the UA button padding
+        // that would otherwise stretch the wrapper into an oval and
+        // make the ring trace a non-circle.
+        className="inline-flex h-9 w-9 items-center justify-center rounded-full p-0 ring-1 ring-zinc-500/50 hover:ring-zinc-300/80 transition shadow-sm"
       >
         {/* ProfileAvatar handles both: shows the uploaded image when
             present, otherwise the initials circle. Earlier this branch
@@ -147,7 +159,7 @@ export default function AccountMenu() {
           avatarUrl={user.avatarUrl}
           name={user.displayName}
           nameKey={user.id || user.email}
-          size={32}
+          size={36}
         />
       </button>
       {open && (
@@ -170,10 +182,33 @@ export default function AccountMenu() {
           >
             My Bots
           </Link>
+          {/* Page zoom — reuses the same localStorage key the poker
+              tools menu writes to. Available from any page so the user
+              can scale the UI without diving into a poker table. */}
+          <div className="flex items-center justify-between gap-2 border-t border-zinc-700/70 px-3 py-2 text-xs font-bold text-white">
+            <span>Zoom</span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => adjustZoom(-ZOOM_STEP)}
+                disabled={zoom <= ZOOM_MIN}
+                aria-label="Zoom out"
+                className="h-6 w-6 cursor-pointer rounded-md border border-zinc-600/60 bg-zinc-800 text-sm font-black text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >−</button>
+              <span className="min-w-[44px] text-center text-xs font-black tabular-nums">{zoom}%</span>
+              <button
+                type="button"
+                onClick={() => adjustZoom(ZOOM_STEP)}
+                disabled={zoom >= ZOOM_MAX}
+                aria-label="Zoom in"
+                className="h-6 w-6 cursor-pointer rounded-md border border-zinc-600/60 bg-zinc-800 text-sm font-black text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >+</button>
+            </div>
+          </div>
           <button
             type="button"
             onClick={() => { setOpen(false); signOut() }}
-            className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800"
+            className="block w-full border-t border-zinc-700/70 px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800"
           >
             Sign out
           </button>

@@ -14,7 +14,8 @@ import { recordHandResult } from '../bots/botRepository.js'
 import {
   recordHumanHand,
   markBotUnlocked,
-  tierCrossedByHand
+  tierCrossedByHand,
+  applyRivalryDeltas
 } from '../users/playHistoryRepository.js'
 import {
   performanceScore,
@@ -575,7 +576,14 @@ export class PokerRoom {
     if (!handSummary) return
     const winnerIds = new Set((broadcastData?.winners || []).map(w => w.playerId))
     const allSeats = [...this.players.values()]
-    const ratingFor = (p) => p.isBot ? (p.bot?.elo ?? HUMAN_DEFAULT_RATING) : HUMAN_DEFAULT_RATING
+    // Rating pool participation: bots always carry their rating, signed-in
+    // humans only contribute their real rating when they're playing as
+    // themselves. Anonymous seats (signed-in or not) count as the
+    // baseline so a hidden account doesn't leak its rating signal to
+    // opponents' ELO math.
+    const ratingFor = (p) => p.isBot
+      ? (p.bot?.elo ?? STARTING_RATING)
+      : (p.playingAsSelf && typeof p.elo === 'number' ? p.elo : STARTING_RATING)
     const bigBlind = this.game.bigBlind || 10
 
     // Build per-bot persistence work in memory first, then fan the DB writes out
@@ -688,11 +696,20 @@ export class PokerRoom {
     if (!handSummary) return
     const winnerIds = new Set((broadcastData?.winners || []).map(w => w.playerId))
     const bigBlind = this.game.bigBlind || 10
+    const allSeats = [...this.players.values()]
+    // Mirrors _recordBotHandResults: anonymous opponents count as the
+    // baseline so a hidden account never influences your ELO math.
+    const ratingFor = (p) => p.isBot
+      ? (p.bot?.elo ?? STARTING_RATING)
+      : (p.playingAsSelf && typeof p.elo === 'number' ? p.elo : STARTING_RATING)
 
     for (const seat of this.players.values()) {
-      // Bots have their own recording path; we only handle signed-in humans.
+      // Bots have their own recording path; only signed-in humans who
+      // explicitly opted into "Play as YOU" get recorded. Joining
+      // anonymously keeps a seat off the record entirely — no ELO, no
+      // archive, no rivalries — even if the WS itself is authenticated.
       if (seat.isBot) continue
-      if (!seat.userId) continue
+      if (!seat.userId || !seat.playingAsSelf) continue
 
       const seatActions = handSummary.actionsByPlayer?.[seat.id] ?? []
       const preflopActions = seatActions.filter(a => a.phase === GAME_PHASES.PREFLOP)
@@ -752,7 +769,7 @@ export class PokerRoom {
       // Ratings get derived from rolling avg of this number — same engine
       // the bot-rating system uses. Imported lazily inside the function so
       // the file doesn't pull eloEngine at module top.
-      const performanceScore = computeHumanPerformanceScore({
+      const perfScore = computeHumanPerformanceScore({
         won,
         chipsDelta,
         bigBlind,
@@ -761,9 +778,24 @@ export class PokerRoom {
         wentToShowdown
       })
 
+      // ELO update — same engine the bots use. Humans now play rated by
+      // default; rating delta + new rating get persisted by the v2 stored
+      // procedure in one round trip below.
+      const opponentRatings = allSeats
+        .filter(s => s.id !== seat.id)
+        .map(ratingFor)
+      const currentElo = seat.elo ?? STARTING_RATING
+      const eloChangeDelta = eloDelta({
+        rating: currentElo,
+        opponentRatings,
+        score: perfScore,
+        handsPlayed: seat.userHandsPlayed ?? 0
+      })
+
       try {
         const stats = await recordHumanHand({
           userId: seat.userId,
+          tableId: this.roomId,
           delta: {
             handsVoluntary: voluntarilyIn ? 1 : 0,
             handsWon: won ? 1 : 0,
@@ -781,10 +813,95 @@ export class PokerRoom {
             chipsDelta,
             bigBlindsPlayed: bigBlind > 0 ? Math.round(handSummary.pot / bigBlind) : 0,
             openSizeBB,
-            performanceScore
+            performanceScore: perfScore
           },
-          compressed
+          compressed,
+          eloDelta: eloChangeDelta,
+          outcome: { won, wentToShowdown, voluntarilyIn, foldedPreflop }
         })
+
+        // Push the new rating + bumped hand count into the in-memory seat
+        // so subsequent hands at this table read the updated values
+        // (no DB re-fetch). v2 SP already floored at 300 — trust whatever
+        // it returned.
+        if (stats?.newElo !== undefined) {
+          seat.elo = stats.newElo
+        }
+        seat.userHandsPlayed = (seat.userHandsPlayed ?? 0) + 1
+
+        // Rivalry update — attribute this user's chip flow to each opponent
+        // proportionally to their gain (when we lost) or loss (when we won).
+        // Bots and humans both count; opponent_kind splits them so the same
+        // user has separate rows for the same id reused across kinds.
+        const rivalryEntries = []
+        if (chipsDelta !== 0) {
+          // Opponents at the table this hand. Don't count seats that
+          // weren't dealt in (e.g. waitingNextHand).
+          const others = allSeats.filter(s => s.id !== seat.id)
+          // Total chips moved by opponents in the *opposite* direction of
+          // our flow. When we lost, sum of opponent gains; when we won,
+          // sum of opponent losses. Used as the denominator for prorating.
+          const opponentFlows = others.map(o => ({
+            seat: o,
+            delta: handSummary.profitsByPlayer?.[o.id] ?? 0
+          }))
+          const oppositeSign = chipsDelta < 0 ? 1 : -1
+          const denom = opponentFlows.reduce((acc, x) =>
+            acc + (Math.sign(x.delta) === oppositeSign ? Math.abs(x.delta) : 0), 0)
+          const myMagnitude = Math.abs(chipsDelta)
+          for (const { seat: opp, delta: oppDelta } of opponentFlows) {
+            // Identity key: bots key off bot.id, humans off userId. Skip
+            // anonymous human seats — we have nothing stable to key on.
+            let kind, id, name
+            if (opp.isBot) {
+              kind = 'bot'; id = String(opp.bot?.id || opp.id); name = opp.username || 'Bot'
+            } else if (opp.userId && opp.playingAsSelf) {
+              // Anonymous-but-signed-in seats are intentionally excluded —
+              // their userId is private to that seat and shouldn't end
+              // up keyed in someone else's rivalry list.
+              kind = 'user'; id = String(opp.userId); name = opp.username || 'Player'
+            } else {
+              continue
+            }
+            // Allocate this user's loss/win against opponents flowing in
+            // the opposite direction. Opponents who moved the same way as
+            // us this hand still get hands_vs++ but no chip attribution.
+            let chipsNet = 0
+            let didLose = false
+            let didBeat = false
+            if (denom > 0 && Math.sign(oppDelta) === oppositeSign) {
+              const share = Math.abs(oppDelta) / denom
+              const allocated = Math.round(myMagnitude * share)
+              chipsNet = chipsDelta < 0 ? -allocated : +allocated
+              if (chipsDelta < 0) didLose = true
+              else didBeat = true
+            }
+            rivalryEntries.push({ kind, id, name, chipsNet, didLoseToThem: didLose, didBeatThem: didBeat })
+          }
+        } else {
+          // Even on chip-neutral hands, bump hands_vs so we know we faced
+          // each opponent. allocate zero chips.
+          for (const opp of allSeats) {
+            if (opp.id === seat.id) continue
+            let kind, id, name
+            if (opp.isBot) {
+              kind = 'bot'; id = String(opp.bot?.id || opp.id); name = opp.username || 'Bot'
+            } else if (opp.userId && opp.playingAsSelf) {
+              // Anonymous-but-signed-in seats are intentionally excluded —
+              // their userId is private to that seat and shouldn't end
+              // up keyed in someone else's rivalry list.
+              kind = 'user'; id = String(opp.userId); name = opp.username || 'Player'
+            } else {
+              continue
+            }
+            rivalryEntries.push({ kind, id, name, chipsNet: 0, didLoseToThem: false, didBeatThem: false })
+          }
+        }
+        if (rivalryEntries.length > 0) {
+          applyRivalryDeltas(seat.userId, rivalryEntries).catch(err =>
+            console.warn('[rivalries] update failed:', err.message)
+          )
+        }
 
         // Tier crossover detection — fires exactly when *this hand* pushed
         // the user from below the tier's hand-count threshold to at-or-above.

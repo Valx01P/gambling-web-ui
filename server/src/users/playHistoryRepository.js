@@ -89,33 +89,26 @@ export async function getRecentHands(userId, limit = USER_HAND_HISTORY_LIMIT) {
   return rows.map(r => r.data)
 }
 
-// Atomic "record one hand for a user". Increments stats and appends a
-// compressed hand row. Returns the *new* stats — the caller uses this to
-// detect the 12-hand achievement crossover.
+// Atomic "record one hand for a user". Increments stats, appends to the
+// rolling 100-hand window AND the unbounded archive, bumps the user's ELO,
+// and upserts their per-day rollup — all in one round-trip via
+// record_human_hand_v2 (migration 010).
 //
-// `delta` is a structured set of additive bumps to apply to user_play_stats.
-// `compressed` is the JSONB blob describing the hand from the user's POV.
-//
-// Pruning: if the user is already at USER_HAND_HISTORY_LIMIT rows, we drop
-// the oldest one in the same transaction. Cheaper than a CTE / RANK and
-// still bounds the table tightly.
-export async function recordHumanHand({ userId, delta, compressed }) {
+// Returns the *new* stats (for tier-crossing detection) plus the user's
+// new ELO and the inserted archive row id so the caller can fan out
+// rivalry writes without re-reading anything.
+export async function recordHumanHand({ userId, tableId, delta, compressed, eloDelta = 0, outcome = {} }) {
   if (!userId) return null
-  // One round-trip via record_human_hand (migration 007). Previously this
-  // ran 5 statements inside an explicit transaction (BEGIN + UPSERT + INSERT
-  // + prune DELETE + COMMIT). The stored procedure does the same work in a
-  // single SQL call and returns the updated stats row.
-  // `SELECT * FROM record_human_hand(...)` expands the user_play_stats row
-  // type returned by the function into individual columns, so node-postgres
-  // gives us back a normal row object instead of a stringified composite.
-  // Net: 1 round-trip total to do the upsert + insert + prune + return stats.
   const { rows } = await query(
-    `SELECT * FROM record_human_hand(
-       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-       $16, $17, $18, $19::jsonb, $20
+    `SELECT * FROM record_human_hand_v2(
+       $1, $2,
+       $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+       $18, $19, $20::jsonb, $21,
+       $22, $23, $24, $25, $26
      )`,
     [
       userId,
+      tableId || 'unknown',
       delta.handsVoluntary || 0,
       delta.handsWon || 0,
       delta.showdownsSeen || 0,
@@ -134,10 +127,214 @@ export async function recordHumanHand({ userId, delta, compressed }) {
       Number(delta.openSizeBB || 0),
       Number(delta.performanceScore || 0),
       JSON.stringify(compressed),
-      USER_HAND_HISTORY_LIMIT
+      USER_HAND_HISTORY_LIMIT,
+      Math.floor(eloDelta || 0),
+      Boolean(outcome.won),
+      Boolean(outcome.wentToShowdown),
+      Boolean(outcome.voluntarilyIn),
+      Boolean(outcome.foldedPreflop)
     ]
   )
-  return statsToApi(rows[0])
+  const row = rows[0]
+  if (!row) return null
+  return {
+    ...statsToApi(row),
+    newElo: row.new_elo,
+    archiveId: Number(row.archive_id)
+  }
+}
+
+// --- Read paths for the profile history UI -------------------------------
+
+// Daily summary list for a date range. Returns days in DESC order so the
+// most recent activity is up top. Caller paginates by adjusting from/to.
+export async function listDailyActivity(userId, { from, to } = {}) {
+  if (!userId) return []
+  const params = [userId]
+  let where = 'WHERE user_id = $1'
+  if (from) { params.push(from); where += ` AND day >= $${params.length}` }
+  if (to)   { params.push(to);   where += ` AND day <= $${params.length}` }
+  const { rows } = await query(
+    `SELECT day, hands_played, hands_won, chips_delta,
+            elo_start, elo_end, first_hand_at, last_hand_at
+       FROM user_daily_activity
+       ${where}
+       ORDER BY day DESC
+       LIMIT 365`,
+    params
+  )
+  return rows.map(r => ({
+    day: r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day),
+    handsPlayed: r.hands_played,
+    handsWon: r.hands_won,
+    chipsDelta: Number(r.chips_delta),
+    eloStart: r.elo_start,
+    eloEnd: r.elo_end,
+    firstHandAt: r.first_hand_at,
+    lastHandAt: r.last_hand_at
+  }))
+}
+
+// All hands a user played on a given day. Returns the compressed JSONB blob
+// + the outcome columns so the UI can render a hand-by-hand replay.
+// Returns `{ hands, total }` so the client knows how many pages remain.
+export async function listHandsForDay(userId, day, { limit = 40, offset = 0 } = {}) {
+  if (!userId || !day) return { hands: [], total: 0 }
+  // Fire the count + page in parallel so a 200-hand day isn't waiting on
+  // two sequential RTTs.
+  const cappedLimit = Math.min(200, Math.max(1, limit))
+  const cappedOffset = Math.max(0, offset)
+  const [pageResult, countResult] = await Promise.all([
+    query(
+      `SELECT id, played_at, table_id, chips_delta, won, went_to_showdown,
+              voluntarily_in, folded_preflop, elo_before, elo_after, elo_delta, data
+         FROM user_hand_archive
+        WHERE user_id = $1 AND played_day = $2
+        ORDER BY played_at ASC, id ASC
+        LIMIT $3 OFFSET $4`,
+      [userId, day, cappedLimit, cappedOffset]
+    ),
+    query(
+      `SELECT COUNT(*)::int AS n FROM user_hand_archive
+        WHERE user_id = $1 AND played_day = $2`,
+      [userId, day]
+    )
+  ])
+  const hands = pageResult.rows.map(r => ({
+    id: Number(r.id),
+    playedAt: r.played_at,
+    tableId: r.table_id,
+    chipsDelta: r.chips_delta,
+    won: r.won,
+    wentToShowdown: r.went_to_showdown,
+    voluntarilyIn: r.voluntarily_in,
+    foldedPreflop: r.folded_preflop,
+    eloBefore: r.elo_before,
+    eloAfter: r.elo_after,
+    eloDelta: r.elo_delta,
+    data: r.data
+  }))
+  return { hands, total: countResult.rows[0]?.n ?? hands.length }
+}
+
+// Streaming-friendly iterator over a user's archive between two timestamps.
+// Used by the export endpoint to JSONL-dump hands without loading the whole
+// range into memory. We page in chunks of `pageSize` ordered by id so the
+// pagination key is monotonic.
+export async function* iterateArchive(userId, { from, to, pageSize = 500 } = {}) {
+  if (!userId) return
+  let lastId = 0
+  while (true) {
+    const params = [userId, lastId]
+    let where = 'WHERE user_id = $1 AND id > $2'
+    if (from) { params.push(from); where += ` AND played_at >= $${params.length}` }
+    if (to)   { params.push(to);   where += ` AND played_at <= $${params.length}` }
+    params.push(pageSize)
+    const { rows } = await query(
+      `SELECT id, played_at, table_id, chips_delta, won, went_to_showdown,
+              voluntarily_in, folded_preflop, elo_before, elo_after, elo_delta, data
+         FROM user_hand_archive
+         ${where}
+         ORDER BY id ASC
+         LIMIT $${params.length}`,
+      params
+    )
+    if (rows.length === 0) return
+    for (const r of rows) {
+      yield {
+        id: Number(r.id),
+        playedAt: r.played_at,
+        tableId: r.table_id,
+        chipsDelta: r.chips_delta,
+        won: r.won,
+        wentToShowdown: r.went_to_showdown,
+        voluntarilyIn: r.voluntarily_in,
+        foldedPreflop: r.folded_preflop,
+        eloBefore: r.elo_before,
+        eloAfter: r.elo_after,
+        eloDelta: r.elo_delta,
+        data: r.data
+      }
+      lastId = Number(r.id)
+    }
+    if (rows.length < pageSize) return
+  }
+}
+
+// --- Rivalry tracker -----------------------------------------------------
+
+// Apply one hand's worth of rivalry deltas. `entries` is an array of
+// { kind, id, name, chipsNet, didLoseToThem, didBeatThem } — one per
+// opponent at the table. Single round-trip via a parameterized VALUES
+// upsert keeps this cheap even when 4 opponents are present.
+export async function applyRivalryDeltas(userId, entries) {
+  if (!userId || !Array.isArray(entries) || entries.length === 0) return
+  // Build (VALUES ...) tuple list manually so we can pass a variable number
+  // of opponents in one SQL statement. Each tuple is six params; the
+  // user_id is added at the front of every row by the ON CONFLICT target.
+  const values = []
+  const params = []
+  let p = 1
+  for (const e of entries) {
+    if (!e || !e.kind || !e.id) continue
+    values.push(`($${p++}::uuid, $${p++}::text, $${p++}::text, $${p++}::text, $${p++}::bigint, $${p++}::int, $${p++}::int)`)
+    params.push(
+      userId,
+      e.kind,
+      e.id,
+      (e.name || '').slice(0, 64) || '(unknown)',
+      Math.floor(e.chipsNet || 0),
+      e.didLoseToThem ? 1 : 0,
+      e.didBeatThem ? 1 : 0
+    )
+  }
+  if (values.length === 0) return
+  await query(
+    `INSERT INTO user_rivalries
+       (user_id, opponent_kind, opponent_id, opponent_name, chips_net, hands_lost_to, hands_won_vs)
+     VALUES ${values.join(',')}
+     ON CONFLICT (user_id, opponent_kind, opponent_id) DO UPDATE SET
+       chips_net     = user_rivalries.chips_net     + EXCLUDED.chips_net,
+       hands_vs      = user_rivalries.hands_vs      + 1,
+       hands_lost_to = user_rivalries.hands_lost_to + EXCLUDED.hands_lost_to,
+       hands_won_vs  = user_rivalries.hands_won_vs  + EXCLUDED.hands_won_vs,
+       opponent_name = EXCLUDED.opponent_name,
+       updated_at    = NOW()`,
+    params
+  )
+  // hands_vs is bumped on every conflict via the +1 above. For first inserts,
+  // the row has hands_vs default 0; bump it to 1 with a tail update so the
+  // count matches the actual number of distinct hands played against.
+  await query(
+    `UPDATE user_rivalries SET hands_vs = GREATEST(hands_vs, 1)
+       WHERE user_id = $1 AND hands_vs = 0`,
+    [userId]
+  )
+}
+
+// Top rivals for a user, ordered "worst" first (most chips lost net).
+// Filters out broken-even or net-positive entries — a "rival" is someone
+// you're losing to. Returns up to `limit` rows.
+export async function getTopRivals(userId, { limit = 5 } = {}) {
+  if (!userId) return []
+  const { rows } = await query(
+    `SELECT opponent_kind, opponent_id, opponent_name, hands_vs,
+            chips_net, hands_lost_to, hands_won_vs
+       FROM user_rivalries
+      WHERE user_id = $1 AND chips_net < 0
+      ORDER BY chips_net ASC
+      LIMIT $2`,
+    [userId, Math.min(50, Math.max(1, limit))]
+  )
+  return rows.map(r => ({
+    opponentKind: r.opponent_kind,
+    opponentId: r.opponent_id,
+    opponentName: r.opponent_name,
+    handsVs: r.hands_vs,
+    chipsNet: Number(r.chips_net),
+    handsLostTo: r.hands_lost_to,
+    handsWonVs: r.hands_won_vs
+  }))
 }
 
 // Mark that this user has crossed the bot-unlock threshold. Idempotent —

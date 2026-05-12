@@ -96,7 +96,10 @@ export function authRoutes() {
           id: user.id,
           email: user.email,
           displayName: user.display_name,
-          avatarUrl: user.avatar_url
+          avatarUrl: user.avatar_url,
+          elo: user.elo ?? null,
+          handsPlayed: user.hands_played ?? 0,
+          handsWon: user.hands_won ?? 0
         }
       })
     } catch (err) {
@@ -116,7 +119,10 @@ export function authRoutes() {
         id: user.id,
         email: user.email,
         displayName: user.display_name,
-        avatarUrl: user.avatar_url
+        avatarUrl: user.avatar_url,
+        elo: user.elo ?? null,
+        handsPlayed: user.hands_played ?? 0,
+        handsWon: user.hands_won ?? 0
       }
     })
   })

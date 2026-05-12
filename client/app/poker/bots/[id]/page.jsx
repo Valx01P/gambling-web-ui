@@ -219,7 +219,11 @@ export default function BotDetailPage({ params }) {
       <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
         <Link
           href="/poker/bots"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
+          // Explicit h-9 locks the box to 36px so it shares an exact
+          // height with the sibling AccountMenu avatar button. The
+          // parent `flex items-center` then aligns them pixel-perfect
+          // instead of fudging two slightly-different heights.
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
         >
           <span aria-hidden="true" className="text-base leading-none sm:text-lg">&lt;</span>
           <span className="hidden sm:inline">Bots</span>
@@ -243,10 +247,14 @@ export default function BotDetailPage({ params }) {
           <>
             <div className="flex w-full flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
-                <BotAvatar name={draftName || bot.name} color={draftColor} textColor={draftTextColor} avatarUrl={draftAvatarUrl} size={56} />
+                {/* Top header shows the *currently saved* bot — the Settings tab
+                    already renders a live preview of the draft. Mirroring the
+                    draft up here gave two simultaneous previews and made it
+                    impossible to compare current vs new at a glance. */}
+                <BotAvatar name={bot.name} color={bot.color} textColor={bot.textColor || 'auto'} avatarUrl={bot.avatarUrl || null} size={56} />
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <div className="truncate text-xl font-black text-white">{draftName || bot.name}</div>
+                    <div className="truncate text-xl font-black text-white">{bot.name}</div>
                     {isMine && (
                       <span className="rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-emerald-200">
                         Editor

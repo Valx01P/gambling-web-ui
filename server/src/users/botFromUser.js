@@ -10,7 +10,7 @@
 //   * Pure functions; no DB access here. The route layer fetches stats +
 //     history and feeds them in.
 
-import { STARTING_RATING, RATING_FLOOR } from '../bots/runtime/eloEngine.js'
+import { STARTING_RATING } from '../bots/runtime/eloEngine.js'
 import { renderCloneBotCode } from './cloneBotTemplate.js'
 
 // Five clone tiers, ordered by sample size. The Nth tier is built from the
@@ -167,15 +167,13 @@ export function deriveProfile(stats) {
 function clamp01(n) { return Math.max(0, Math.min(1, n)) }
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)) }
 
-// Map the user's avg performance score to a starting ELO on the 300-2000
-// scale. Linear interpolation: 0.40 avg → 350, 0.50 → 500, 0.65 → 800,
-// 0.80 → 1300, 0.90 → 1700, 0.95+ → 2000.
-export function deriveStartingElo(stats) {
-  const n = stats?.performanceCount ?? 0
-  if (n < 4) return STARTING_RATING  // not enough data — start at baseline
-  const avg = (stats?.performanceSum ?? 0) / n
-  const rating = Math.round(500 + (avg - 0.5) * 3000)
-  return Math.max(RATING_FLOOR, Math.min(2000, rating))
+// Clones always start at the baseline 500 and earn their real rating by
+// playing. Was previously seeded from the user's performance avg, but
+// product wants every clone to enter the pool on equal footing — strong
+// players' clones still climb fast under the live ELO engine.
+// `stats` is accepted for signature compatibility with the legacy caller.
+export function deriveStartingElo(_stats) {
+  return STARTING_RATING
 }
 
 // Pick a deterministic-but-distinctive color from BOT_COLOR_PRESETS based

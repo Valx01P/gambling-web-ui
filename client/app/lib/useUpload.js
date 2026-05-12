@@ -107,6 +107,31 @@ export function useUpload() {
     }
   }, [])
 
+  // Server-side fetch of a remote image URL. The browser PUT-presign path
+  // doesn't work for arbitrary URLs (we'd have to download the image
+  // client-side first, which most browsers block as a cross-origin read).
+  // Instead the server fetches, validates, and re-uploads to S3 — and
+  // returns the saved-history pfp record directly.
+  const uploadFromUrl = useCallback(async (url) => {
+    setError(null)
+    setBusy(true)
+    setProgress(0)
+    try {
+      if (typeof url !== 'string' || url.length === 0) {
+        throw new Error('Enter a URL.')
+      }
+      setProgress(50)
+      const resp = await api.uploadFromUrl(url)
+      setProgress(100)
+      return resp
+    } catch (err) {
+      setError(err.detail || err.message || 'URL upload failed')
+      throw err
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
   // Memoized so consumers can safely include it in useEffect dep arrays
   // without triggering a render cascade — a fresh inline closure would
   // be a new identity every render and re-fire dependent effects.
@@ -115,5 +140,5 @@ export function useUpload() {
     setProgress(0)
   }, [])
 
-  return { upload, busy, progress, error, reset }
+  return { upload, uploadFromUrl, busy, progress, error, reset }
 }

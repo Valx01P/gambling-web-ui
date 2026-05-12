@@ -84,6 +84,49 @@ export const api = {
     apiFetch('/api/uploads/presign', { method: 'POST', auth: true, body: { kind, contentType, size } }),
   savePfp: ({ key, publicUrl, contentType, byteSize }) =>
     apiFetch('/api/uploads/me/pfps', { method: 'POST', auth: true, body: { key, publicUrl, contentType, byteSize } }),
+  // Server-side fetch + re-upload of a remote URL. Returns the saved-history
+  // pfp record directly (same shape as savePfp's response).
+  uploadFromUrl: (url) =>
+    apiFetch('/api/uploads/from-url', { method: 'POST', auth: true, body: { url } }),
   listPfps: () => apiFetch('/api/uploads/me/pfps', { auth: true }),
   deletePfp: (id) => apiFetch(`/api/uploads/me/pfps/${id}`, { method: 'DELETE', auth: true }),
+
+  // Profile history endpoints — bundled summary, day-by-day activity,
+  // hand drill-down, top rivals. Export is direct-download so it bypasses
+  // this JSON wrapper; the client builds the URL itself.
+  mySummary: () => apiFetch('/api/users/me/summary', { auth: true }),
+  myActivity: ({ from, to } = {}) => {
+    const qs = new URLSearchParams()
+    if (from) qs.set('from', from)
+    if (to) qs.set('to', to)
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return apiFetch(`/api/users/me/activity${suffix}`, { auth: true })
+  },
+  myHands: ({ day, offset = 0, limit = 40 } = {}) => {
+    const qs = new URLSearchParams({ day, offset: String(offset), limit: String(limit) })
+    return apiFetch(`/api/users/me/hands?${qs}`, { auth: true })
+  },
+  myRivals: ({ limit = 5 } = {}) =>
+    apiFetch(`/api/users/me/rivals?limit=${limit}`, { auth: true }),
+
+  // Social — fetch any user's public slice + follow/unfollow + list my
+  // follow connections. The public slice is auth-optional (anon viewers
+  // see the same data minus the isFollowedByMe flag).
+  publicUser: (userId) =>
+    apiFetch(`/api/users/${userId}/public`, { auth: true }),
+  followUser: (userId) =>
+    apiFetch(`/api/users/${userId}/follow`, { method: 'POST', auth: true }),
+  unfollowUser: (userId) =>
+    apiFetch(`/api/users/${userId}/follow`, { method: 'DELETE', auth: true }),
+  myFollows: ({ direction = 'following', limit = 50 } = {}) =>
+    apiFetch(`/api/users/me/follows?direction=${direction}&limit=${limit}`, { auth: true }),
+  // Authenticated browser download. The Bearer token can't be added to a
+  // bare <a download> request, so consumers should fetch the blob and
+  // trigger a saveAs themselves (see ProfileHistory.exportRange).
+  exportHandsUrl: ({ from, to, format = 'jsonl' } = {}) => {
+    const qs = new URLSearchParams({ format })
+    if (from) qs.set('from', from)
+    if (to) qs.set('to', to)
+    return `${API_URL}/api/users/me/hands/export?${qs}`
+  }
 }

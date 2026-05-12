@@ -2,7 +2,8 @@ import { BANKS, GAME_PHASES, MESSAGE_TYPES, POKER_CONFIG } from "../config/const
 import { getBotById } from "../bots/botRepository.js"
 import { verify as verifyJwt } from "../auth/jwt.js"
 import { sanitizeDisplayString } from "../utils/sanitize.js"
-import { findUserById } from "../users/userRepository.js"
+import { findUserById, touchLastActive } from "../users/userRepository.js"
+import { track as trackPresence } from "../users/presence.js"
 
 export class MessageHandler {
   constructor(playerManager, roomManager) {
@@ -108,7 +109,14 @@ export class MessageHandler {
     // CDN — setCustomAvatarUrl would reject them. Going through the
     // server-side lookup means Google pictures, custom uploads, and
     // no-avatar (initials at the table) all work uniformly.
-    if (data?.playAsSelf && player.userId) {
+    // Anchor the "joined as my account" flag here. Recording, ELO updates,
+    // and broadcast of publicUserId all read it. The signed-in user can
+    // re-join the same WS as anonymous later — we reset the flag to false
+    // on every join, never carry it across.
+    const playAsSelf = !!(data?.playAsSelf && player.userId)
+    player.playingAsSelf = playAsSelf
+
+    if (playAsSelf) {
       if (player.userDisplayName) {
         const clean = sanitizeDisplayString(player.userDisplayName, { maxLength: 24 })
         if (clean) player.username = clean
@@ -179,6 +187,13 @@ export class MessageHandler {
       const payload = verifyJwt(token)
       player.userId = payload.sub
       player.userEmail = payload.email || null
+      // Mark online + bump the DB timestamp. Track first so the popover
+      // can see "online right now" even before the async DB write
+      // settles; the DB row is the durable fallback for offline lookups.
+      trackPresence(player.userId, player.id)
+      touchLastActive(player.userId).catch(err =>
+        console.warn('[auth] touch last_active failed:', err.message)
+      )
       // Fire-and-forget profile fetch so "Play as YOU" at join time can
       // pull the server-authoritative username + avatar synchronously.
       // The join happens seconds after auth_hello in normal flows, so the
@@ -191,6 +206,8 @@ export class MessageHandler {
           if (user && player.userId === payload.sub) {
             player.userDisplayName = user.display_name || null
             player.userAvatarUrl = user.avatar_url || null
+            if (typeof user.elo === 'number') player.elo = user.elo
+            if (typeof user.hands_played === 'number') player.userHandsPlayed = user.hands_played
           }
         })
         .catch(err => console.warn('[auth] profile prefetch failed:', err.message))

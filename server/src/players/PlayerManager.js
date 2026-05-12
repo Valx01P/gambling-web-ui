@@ -38,6 +38,22 @@ export class Player {
     // username/avatar the client tried to send.
     this.userDisplayName = null
     this.userAvatarUrl = null
+    // True iff this seat is being played as the signed-in account. Set
+    // by handleJoin when the lobby's "Play as YOU" toggle was on AND a
+    // userId is attached. Recording of hands, ELO updates, and broadcast
+    // of `publicUserId` all gate on this. Joining with an alias keeps
+    // the seat anonymous even when the WS is authenticated.
+    this.playingAsSelf = false
+    // Rated player flag — signed-in users participate in the same ELO
+    // pool as bots. Loaded during auth_hello from the users table.
+    // Anonymous seats stay at the default (500) but their results aren't
+    // persisted, so this is purely an in-memory baseline.
+    this.elo = 500
+    // Lifetime hands the *user* has played (across all tables/sessions).
+    // Used to size the K-factor for ELO updates — provisional ratings
+    // move fast, settled ratings slowly. Loaded during auth_hello, kept
+    // in sync by PokerRoom._recordHumanHandResults.
+    this.userHandsPlayed = 0
 
     // Loan accounts. Each entry: { bankId, bankName, principal, interestRate,
     // owed, takenAtHand, lastInterestAtHand }
@@ -286,6 +302,12 @@ export class Player {
       avatarUrl: this.avatarUrl,
       chips: this.chips,
       pokerBuyIn: this.pokerBuyIn,
+      // Public-account fields are only exposed when the seat is playing
+      // as itself — joining anonymously keeps the user fully hidden on
+      // the wire. The seat-click popover branches on `publicUserId`:
+      // present → fetch the public profile, absent → anonymous view.
+      publicUserId: this.playingAsSelf ? (this.userId || null) : null,
+      publicElo: this.playingAsSelf ? (this.elo ?? null) : null,
       isSpectator: this.isSpectator,
       isConnected: this.isConnected,
       loans: this.loans?.map(l => ({ ...l })) ?? [],

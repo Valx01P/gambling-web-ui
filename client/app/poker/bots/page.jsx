@@ -489,13 +489,38 @@ function BotsPageInner() {
   const [publicBots, setPublicBots] = useState([])
   const [botLimit, setBotLimit] = useState(MAX_BOTS_PER_USER)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  // Two distinct error channels so a transient validation error (e.g.
+  // "at the bot limit, can't create more") doesn't bleed into the
+  // Public Roster panel which only cares about load failures.
+  //   * validationError — soft click-time validation; banner above tabs,
+  //                       auto-dismisses, clears on tab change.
+  //   * loadError       — `reload()` failed; shown inside the affected
+  //                       tab body so it's scoped to the data that failed.
+  const [validationError, setValidationError] = useState(null)
+  const [loadError, setLoadError] = useState(null)
   // Anonymous-only paywall. Set to a string to open; null to close.
   const [authGateMessage, setAuthGateMessage] = useState(null)
 
+  // Auto-dismiss soft validation errors after 5s so they don't linger.
+  // Each `setValidationError` schedules a fresh dismiss; clears restart
+  // the timer cleanly. Page-level state, so unmount cancels.
+  useEffect(() => {
+    if (!validationError) return
+    const t = setTimeout(() => setValidationError(null), 5000)
+    return () => clearTimeout(t)
+  }, [validationError])
+
+  // Helper: tab buttons always clear the page-level validation error so
+  // it never lingers across navigation. The validation message is a
+  // *response* to the previous click, not a property of the new tab.
+  function switchTab(next) {
+    setValidationError(null)
+    setTab(next)
+  }
+
   async function reload() {
     setLoading(true)
-    setError(null)
+    setLoadError(null)
     try {
       const [mine, pub] = await Promise.all([
         user ? api.listMyBots() : Promise.resolve({ bots: [], limit: MAX_BOTS_PER_USER }),
@@ -505,7 +530,7 @@ function BotsPageInner() {
       setBotLimit(mine.limit ?? MAX_BOTS_PER_USER)
       setPublicBots(pub.bots)
     } catch (err) {
-      setError(err.message || 'Failed to load')
+      setLoadError(err.message || 'Failed to load')
     } finally {
       setLoading(false)
     }
@@ -525,7 +550,10 @@ function BotsPageInner() {
       <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
         <Link
           href="/poker"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
+          // h-9 matches the sibling avatar button's height so they share
+          // a centerline exactly. Removed py-1.5; the explicit height
+          // owns the vertical sizing and items-center centers the content.
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
         >
           <span aria-hidden="true" className="text-base leading-none sm:text-lg">&lt;</span>
           <span className="hidden sm:inline">Lobby</span>
@@ -542,7 +570,7 @@ function BotsPageInner() {
           <button
             onClick={() => {
               if (!user) { setAuthGateMessage('Sign in to manage your bots.'); return }
-              setTab('mine')
+              switchTab('mine')
             }}
             className={`min-h-12 px-3 py-3 rounded-lg text-sm font-bold leading-tight transition-all ${tab === 'mine' ? 'bg-zinc-950/35 border border-zinc-700/70 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}
           >
@@ -551,28 +579,39 @@ function BotsPageInner() {
           <button
             onClick={() => {
               if (!user) { setAuthGateMessage('Sign in to create your own bots.'); return }
+              // At the limit → route back to My Bots and explain. The
+              // validation banner auto-dismisses, so the user isn't
+              // staring at the warning forever.
               if (myBots.length >= botLimit) {
-                setError(`You can only have up to ${botLimit} bots per account. Delete one to make room.`)
+                setValidationError(`You can only have up to ${botLimit} bots per account. Delete one to make room.`)
                 setTab('mine')
                 return
               }
-              setTab('create')
+              switchTab('create')
             }}
             className={`min-h-12 px-3 py-3 rounded-lg text-sm font-bold leading-tight transition-all ${tab === 'create' ? 'bg-zinc-950/35 border border-zinc-700/70 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}
           >
             Create
           </button>
           <button
-            onClick={() => setTab('public')}
+            onClick={() => switchTab('public')}
             className={`min-h-12 px-3 py-3 rounded-lg text-sm font-bold leading-tight transition-all ${tab === 'public' ? 'bg-zinc-950/35 border border-zinc-700/70 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'}`}
           >
             Public
           </button>
         </div>
 
-        {error && (
-          <div className="w-full rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-200 text-center">
-            {error}
+        {/* Validation banner — soft errors only. Click the × to dismiss
+            immediately; otherwise auto-clears after 5s. */}
+        {validationError && (
+          <div className="flex w-full items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-200">
+            <span className="flex-1 text-center">{validationError}</span>
+            <button
+              type="button"
+              onClick={() => setValidationError(null)}
+              aria-label="Dismiss"
+              className="cursor-pointer rounded px-1 text-amber-300 hover:bg-amber-500/20 hover:text-amber-100"
+            >×</button>
           </div>
         )}
 
@@ -600,7 +639,7 @@ function BotsPageInner() {
                 type="button"
                 onClick={() => {
                   if (manualBots.length >= botLimit) {
-                    setError(`You can only have up to ${botLimit} manual bots per account. Delete one to make room. (Clone slots don't count.)`)
+                    setValidationError(`You can only have up to ${botLimit} manual bots per account. Delete one to make room. (Clone slots don't count.)`)
                     return
                   }
                   setTab('create')
@@ -668,9 +707,9 @@ function BotsPageInner() {
               <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/35 px-3 py-6 text-center text-xs font-bold text-zinc-300">
                 Loading…
               </div>
-            ) : error ? (
+            ) : loadError ? (
               <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-3 text-xs font-bold text-red-200">
-                {error}
+                {loadError}
               </div>
             ) : (
               <BotList
