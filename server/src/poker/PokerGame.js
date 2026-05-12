@@ -1224,8 +1224,15 @@ export class PokerGame {
       chips: p.chips,
       bet: this.playerBets.get(p.id) || 0,
       totalBet: this.playerTotalBets.get(p.id) || 0,
-      profit: p.chips + (this.playerTotalBets.get(p.id) || 0) - (p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS),
+      // P/L = chips on hand + chips committed to the current pot + chips
+      // staked on open side bets − initial buy-in. The open side-bet stake
+      // is included so placing a prop bet doesn't immediately *look* like a
+      // loss — it's just chips parked in a market, mark-to-market is hidden
+      // until the position is sold or the prop resolves (engine drains the
+      // stake at that point and the realized delta lands in `chips`).
+      profit: p.chips + (this.playerTotalBets.get(p.id) || 0) + (p.openSideBetStake || 0) - (p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS),
       buyIn: p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS,
+      openSideBetStake: p.openSideBetStake || 0,
       lastAction: this.playerActions.get(p.id) || null,
       folded: this.foldedPlayers.has(p.id),
       allIn: this.allInPlayers.has(p.id),

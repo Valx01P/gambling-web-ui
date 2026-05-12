@@ -203,7 +203,12 @@ export class SideBetEngine {
     const price = side === 'yes' ? prop.buyYesPrice : prop.buyNoPrice
     const shares = intAmount / price
 
+    // The stake leaves `chips` (so it can't be double-spent on a poker bet)
+    // but moves into `openSideBetStake`, which the P/L formula adds back in.
+    // Until the position is sold or resolves, the player's profit display
+    // is unaffected — placing a bet shouldn't show as a realized loss.
     player.chips -= intAmount
+    player.openSideBetStake = (player.openSideBetStake || 0) + intAmount
 
     let bag = this.positions.get(playerId)
     if (!bag) { bag = new Map(); this.positions.set(playerId, bag) }
@@ -268,8 +273,14 @@ export class SideBetEngine {
 
     position.shares -= actualShares
     // Track cost basis pro-rata so partial sells leave reasonable accounting.
+    // `fractionSold` is shares-just-sold / shares-before-this-sell, which
+    // tells us how much of the original costPaid to retire (and pull out of
+    // the player's openSideBetStake — the realized portion of the bet is
+    // now back in `chips` as proceeds, so it shouldn't double-count).
     const fractionSold = position.shares <= 1e-9 ? 1 : (actualShares / (actualShares + position.shares))
-    position.costPaid = Math.max(0, position.costPaid - Math.floor(position.costPaid * fractionSold))
+    const costRemoved = Math.floor(position.costPaid * fractionSold)
+    position.costPaid = Math.max(0, position.costPaid - costRemoved)
+    player.openSideBetStake = Math.max(0, (player.openSideBetStake || 0) - costRemoved)
     if (position.shares <= 1e-9) bag.delete(propId)
 
     if (position.side === 'yes') prop.totalYesShares = Math.max(0, (prop.totalYesShares || 0) - actualShares)
@@ -295,7 +306,6 @@ export class SideBetEngine {
       // Hedge positions live at key `${propId}::yes|no`; normal positions at
       // `propId`. Visit every key that points at this prop.
       for (const [key, pos] of [...bag.entries()]) {
-        if (pos.propId !== propId && key !== propId) continue
         if (pos.propId !== propId) continue
         let credit = 0
         let label = ''
@@ -309,7 +319,16 @@ export class SideBetEngine {
           credit = 0
           label = 'loss'
         }
-        if (player && credit > 0) player.chips += credit
+        if (player) {
+          if (credit > 0) player.chips += credit
+          // The cost basis exits openSideBetStake at resolution regardless
+          // of outcome — the bet is no longer open. For a win, chips
+          // already absorbed the credit; for a loss, the stake is gone;
+          // for a void, chips absorbed the refund. In every case the P/L
+          // delta is (chips_after + 0_stake) − (chips_before + stake) =
+          // (credit − costPaid), which is the correct realized outcome.
+          player.openSideBetStake = Math.max(0, (player.openSideBetStake || 0) - pos.costPaid)
+        }
         if (credit !== 0 || label === 'loss') {
           payouts.push({
             playerId,
@@ -425,8 +444,13 @@ export class SideBetEngine {
   }
 
   _findPlayer(playerId) {
-    // PokerGame holds the live chips field on its `players` array.
-    return this.game.players.find(p => p.id === playerId) || null
+    // Prefer the game's seated array (hot-path during a hand). Fall back to
+    // the room's player map so a mid-hand seat change — or any path that
+    // mutates the player object outside the game.players array — still
+    // finds the right reference to bump chips/openSideBetStake on.
+    return this.game.players.find(p => p.id === playerId)
+      || this.room?.players?.get?.(playerId)
+      || null
   }
 
   // Build the full sidebet:state payload. Includes every prop in the room

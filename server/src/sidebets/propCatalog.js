@@ -224,33 +224,11 @@ export const PROP_CATALOG = {
   // These don't depend on cards we haven't dealt; they read the betting
   // action. Always resolve definitively at hand end (never void).
 
-  anyone_all_in: {
-    type: 'anyone_all_in',
-    shortLabel: 'All-in this hand',
-    question: 'Will anyone go all-in this hand?',
-    detail: 'Any player commits their full stack at any point.',
-    streetWindow: 'full',
-    spawn: (s) => s.phase === 'preflop',
-    fairYes: (s) => {
-      if (s.anyAllIn) return 0.99
-      // Baseline conditional on # players + how many streets remain +
-      // aggression so far. Each raise nudges the price up, since action heat
-      // correlates with shove risk.
-      const phaseWeight = { preflop: 1, flop: 0.85, turn: 0.6, river: 0.4 }
-      const base = 0.10 + 0.04 * Math.max(0, s.seatCount - 2)
-      const streetMult = phaseWeight[s.phase] ?? 0.3
-      const agro = Math.min(0.5, s.aggressionThisHand * 0.10)
-      return clampProb(base * streetMult + agro)
-    },
-    outcome: (s) => {
-      if (s.anyAllIn) return 'yes'
-      if (s.handEnded) return 'no'
-      return null
-    },
-  },
-
-  // Note: `goes_to_showdown` was removed — the local player can guarantee a
-  // YES by simply not folding, which makes it self-rigging and exploitable.
+  // Action-driven props (`anyone_all_in`, `goes_to_showdown`) were removed:
+  // the local player can self-rig YES on either one (shove their own stack
+  // / never fold), which makes them trivially exploitable. The remaining
+  // catalog is purely card-runout — outcomes depend on randomly dealt
+  // community cards that no player can influence.
 }
 
 // Pre-flop "flop pair" wants the prob conditioned on just the next 3 cards,

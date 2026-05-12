@@ -1528,9 +1528,61 @@ export default function PokerPage() {
     )
   }
 
+  // Chat box body — used both inline under the action stack (when seated)
+  // and inside the fixed-position spectator dock. Header has its own close
+  // button so the user can toggle the dock off without hunting the Tools
+  // menu. messagesEndRef is attached on every render; the parent already
+  // owns the scroll-to-bottom effect.
+  const chatBoxInner = (
+    <>
+      <div className="flex shrink-0 items-center justify-between border-b border-zinc-700/60 bg-zinc-900/60 px-3 py-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Chat</span>
+        <button
+          type="button"
+          onClick={toggleChatDock}
+          aria-label="Close chat"
+          title="Close chat"
+          className="-mr-1 rounded-md px-1.5 text-base leading-none text-zinc-400 transition-colors hover:bg-zinc-700/60 hover:text-zinc-100"
+        >
+          ×
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-4 py-2 space-y-1">
+        {chatMessages.length === 0 && sysMessages.length === 0 && (
+          <div className="text-xs text-zinc-600 italic">No messages...</div>
+        )}
+        {sysMessages.map((msg, i) => (
+          <div key={`s-${i}`} className="text-xs text-zinc-600 italic font-medium">{msg}</div>
+        ))}
+        {chatMessages.map((msg, i) => (
+          <div key={`c-${i}`} className="text-sm">
+            <span className={`font-bold ${msg.playerId === playerId ? 'text-white' : 'text-zinc-300'}`}>
+              {msg.playerId === playerId ? 'You' : msg.username}{msg.isSpectator ? ' (spectator)' : ''}:
+            </span>
+            <span className="text-zinc-100 ml-1.5">{msg.message}</span>
+          </div>
+        ))}
+        <div ref={chatEndRef} />
+      </div>
+      <div className="flex border-t border-zinc-600/50 bg-zinc-900/50 shrink-0">
+        <input
+          className="flex-1 bg-transparent px-3 py-1.5 text-sm text-white placeholder-zinc-400 outline-none min-w-0"
+          placeholder="Message..."
+          value={chatInput}
+          onChange={e => setChatInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && sendChat()}
+          maxLength={200}
+        />
+        <button onClick={sendChat} className="shrink-0 px-3 text-xs font-bold text-white hover:bg-zinc-700 transition-colors">
+          Send
+        </button>
+      </div>
+    </>
+  )
+
   return (
     <div className="min-h-[100dvh] flex flex-col p-3 md:p-4 max-w-7xl mx-auto overflow-x-hidden">
-      
+
       {/* Top Header Row */}
       <div className="relative flex items-center justify-between mb-3 sm:mb-4 z-50 shrink-0">
         <div className="flex items-center gap-2 sm:gap-3">
@@ -2840,8 +2892,12 @@ export default function PokerPage() {
         onClose={() => { setPopoverSeat(null); setPopoverAnchorRect(null) }}
       />
 
-      {/* Natural Flow Bottom UI */}
-      <div className={`w-full flex flex-col md:flex-row justify-center md:justify-between items-center md:items-end gap-3 sm:gap-4 shrink-0 mt-auto ${isSpectator ? 'pb-[310px] md:pb-0 md:min-h-[210px]' : 'pb-4 md:pb-0'}`}>
+      {/* Natural Flow Bottom UI — `md:relative` makes this the positioning
+          anchor for the right column when seated (sidebets + chat are
+          absolutely positioned inside it at md+ so they share the action
+          panel's baseline AND don't inflate the row's height when sidebets
+          expands). */}
+      <div className={`w-full flex flex-col md:flex-row md:relative justify-center md:justify-between items-center md:items-end gap-3 sm:gap-4 shrink-0 mt-auto ${isSpectator ? 'pb-[310px] md:pb-0 md:min-h-[210px]' : 'pb-4 md:pb-0'}`}>
         
         {/* Actions Panel — fixed-size chrome regardless of turn so the rest
             of the layout doesn't shift between waiting and acting. */}
@@ -2868,16 +2924,16 @@ export default function PokerPage() {
           const safeRaise = raiseAmount < minRaise ? minRaise : raiseAmount
 
           return (
-        <div className="w-[92%] max-w-[360px] md:w-[360px] md:max-w-none shrink-0">
-          <div className="flex flex-col gap-2 py-3 px-4 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md min-h-[176px]">
-            <div className={`text-[9px] sm:text-[10px] font-black tracking-widest text-center ${statusClass}`}>
+        <div className="w-[92%] max-w-[360px] md:w-[320px] md:max-w-none shrink-0">
+          <div className="flex flex-col gap-1.5 py-2 px-3 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md">
+            <div className={`text-[11px] font-semibold text-center leading-tight ${statusClass}`}>
               {statusText}
             </div>
             <div className="grid grid-cols-2 gap-1.5">
               <button
                 onClick={() => send('poker_fold')}
                 disabled={!canAct}
-                className="px-2 py-1.5 rounded-md text-xs font-bold transition-all bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-zinc-700"
+                className="px-2 py-1 rounded-md text-xs font-bold transition-all bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-zinc-700"
               >
                 Fold
               </button>
@@ -2885,7 +2941,7 @@ export default function PokerPage() {
                 <button
                   onClick={() => send('poker_check')}
                   disabled={!canAct}
-                  className="px-2 py-1.5 rounded-md text-xs font-bold transition-all bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-zinc-700"
+                  className="px-2 py-1 rounded-md text-xs font-bold transition-all bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-zinc-700"
                 >
                   Check
                 </button>
@@ -2893,7 +2949,7 @@ export default function PokerPage() {
                 <button
                   onClick={() => send('poker_call')}
                   disabled={!canAct}
-                  className="px-2 py-1.5 rounded-md text-xs font-bold transition-all bg-emerald-600 hover:bg-emerald-500 border border-emerald-400/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600"
+                  className="px-2 py-1 rounded-md text-xs font-bold transition-all bg-emerald-600 hover:bg-emerald-500 border border-emerald-400/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600"
                 >
                   Call {Math.min(toCall, myPlayer?.chips || 0)}
                 </button>
@@ -2906,7 +2962,7 @@ export default function PokerPage() {
                   allInArmTimerRef.current = null
                   setAllInArmed(false)
                 }}
-                className={`col-span-2 px-2 py-1.5 rounded-md text-xs font-bold transition-all border text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
+                className={`col-span-2 px-2 py-1 rounded-md text-xs font-bold transition-all border text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
                   allInArmed && canAct
                     ? 'bg-red-600 hover:bg-red-500 border-red-300/70 animate-pulse'
                     : 'bg-amber-600 hover:bg-amber-500 border-amber-400/50 disabled:hover:bg-amber-600'
@@ -2919,7 +2975,7 @@ export default function PokerPage() {
             {/* Always-rendered raise row — disabled when we can't act or stack
                 is too small to legally raise. Stays visible so the panel size
                 doesn't pop in/out between turns. */}
-            <div className={`flex items-center gap-2 w-full mt-0.5 ${(!canAct || !hasRaiseRoom) ? 'opacity-40' : ''}`}>
+            <div className={`flex items-center gap-2 w-full ${(!canAct || !hasRaiseRoom) ? 'opacity-40' : ''}`}>
               <input
                 type="range"
                 min={minRaise}
@@ -2933,7 +2989,7 @@ export default function PokerPage() {
               <button
                 onClick={() => send('poker_raise', { amount: safeRaise })}
                 disabled={!canAct || !hasRaiseRoom}
-                className="px-2 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:hover:bg-zinc-700"
+                className="px-2 py-1 rounded-md text-xs font-bold transition-all whitespace-nowrap bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:hover:bg-zinc-700"
               >
                 Raise {safeRaise}
               </button>
@@ -2941,7 +2997,7 @@ export default function PokerPage() {
           </div>
           {canUseEmotes && (
             <>
-              <div className={`grid gap-1.5 mt-2 py-2 px-2 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md ${
+              <div className={`grid gap-1 mt-1.5 py-1.5 px-1.5 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md ${
                 (bankState.bigYahuCalls ?? 0) > 0 ? 'grid-cols-8' : 'grid-cols-6'
               }`}>
                 {getEmoteOptions({ bigYahuUnlocked: (bankState.bigYahuCalls ?? 0) > 0 }).map((emote) => (
@@ -2951,15 +3007,15 @@ export default function PokerPage() {
                     title={emote.label}
                     aria-label={emote.label}
                     onClick={() => sendEmote(emote.id)}
-                    className="h-10 rounded-md border flex items-center justify-center transition-all active:scale-95 bg-zinc-700 hover:bg-zinc-600 border-zinc-500/50 text-zinc-200"
+                    className="h-8 rounded-md border flex items-center justify-center transition-all active:scale-95 bg-zinc-700 hover:bg-zinc-600 border-zinc-500/50 text-zinc-200"
                   >
                     <EmoteIcon emote={emote.id} />
                   </button>
                 ))}
               </div>
-              <div className="mt-2 flex overflow-hidden rounded-xl border border-zinc-600/50 bg-zinc-800/95 shadow-2xl backdrop-blur-md">
+              <div className="mt-1.5 flex overflow-hidden rounded-xl border border-zinc-600/50 bg-zinc-800/95 shadow-2xl backdrop-blur-md">
                 <input
-                  className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-white placeholder-zinc-400 outline-none"
+                  className="min-w-0 flex-1 bg-transparent px-3 py-1.5 text-sm text-white placeholder-zinc-400 outline-none"
                   placeholder="Yell..."
                   aria-label="Yell"
                   value={yellInput}
@@ -2971,12 +3027,21 @@ export default function PokerPage() {
                   type="button"
                   onClick={sendYell}
                   disabled={!yellInput.trim()}
-                  className="shrink-0 px-4 text-sm font-black text-amber-100 transition-colors hover:bg-zinc-700 disabled:text-zinc-500"
+                  className="shrink-0 px-3 text-xs font-black text-amber-100 transition-colors hover:bg-zinc-700 disabled:text-zinc-500"
                 >
                   Yell
                 </button>
               </div>
             </>
+          )}
+          {/* Chat dock — sits right under the yell input as part of the
+              left-side stack, with its own × close in the header. The
+              expanded sidebets on the right grows independently and won't
+              push this around. */}
+          {chatDockVisible && (
+            <div className="mt-1.5 flex flex-col h-40 lg:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden">
+              {chatBoxInner}
+            </div>
           )}
         </div>
           )
@@ -3005,48 +3070,18 @@ export default function PokerPage() {
           </div>
         )}
 
-        {/* Side bets + chat: for spectators each panel pins itself to the
-            bottom edge (independent fixed-position docks, same as before).
-            For seated players we wrap them in a right-side column so the
-            bottom row stays balanced at any viewport — they sit side-by-side
-            on lg+ and stack vertically below lg so a narrow desktop / iPad
-            doesn't have to fit three panels in one row. */}
+        {/* Side bets dock (sidebets only — chat lives under the yell input
+            on the left now). Spectators get their own fixed-position chat +
+            sidebets pair; seated players have the dock anchored to the
+            bottom-right of the row, sharing the action panel's baseline and
+            growing upward when expanded without pushing the action UI. */}
         {(() => {
-          // Chat panel body — same JSX whichever shell we drop it into.
-          const chatBoxInner = (
-            <>
-              <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1.5">
-                {chatMessages.length === 0 && sysMessages.length === 0 && (
-                  <div className="text-xs text-zinc-600 italic">No messages...</div>
-                )}
-                {sysMessages.map((msg, i) => (
-                  <div key={`s-${i}`} className="text-xs text-zinc-600 italic font-medium">{msg}</div>
-                ))}
-                {chatMessages.map((msg, i) => (
-                  <div key={`c-${i}`} className="text-sm">
-                    <span className={`font-bold ${msg.playerId === playerId ? 'text-white' : 'text-zinc-300'}`}>
-                      {msg.playerId === playerId ? 'You' : msg.username}{msg.isSpectator ? ' (spectator)' : ''}:
-                    </span>
-                    <span className="text-zinc-100 ml-1.5">{msg.message}</span>
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </div>
-              <div className="flex border-t border-zinc-600/50 bg-zinc-900/50 shrink-0">
-                <input className="flex-1 bg-transparent px-4 py-2.5 text-sm text-white placeholder-zinc-400 outline-none"
-                  placeholder="Message..." value={chatInput} onChange={e => setChatInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && sendChat()} maxLength={200} />
-                <button onClick={sendChat} className="px-4 text-sm font-bold text-white hover:bg-zinc-700 transition-colors">Send</button>
-              </div>
-            </>
-          )
-
-          // Sidebets dock height: collapsed matches the left action stack
-          // (action + emote row + yell input). Expanded sizes to content via
-          // h-fit so there's no empty space below — the engine maintains
-          // exactly 4 open props, so the natural height lands ~400-450px.
-          // max-h-[80dvh] caps overflow on short viewports; internal scroll
-          // kicks in past that.
+          // Sidebets dock height: collapsed sits at the same generous size
+          // the previous style used (room for 3+ cards before any scroll).
+          // Expanded sizes to content via h-fit so there's no empty space
+          // below — the engine maintains exactly 4 open props, so the
+          // natural height lands ~400px. max-h-[80dvh] caps overflow on
+          // short viewports; internal scroll kicks in past that.
           const sidebetsHeight = sideBetsExpanded
             ? 'h-fit max-h-[80dvh]'
             : 'h-56 lg:h-72'
@@ -3079,34 +3114,25 @@ export default function PokerPage() {
             )
           }
 
-          // Non-spectator: on mobile (no md), flow inline at the bottom of
-          // the column — narrow viewports need to scroll past these to keep
-          // them all reachable. On md+, pin the right column to the viewport
-          // bottom-right with `fixed` so its height (especially when sidebets
-          // is expanded or chat stacks) does NOT inflate the bottom flex row
-          // and squeeze the table render. The action panel stays at its
-          // natural compact height next to the felt.
-          if (!sideBetsDockVisible && !chatDockVisible) return null
+          // Non-spectator: sidebets only on the right. Chat sits under the
+          // yell input on the left now. On md+, anchored to the bottom-right
+          // of the bottom-row container so it shares the action panel's
+          // baseline and grows upward when expanded without inflating the
+          // row's height.
+          if (!sideBetsDockVisible || isArena) return null
           return (
-            <div className="w-[92%] max-w-[360px] mx-auto md:fixed md:bottom-3 md:right-3 md:mx-0 md:w-auto md:max-w-none md:z-40 flex flex-col lg:flex-row items-end gap-3 shrink-0">
-              {sideBetsDockVisible && !isArena && (
-                <div className={`w-full md:w-[300px] lg:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0 `}>
-                  <SideBetsPanel
-                    sideBets={sideBetsState}
-                    myPlayerId={playerId}
-                    myStack={myPlayer?.chips ?? 0}
-                    onPlace={placeSideBet}
-                    onSell={sellSideBet}
-                    expanded={sideBetsExpanded}
-                    onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
-                  />
-                </div>
-              )}
-              {chatDockVisible && (
-                <div className="w-full md:w-[300px] lg:w-[280px] flex flex-col h-40 lg:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
-                  {chatBoxInner}
-                </div>
-              )}
+            <div className="w-[92%] max-w-[360px] mx-auto md:absolute md:bottom-0 md:right-0 md:mx-0 md:w-auto md:max-w-none md:z-30 flex flex-col items-end gap-3 shrink-0">
+              <div className={`w-full md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
+                <SideBetsPanel
+                  sideBets={sideBetsState}
+                  myPlayerId={playerId}
+                  myStack={myPlayer?.chips ?? 0}
+                  onPlace={placeSideBet}
+                  onSell={sellSideBet}
+                  expanded={sideBetsExpanded}
+                  onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
+                />
+              </div>
             </div>
           )
         })()}

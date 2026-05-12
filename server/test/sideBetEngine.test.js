@@ -218,25 +218,19 @@ test('YES + NO buy prices on a fair-coin prop sum to 1 + edge', () => {
   }
 })
 
-test('action prop "anyone_all_in" auto-resolves YES on all-in event', () => {
+test('catalog only spawns props the local player cannot self-rig', () => {
+  // After removing goes_to_showdown + anyone_all_in, the spawn pool is pure
+  // card-runout. This guards against accidentally adding an action-driven
+  // prop back in without thinking about exploitability.
   const player = { id: 'p1', chips: 1000, username: 'alice' }
   const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, username: 'bob' }] })
   const { engine } = makeEngine(game)
-  engine.onHandStart()
-  const allInProp = [...engine.props.values()].find(p => p.type === 'anyone_all_in')
-  if (!allInProp) {
-    // The catalog may not always pick this prop in a given trial — re-roll a
-    // few times to flush it out.
-    for (let i = 0; i < 30 && ![...engine.props.values()].some(p => p.type === 'anyone_all_in'); i++) {
-      game.handIndex += 1
-      engine.onHandStart()
+  const banned = new Set(['anyone_all_in', 'goes_to_showdown'])
+  for (let i = 0; i < 50; i++) {
+    game.handIndex += 1
+    engine.onHandStart()
+    for (const p of engine.props.values()) {
+      assert.ok(!banned.has(p.type), `banned prop type spawned: ${p.type}`)
     }
   }
-  const prop = [...engine.props.values()].find(p => p.type === 'anyone_all_in')
-  assert.ok(prop, 'anyone_all_in should appear within 30 hand starts')
-
-  game.allInPlayers.add('p2')
-  engine.onStateChange()
-  assert.equal(prop.status, 'resolved')
-  assert.equal(prop.outcome, 'yes')
 })

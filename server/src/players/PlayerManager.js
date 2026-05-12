@@ -72,11 +72,21 @@ export class Player {
     this.lifetimeInterestPaid = 0
     this._creditScoreMin = null
     this._creditScoreMax = null
+
+    // Chips currently parked in open side-bet positions. Mutated by the
+    // SideBetEngine on placeBet / sellPosition / resolution. Added back
+    // into the P/L formula so an unresolved bet doesn't show as a loss —
+    // mark-to-market is hidden from the player until the position closes.
+    this.openSideBetStake = 0
   }
 
   // --- Derived stats -------------------------------------------------------
 
-  getProfit() { return this.chips - this.pokerBuyIn }
+  // Realized P/L only. `openSideBetStake` holds chips parked in unresolved
+  // side-bet positions; treating them as "still in the bankroll" until the
+  // bet settles keeps the displayed profit, peak-swing, and credit score
+  // from yo-yoing whenever the player buys or sells a market mid-hand.
+  getProfit() { return this.chips + (this.openSideBetStake || 0) - this.pokerBuyIn }
 
   getCreditScore() {
     const profit = this.getProfit()
@@ -175,7 +185,11 @@ export class Player {
     this.loans = []
     this.loanedTotal = 0
     this.peakSwing = 0
-    this.pokerBuyIn = this.chips
+    // P/L = chips + openSideBetStake − buyIn, so resetting buyIn to the
+    // current full bankroll (chips + stake) makes the displayed profit 0.
+    // Any open bets settle later with their realized delta landing in
+    // chips, which then shows as the post-yahu realized profit/loss.
+    this.pokerBuyIn = this.chips + (this.openSideBetStake || 0)
     this.bigYahuCalls = (this.bigYahuCalls || 0) + 1
     return { success: true, cleared, firstCall: this.bigYahuCalls === 1 }
   }
@@ -186,6 +200,10 @@ export class Player {
     this.peakSwing = 0
     this.chips = POKER_CONFIG.STARTING_CHIPS
     this.pokerBuyIn = POKER_CONFIG.STARTING_CHIPS
+    // resetMoney is gated by MessageHandler to only run between hands, when
+    // the engine has already drained all open positions. We zero defensively
+    // anyway so a buggy reset path can't leave a phantom stake hanging.
+    this.openSideBetStake = 0
     this.handsAtSession = 0
     this.bigYahuCalls = 0
     this.lifetimeBorrowed = 0
