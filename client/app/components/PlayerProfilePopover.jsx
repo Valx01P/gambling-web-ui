@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/useAuth'
 import { ProfileAvatar } from './ProfileSelector'
+import AchievementsGrid from './AchievementsGrid'
 
 // Seat-click popover. Two modes:
 //   * Linked  — `publicUserId` is set: we fetch the public slice from the
@@ -264,6 +265,11 @@ export default function PlayerProfilePopover({
                 <Stat label="Followers" value={info.followersCount} />
                 <Stat label="Following" value={info.followingCount} />
               </div>
+              {info.isSelf && (
+                <div className="mt-3">
+                  <AchievementsGrid userIdHint={info.id} />
+                </div>
+              )}
               {viewer && !info.isSelf && (
                 <button
                   type="button"

@@ -3,6 +3,7 @@ import { getBotById } from "../bots/botRepository.js"
 import { verify as verifyJwt } from "../auth/jwt.js"
 import { sanitizeDisplayString } from "../utils/sanitize.js"
 import { findUserById, touchLastActive } from "../users/userRepository.js"
+import { hydrateDailyFromRow } from "../dailies/dailyEngine.js"
 import { track as trackPresence } from "../users/presence.js"
 
 export class MessageHandler {
@@ -217,6 +218,11 @@ export class MessageHandler {
             player.userAvatarUrl = user.avatar_url || null
             if (typeof user.elo === 'number') player.elo = user.elo
             if (typeof user.hands_played === 'number') player.userHandsPlayed = user.hands_played
+            // Mirror persistent daily / achievement / skin state into the
+            // in-memory Player so the engine can mutate without an extra
+            // round-trip per hand and the client gets the right state in
+            // its first room_update.
+            hydrateDailyFromRow(player, user)
           }
         })
         .catch(err => console.warn('[auth] profile prefetch failed:', err.message))

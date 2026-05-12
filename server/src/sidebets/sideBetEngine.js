@@ -459,11 +459,13 @@ export class SideBetEngine {
 
   _findPlayer(playerId) {
     // Prefer the game's seated array (hot-path during a hand). Fall back to
-    // the room's player map so a mid-hand seat change — or any path that
-    // mutates the player object outside the game.players array — still
-    // finds the right reference to bump chips/openSideBetStake on.
+    // the room's player map for mid-hand seat changes; then to spectators
+    // since they're allowed to place side bets too. The same Player object
+    // is mutated in every case — chips and openSideBetStake live on the
+    // Player instance regardless of seated/spectator status.
     return this.game.players.find(p => p.id === playerId)
       || this.room?.players?.get?.(playerId)
+      || this.room?.spectators?.get?.(playerId)
       || null
   }
 

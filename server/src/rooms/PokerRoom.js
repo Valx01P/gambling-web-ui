@@ -27,6 +27,7 @@ import {
 import { preflopHandScore } from '../bots/runtime/equity.js'
 import { sanitizeDisplayString } from '../utils/sanitize.js'
 import { SideBetEngine } from '../sidebets/sideBetEngine.js'
+import { scoreHandForPlayer } from '../dailies/dailyEngine.js'
 
 // Default rating to assume for any seat that isn't a bot when calculating
 // per-hand ELO updates. Aligned with the new STARTING_RATING so a bot
@@ -157,6 +158,11 @@ export class PokerRoom {
           this._recordHumanHandResults(msg.data).catch(err =>
             console.error('[user-play] hand result update failed:', err.message)
           )
+          // Daily-challenge + achievement engines. Both share the same
+          // per-hand event extractor (built from the latest handHistory
+          // entry, not the broadcast payload — the broadcast omits the
+          // action log we need for vpip / raisesThisHand / etc.).
+          this._scoreDailiesAndAchievements()
         }
       },
       () => this.broadcastGameState(),
@@ -590,6 +596,28 @@ export class PokerRoom {
         botColor: bot.botColor
       }
     })
+  }
+
+  // Daily challenge + achievement scoring. Reads the latest hand summary
+  // out of the engine's handHistory (which has the action log we need —
+  // the broadcast payload doesn't). Fires once per seated human and once
+  // per spectator (so spectators' side-bet-based dailies still tick).
+  _scoreDailiesAndAchievements() {
+    const summary = this.game.handHistory[this.game.handHistory.length - 1]
+    if (!summary) return
+    // Side-bet outcomes per player live on the side-bet engine in its
+    // positions map — but those clear at resolve time. The cleanest hook
+    // is to read straight from the engine's most recent payouts queue;
+    // for now, leave sideBetOutcomes empty and only count card-based
+    // dailies. (Side-bet-specific dailies still unlock via the luckStats
+    // path which writes the per-user counters.)
+    const audience = [...this.players.values(), ...this.spectators.values()]
+    for (const p of audience) {
+      if (p.isBot) continue
+      scoreHandForPlayer(p, summary, {}).catch(err =>
+        console.warn('[dailies] score failed for', p.username, err.message)
+      )
+    }
   }
 
   async _recordBotHandResults(broadcastData) {
@@ -1523,8 +1551,12 @@ export class PokerRoom {
   // ─── Side-bets passthroughs (called by MessageHandler) ─────────────────
 
   placeSideBet(playerId, { propId, side, amount }) {
-    if (!this.players.has(playerId)) {
-      return { success: false, error: 'You must be seated at the table to place side bets.' }
+    // Spectators bet too — they can't act on the hand but they can watch
+    // the runout and gamble on board outcomes. Same chip bankroll system
+    // as seated players; same engine (sideBetEngine resolves on their
+    // userId for luck stats whether they're seated or spectating).
+    if (!this.players.has(playerId) && !this.spectators.has(playerId)) {
+      return { success: false, error: 'You must be at the table to place side bets.' }
     }
     if (typeof propId !== 'string' || !propId) return { success: false, error: 'Missing propId.' }
     const stake = Math.floor(Number(amount) || 0)
@@ -1533,8 +1565,8 @@ export class PokerRoom {
   }
 
   sellSidePosition(playerId, { propId, shares }) {
-    if (!this.players.has(playerId)) {
-      return { success: false, error: 'You must be seated to manage side bets.' }
+    if (!this.players.has(playerId) && !this.spectators.has(playerId)) {
+      return { success: false, error: 'You must be at the table to manage side bets.' }
     }
     if (typeof propId !== 'string' || !propId) return { success: false, error: 'Missing propId.' }
     return this.sideBetEngine.sellPosition(playerId, propId, shares)

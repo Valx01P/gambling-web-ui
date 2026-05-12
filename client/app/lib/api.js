@@ -114,6 +114,16 @@ export const api = {
   // see the same data minus the isFollowedByMe flag).
   publicUser: (userId) =>
     apiFetch(`/api/users/${userId}/public`, { auth: true }),
+
+  // Dailies + achievements + skin. /today is auth-optional — anon users
+  // see the daily catalog entry, but `progress`/`lifetime` only fill in
+  // when a Bearer token is attached. /achievements is the same shape.
+  dailiesToday: () =>
+    apiFetch('/api/dailies/today', { auth: true }),
+  achievementsList: () =>
+    apiFetch('/api/dailies/achievements', { auth: true }),
+  setSkin: (payload) =>
+    apiFetch('/api/dailies/me/skin', { method: 'POST', body: payload, auth: true }),
   followUser: (userId) =>
     apiFetch(`/api/users/${userId}/follow`, { method: 'POST', auth: true }),
   unfollowUser: (userId) =>

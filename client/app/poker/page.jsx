@@ -32,6 +32,9 @@ import StatsPanel from '../components/StatsPanel'
 import SpectatorPanel from '../components/SpectatorPanel'
 import SideBetsPanel from '../components/SideBetsPanel'
 import RunItTwiceVote from '../components/RunItTwiceVote'
+import DailyChallengePanel from '../components/DailyChallengePanel'
+import SkinSelector from '../components/SkinSelector'
+import { resolveSkinCss } from '../lib/skinPresets'
 import { buildPokerStatistics, buildSpectatorStatistics, evaluateHand, formatCard, formatPercent, getHandName } from '../lib/pokerOdds'
 // Seat geometry lives in ./lib/seatLayout — shared by spectator view, the
 // table render, and the chip-throw animation. Pure data + helpers, no state.
@@ -748,9 +751,26 @@ export default function PokerPage() {
           if (typeof msg.data.arenaRunning === 'boolean') setArenaRunning(msg.data.arenaRunning)
           if (typeof msg.data.arenaStartingChips === 'number') setArenaStartingChips(msg.data.arenaStartingChips)
           {
+            // Find self in players[] first, then spectators[]. Spectators
+            // get the same Player.toJSON() payload — chips, loans, credit
+            // score, everything — so a single fall-back keeps the bank
+            // panel & myStack lookups working for both audiences.
             const me = msg.data.players?.find(p => p.id === playerIdRef.current)
+              || msg.data.spectators?.find(p => p.id === playerIdRef.current)
             if (me) setBankState(prev => ({
               ...prev,
+              // Chips broadcast here is the source of truth for spectators
+              // — they're not in gameState.players, so the side-bets panel
+              // & bank UI read their stack out of bankState instead.
+              chips: me.chips ?? prev.chips,
+              // Daily / cosmetic state — server is authoritative, just
+              // mirror what comes off the wire.
+              dailyProgress: me.dailyProgress ?? prev.dailyProgress ?? 0,
+              dailyCompleted: !!me.dailyCompleted,
+              dailiesCompleted: me.dailiesCompleted ?? prev.dailiesCompleted ?? 0,
+              achievements: Array.isArray(me.achievements) ? me.achievements : (prev.achievements ?? []),
+              skinId: me.skinId ?? prev.skinId ?? 0,
+              customSkin: me.customSkin ?? prev.customSkin ?? null,
               loans: me.loans || [],
               loanedTotal: me.loanedTotal || 0,
               creditScore: me.creditScore ?? prev.creditScore,
@@ -806,9 +826,26 @@ export default function PokerPage() {
           if (typeof msg.data.arenaRunning === 'boolean') setArenaRunning(msg.data.arenaRunning)
           if (typeof msg.data.arenaStartingChips === 'number') setArenaStartingChips(msg.data.arenaStartingChips)
           {
+            // Find self in players[] first, then spectators[]. Spectators
+            // get the same Player.toJSON() payload — chips, loans, credit
+            // score, everything — so a single fall-back keeps the bank
+            // panel & myStack lookups working for both audiences.
             const me = msg.data.players?.find(p => p.id === playerIdRef.current)
+              || msg.data.spectators?.find(p => p.id === playerIdRef.current)
             if (me) setBankState(prev => ({
               ...prev,
+              // Chips broadcast here is the source of truth for spectators
+              // — they're not in gameState.players, so the side-bets panel
+              // & bank UI read their stack out of bankState instead.
+              chips: me.chips ?? prev.chips,
+              // Daily / cosmetic state — server is authoritative, just
+              // mirror what comes off the wire.
+              dailyProgress: me.dailyProgress ?? prev.dailyProgress ?? 0,
+              dailyCompleted: !!me.dailyCompleted,
+              dailiesCompleted: me.dailiesCompleted ?? prev.dailiesCompleted ?? 0,
+              achievements: Array.isArray(me.achievements) ? me.achievements : (prev.achievements ?? []),
+              skinId: me.skinId ?? prev.skinId ?? 0,
+              customSkin: me.customSkin ?? prev.customSkin ?? null,
               loans: me.loans || [],
               loanedTotal: me.loanedTotal || 0,
               creditScore: me.creditScore ?? prev.creditScore,
@@ -1689,11 +1726,13 @@ export default function PokerPage() {
                     Add Bot
                   </button>
                 )}
-                {!isSpectator && (
-                  <button type="button" onClick={() => openPokerPanel('bank')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                    Bank Account
-                  </button>
-                )}
+                {/* Bank is open to spectators too — they can take loans and
+                    place side bets on the runout even without a seat at the
+                    table. Their chips persist across sessions just like a
+                    seated player's. */}
+                <button type="button" onClick={() => openPokerPanel('bank')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                  Bank Account
+                </button>
                 {(!isSpectator || isArena) && (
                   <button type="button" onClick={() => openPokerPanel('blinds')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                     Change Blinds
@@ -1709,6 +1748,12 @@ export default function PokerPage() {
                     Arena · {arenaRunning ? 'Running' : 'Paused'}
                   </button>
                 )}
+                <button type="button" onClick={() => openPokerPanel('daily')} className="block w-full px-3 py-2 text-left text-xs font-bold text-amber-200 hover:bg-zinc-800">
+                  Daily Challenge
+                </button>
+                <button type="button" onClick={() => openPokerPanel('skin')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                  Player Skin
+                </button>
                 <button type="button" onClick={() => openPokerPanel('profile')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                   Edit Profile
                 </button>
@@ -1800,6 +1845,8 @@ export default function PokerPage() {
                 : activePokerPanel === 'big_yahu' ? 'Call Big Yahu'
                 : activePokerPanel === 'contest' ? 'Contest Mode'
                 : activePokerPanel === 'arena' ? 'Bot Arena'
+                : activePokerPanel === 'daily' ? 'Daily Challenge'
+                : activePokerPanel === 'skin' ? 'Player Skin'
                 : 'Session'}
             </div>
             <div className="flex items-center gap-1.5">
@@ -2656,6 +2703,29 @@ export default function PokerPage() {
               </button>
             </div>
           )}
+
+          {activePokerPanel === 'daily' && (
+            <DailyChallengePanel
+              selfProgress={bankState.dailyProgress ?? 0}
+              selfCompleted={!!bankState.dailyCompleted}
+              dailiesCompleted={bankState.dailiesCompleted ?? 0}
+            />
+          )}
+
+          {activePokerPanel === 'skin' && (
+            <SkinSelector
+              currentSkinId={bankState.skinId ?? 0}
+              currentCustomSkin={bankState.customSkin ?? null}
+              dailiesCompleted={bankState.dailiesCompleted ?? 0}
+              signedIn={!!authUser}
+              onApplied={(skinId, customSkin) => {
+                // Optimistically reflect the new skin so the nameplate
+                // updates immediately — server already wrote it; the next
+                // room_update will confirm.
+                setBankState(prev => ({ ...prev, skinId, customSkin }))
+              }}
+            />
+          )}
         </div>
       )}
 
@@ -2825,9 +2895,12 @@ export default function PokerPage() {
                         setPopoverSeat(player)
                       }
                     }}
+                    style={isMe && (bankState.skinId ?? 0) !== 0
+                      ? { background: resolveSkinCss(bankState.skinId, bankState.customSkin) }
+                      : undefined}
                     className={`
                     px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg text-center w-[120px] sm:w-[140px] shadow-xl
-                    transition-all border z-10 relative bg-zinc-800/95
+                    transition-all border z-10 relative ${(isMe && (bankState.skinId ?? 0) !== 0) ? '' : 'bg-zinc-800/95'}
                     ${(!player.isBot && !isMe) ? 'cursor-pointer hover:border-zinc-300 focus:outline-none focus:ring-2 focus:ring-amber-300' : ''}
                     ${player.folded && !isPlayerWaiting ? 'opacity-50' : ''}
                     ${isPlayerWaiting ? 'opacity-60' : ''}
@@ -3180,7 +3253,7 @@ export default function PokerPage() {
                     <SideBetsPanel
                       sideBets={sideBetsState}
                       myPlayerId={playerId}
-                      myStack={myPlayer?.chips ?? 0}
+                      myStack={myPlayer?.chips ?? bankState.chips ?? 0}
                       onPlace={placeSideBet}
                       onSell={sellSideBet}
                       expanded={sideBetsExpanded}
@@ -3209,7 +3282,7 @@ export default function PokerPage() {
                 <SideBetsPanel
                   sideBets={sideBetsState}
                   myPlayerId={playerId}
-                  myStack={myPlayer?.chips ?? 0}
+                  myStack={myPlayer?.chips ?? bankState.chips ?? 0}
                   onPlace={placeSideBet}
                   onSell={sellSideBet}
                   expanded={sideBetsExpanded}

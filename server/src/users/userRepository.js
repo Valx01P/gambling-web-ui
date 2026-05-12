@@ -23,7 +23,9 @@ export async function findUserById(id) {
     `SELECT id, email, display_name, avatar_url, created_at, last_active_at,
             elo, hands_played, hands_won,
             side_bets_won, side_bets_lost, side_bet_longshot_wins,
-            side_bet_chip_pl, all_in_showdowns, all_in_underdog_wins
+            side_bet_chip_pl, all_in_showdowns, all_in_underdog_wins,
+            dailies_completed, daily_date_key, daily_progress,
+            daily_completed_at, achievements, skin_id, custom_skin
        FROM users WHERE id = $1`,
     [id]
   )

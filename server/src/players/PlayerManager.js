@@ -78,6 +78,19 @@ export class Player {
     // into the P/L formula so an unresolved bet doesn't show as a loss —
     // mark-to-market is hidden from the player until the position closes.
     this.openSideBetStake = 0
+
+    // Per-session daily state. For signed-in users these mirror the DB
+    // columns (loaded at auth_hello, written back on completion). For
+    // anonymous users this is purely session-scoped — they still see the
+    // daily and earn +1000 in-game chips for completing it, but it doesn't
+    // persist after disconnect.
+    this.dailyDateKey   = null   // UTC YYYY-MM-DD the progress applies to
+    this.dailyProgress  = 0
+    this.dailyCompleted = false  // true once they hit today's target
+    this.dailiesCompleted = 0    // lifetime — only meaningful for signed-in
+    this.achievements   = []     // array of achievement ids
+    this.skinId         = 0      // 0 = default; 1-9 = presets; 10 = custom
+    this.customSkin     = null   // {colors, direction} when skinId === 10
   }
 
   // --- Derived stats -------------------------------------------------------
@@ -338,7 +351,17 @@ export class Player {
       lifetimeBorrowed: this.lifetimeBorrowed ?? 0,
       lifetimeInterestPaid: this.lifetimeInterestPaid ?? 0,
       creditScoreMin: this._creditScoreMin ?? this.getCreditScore(),
-      creditScoreMax: this._creditScoreMax ?? this.getCreditScore()
+      creditScoreMax: this._creditScoreMax ?? this.getCreditScore(),
+      // Daily / cosmetic state that the client renders (challenge progress,
+      // skin background on the nameplate, achievements grid). Always
+      // emitted so spectators get their daily-tool data the same way
+      // seated players do.
+      dailyProgress: this.dailyProgress || 0,
+      dailyCompleted: !!this.dailyCompleted,
+      dailiesCompleted: this.dailiesCompleted || 0,
+      achievements: Array.isArray(this.achievements) ? this.achievements : [],
+      skinId: this.skinId || 0,
+      customSkin: this.customSkin || null
     }
   }
 }
