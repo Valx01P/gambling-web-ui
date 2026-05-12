@@ -81,7 +81,11 @@ const SideBetsPanel = memo(function SideBetsPanel({
               onClick={onToggleExpanded}
               aria-label={expanded ? 'Collapse side bets' : 'Expand side bets'}
               title={expanded ? 'Collapse' : 'Expand to see all bets'}
-              className="rounded-md border border-zinc-600/60 bg-zinc-800/80 px-1.5 py-0.5 text-xs font-bold text-zinc-200 transition-colors hover:bg-zinc-700 active:scale-95"
+              // Fixed footprint so the ↙ ↔ ⤢ glyph swap doesn't change the
+              // button's width — those two characters render at different
+              // intrinsic widths and would jitter the header on toggle
+              // without an explicit w/h.
+              className="inline-flex h-5 w-6 items-center justify-center rounded-md border border-zinc-600/60 bg-zinc-800/80 text-xs font-bold leading-none text-zinc-200 transition-colors hover:bg-zinc-700 active:scale-95"
             >
               {expanded ? '↙' : '⤢'}
             </button>

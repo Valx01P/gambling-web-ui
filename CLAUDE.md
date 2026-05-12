@@ -9,7 +9,7 @@ work on this repo — it'll save you 3-4 rounds of grep.
 ## Quick orientation
 
 - Frontend: `client/` — Next.js 16, React 19, Tailwind 4. The big file is
-  `client/app/poker/page.jsx` (~2800 lines: WS, state, game render, action
+  `client/app/poker/page.jsx` (~3500 lines: WS, state, game render, action
   bar, panels). Everything else is component-scoped.
 - Backend: `server/` — Node 22 with native `--env-file-if-exists` (no
   dotenv). Express + `ws` share one listener. Postgres via `pg`.

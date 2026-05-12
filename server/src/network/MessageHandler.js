@@ -110,6 +110,12 @@ export class MessageHandler {
         case 'peer_loan:repay':
           return this.handlePeerLoan(player, type, data)
 
+        case 'crypto:buy':
+        case 'crypto:sell':
+        case 'crypto:create':
+        case 'crypto:rug':
+          return this.handleCrypto(player, type, data)
+
         default:
           return this.error('Unknown message type', player)
       }
@@ -664,6 +670,44 @@ export class MessageHandler {
     return result
   }
 
+  handleCrypto(player, type, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker' || !room.cryptoEngine) {
+      return this.error('Crypto market is only available at a poker table.', player)
+    }
+    let result
+    switch (type) {
+      case 'crypto:buy':    result = room.cryptoBuy(player.id, data || {}); break
+      case 'crypto:sell':   result = room.cryptoSell(player.id, data || {}); break
+      case 'crypto:create': result = room.cryptoCreate(player.id, data || {}); break
+      case 'crypto:rug':    result = room.cryptoRug(player.id); break
+      default: return this.error('Unknown crypto action', player)
+    }
+    if (result && !result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeCryptoError(result.error) } })
+      return result
+    }
+    // Trades mutate player.chips directly. Push a room_update so every
+    // client's bankroll / finances view picks up the new balance without
+    // waiting on the next hand tick. Same pattern as peer loans + bank loans.
+    if (result?.success && typeof room.broadcastRoomUpdate === 'function') {
+      room.broadcastRoomUpdate()
+    }
+    if (result?.success && type === 'crypto:rug' && result?.totalCollected != null) {
+      room.broadcast({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `${player.username} rugged their coin and walked with $${result.totalCollected.toLocaleString()}.` }
+      })
+    }
+    if (result?.success && type === 'crypto:create' && result?.symbol) {
+      room.broadcast({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `${player.username} just minted $${result.symbol}.` }
+      })
+    }
+    return result
+  }
+
   handleRunoutVoteSubmit(player, data) {
     const room = this.roomManager.getPlayerRoom(player)
     if (!room || room.roomType !== 'poker' || !room.game) {
@@ -684,6 +728,23 @@ export class MessageHandler {
     console.error('Handler error:', message)
     if (player) player.send({ type: MESSAGE_TYPES.ERROR, data: { message } })
     return { success: false, error: message }
+  }
+}
+
+function humanizeCryptoError(code) {
+  if (typeof code !== 'string') return 'Crypto trade failed.'
+  switch (code) {
+    case 'not_at_table': return 'You must be at the table to trade crypto.'
+    case 'bots_cannot_trade': return 'Bots can\'t trade crypto.'
+    case 'coin_not_found': return 'That coin no longer exists.'
+    case 'invalid_amount': return 'Invalid amount.'
+    case 'insufficient_chips': return 'Not enough chips in your stack.'
+    case 'insufficient_float': return 'Not enough float available on that coin.'
+    case 'no_position': return 'You don\'t hold any of that coin.'
+    case 'already_minted': return 'You\'ve already minted a coin this session.'
+    case 'no_coin': return 'You haven\'t minted a coin.'
+    case 'already_rugged': return 'That coin has already been rugged.'
+    default: return code
   }
 }
 

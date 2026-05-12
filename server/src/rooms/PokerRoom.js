@@ -29,6 +29,7 @@ import { sanitizeDisplayString } from '../utils/sanitize.js'
 import { SideBetEngine } from '../sidebets/sideBetEngine.js'
 import { scoreHandForPlayer } from '../dailies/dailyEngine.js'
 import { PeerLoanEngine } from '../peerLoans/peerLoanEngine.js'
+import { CryptoMarketEngine } from '../crypto/cryptoEngine.js'
 
 // Default rating to assume for any seat that isn't a bot when calculating
 // per-hand ELO updates. Aligned with the new STARTING_RATING so a bot
@@ -182,6 +183,14 @@ export class PokerRoom {
     // existing broadcastGameState tick, and on-leave settlement (lender
     // collects from borrower's chips, capped at what borrower has).
     this.peerLoanEngine = new PeerLoanEngine({ room: this })
+    // Crypto market — independent of the hand cadence. Ticks on a wall
+    // clock so charts move even while the table is idle. One market per
+    // room, synced to every player + spectator. Bots can't trade.
+    this.cryptoEngine = new CryptoMarketEngine({
+      room: this,
+      broadcast: (msg) => this.broadcast(msg)
+    })
+    this.cryptoEngine.start()
     this._lastBroadcastPhase = GAME_PHASES.WAITING
     this._cleanupGuard = false
     this.blindsProposal = null
@@ -1086,6 +1095,10 @@ export class PokerRoom {
       // leaver still in this.players to read their chips for transfer.
       try { this.peerLoanEngine?.handlePlayerLeave(playerId) }
       catch (err) { console.error('[peer-loan] leave settle failed:', err.message) }
+      // Liquidate crypto holdings at market — same constraint, engine
+      // reads chips from the seated player object.
+      try { this.cryptoEngine?.handlePlayerLeave(playerId) }
+      catch (err) { console.error('[crypto] leave settle failed:', err.message) }
       this.players.delete(playerId)
       if (player) player.isSpectator = false
       this.game.removePlayer(playerId)
@@ -1100,6 +1113,9 @@ export class PokerRoom {
     }
 
     if (wasSpectator) {
+      // Spectators can hold crypto too — same settlement on leave.
+      try { this.cryptoEngine?.handlePlayerLeave(playerId) }
+      catch (err) { console.error('[crypto] spectator leave settle failed:', err.message) }
       this.spectators.delete(playerId)
       if (spectatorPlayer) spectatorPlayer.isSpectator = false
       if (spectatorPlayer) spectatorPlayer.isVoluntarySpectator = false
@@ -1538,6 +1554,8 @@ export class PokerRoom {
       clearTimeout(this.startHandTimeout)
       this.startHandTimeout = null
     }
+    try { this.cryptoEngine?.stop() }
+    catch (err) { console.error('[crypto] shutdown failed:', err.message) }
   }
 
   getRoomData(forPlayerId = null) {
@@ -1555,8 +1573,43 @@ export class PokerRoom {
       spectators: this.getSpectatorList(),
       gameState: this.game.getGameState(isSpectator ? null : forPlayerId, { revealAllCards: isSpectator }),
       contestMode: this.contestModeSummary(),
-      sideBets: this.sideBetEngine?.getStatePayload() || null
+      sideBets: this.sideBetEngine?.getStatePayload() || null,
+      crypto: this.cryptoEngine?.getStatePayload(forPlayerId) || null
     }
+  }
+
+  // ─── Crypto passthroughs (called by MessageHandler) ────────────────────
+
+  cryptoBuy(playerId, { coinId, amount }) {
+    if (!this.cryptoEngine) return { success: false, error: 'unavailable' }
+    if (!this.players.has(playerId) && !this.spectators.has(playerId)) {
+      return { success: false, error: 'not_at_table' }
+    }
+    return this.cryptoEngine.buy(playerId, coinId, amount)
+  }
+
+  cryptoSell(playerId, { coinId, shares }) {
+    if (!this.cryptoEngine) return { success: false, error: 'unavailable' }
+    if (!this.players.has(playerId) && !this.spectators.has(playerId)) {
+      return { success: false, error: 'not_at_table' }
+    }
+    return this.cryptoEngine.sell(playerId, coinId, shares)
+  }
+
+  cryptoCreate(playerId, opts) {
+    if (!this.cryptoEngine) return { success: false, error: 'unavailable' }
+    if (!this.players.has(playerId) && !this.spectators.has(playerId)) {
+      return { success: false, error: 'not_at_table' }
+    }
+    return this.cryptoEngine.createCoin(playerId, opts || {})
+  }
+
+  cryptoRug(playerId) {
+    if (!this.cryptoEngine) return { success: false, error: 'unavailable' }
+    if (!this.players.has(playerId) && !this.spectators.has(playerId)) {
+      return { success: false, error: 'not_at_table' }
+    }
+    return this.cryptoEngine.rugPull(playerId)
   }
 
   broadcastGameState() {
