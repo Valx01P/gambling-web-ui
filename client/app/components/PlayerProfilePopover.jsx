@@ -43,10 +43,18 @@ function fmtChips(n) {
   return `${sign}$${Math.abs(v).toLocaleString()}`
 }
 
+// Width + height the layout math sizes against. Kept in JS (rather than
+// reading from the live element on every frame) because the popover's
+// own size is a stable design value — the click animation would jitter
+// if we recomputed off an animating shadow.
+const POPOVER_WIDTH = 280
+const POPOVER_HEIGHT = 260
+const POPOVER_MARGIN = 8
+
 export default function PlayerProfilePopover({
   open,
   onClose,
-  anchorRect,    // DOMRect of the clicked nameplate; used to position the popover
+  anchorSeatId,  // id of the seat to follow — looked up via [data-seat-id]
   seat           // { publicUserId, username, avatarUrl, avatarId, chips, pokerBuyIn, isBot, ... }
 }) {
   const { user: viewer } = useAuth()
@@ -55,6 +63,58 @@ export default function PlayerProfilePopover({
   const [error, setError] = useState(null)
   const [followBusy, setFollowBusy] = useState(false)
   const popRef = useRef(null)
+  // onClose lives in a ref so the rAF effect doesn't re-subscribe every
+  // time the parent re-renders with a new function identity.
+  const onCloseRef = useRef(onClose)
+  useEffect(() => { onCloseRef.current = onClose })
+
+  // Re-position every animation frame while the popover is open. The
+  // anchor is a live DOM node queried by [data-seat-id], so seat
+  // rearrangements (player kicked, reseat) AND page scroll both stay in
+  // sync. Direct style mutation via ref avoids the React re-render cost
+  // of doing this through setState 60×/sec.
+  //
+  // If the anchor disappears entirely (kicked, removed), we auto-close
+  // instead of leaving a dangling popover pointing at empty space.
+  useEffect(() => {
+    if (!open || !anchorSeatId || typeof window === 'undefined') return
+    let rafId = 0
+    let cancelled = false
+    function tick() {
+      if (cancelled) return
+      const pop = popRef.current
+      const el = document.querySelector(`[data-seat-id="${CSS.escape(anchorSeatId)}"]`)
+      if (!el) {
+        // Anchor seat is no longer in the DOM (player kicked / left / page
+        // scrolled to a different view). Close cleanly.
+        cancelled = true
+        onCloseRef.current?.()
+        return
+      }
+      if (pop) {
+        const rect = el.getBoundingClientRect()
+        const placeBelow = rect.top - POPOVER_HEIGHT - POPOVER_MARGIN < 0
+        const left = Math.max(
+          POPOVER_MARGIN,
+          Math.min(
+            window.innerWidth - POPOVER_WIDTH - POPOVER_MARGIN,
+            rect.left + rect.width / 2 - POPOVER_WIDTH / 2
+          )
+        )
+        const top = placeBelow
+          ? rect.bottom + POPOVER_MARGIN
+          : rect.top - POPOVER_HEIGHT - POPOVER_MARGIN
+        pop.style.left = `${left}px`
+        pop.style.top = `${top}px`
+        // The very first frame after open: the popover started at opacity 0
+        // so it doesn't flash at (0, 0). Reveal once positioned.
+        if (pop.style.opacity !== '1') pop.style.opacity = '1'
+      }
+      rafId = requestAnimationFrame(tick)
+    }
+    rafId = requestAnimationFrame(tick)
+    return () => { cancelled = true; cancelAnimationFrame(rafId) }
+  }, [open, anchorSeatId])
 
   // Fetch the linked profile (if any) when the popover opens. Resets on
   // close so a different seat doesn't briefly show stale data.
@@ -93,22 +153,18 @@ export default function PlayerProfilePopover({
   if (!open || !seat) return null
   if (typeof document === 'undefined') return null
 
-  // Position above the nameplate when there's room, below otherwise. We
-  // do this in plain inline styles to avoid pulling in a positioning
-  // library; the table is well-bounded so the math stays simple.
-  let style = { position: 'fixed', zIndex: 350 }
-  if (anchorRect) {
-    const popHeight = 260
-    const margin = 8
-    const placeBelow = anchorRect.top - popHeight - margin < 0
-    style.left = Math.max(8, Math.min(window.innerWidth - 280, anchorRect.left + anchorRect.width / 2 - 140))
-    style.top = placeBelow
-      ? anchorRect.bottom + margin
-      : anchorRect.top - popHeight - margin
-  } else {
-    style.left = '50%'
-    style.top = '50%'
-    style.transform = 'translate(-50%, -50%)'
+  // Open at opacity 0 — the rAF effect above sets the real left/top on the
+  // first frame and bumps opacity to 1. Stops the popover from flashing at
+  // the top-left corner before its position is computed. `transition`
+  // smooths small seat-position changes (a stack changes width, a player
+  // joins/leaves and seats reflow) into a glide instead of a teleport.
+  const initialStyle = {
+    position: 'fixed',
+    zIndex: 350,
+    left: 0,
+    top: 0,
+    opacity: 0,
+    transition: 'left 120ms ease-out, top 120ms ease-out, opacity 90ms ease-out',
   }
 
   async function toggleFollow() {
@@ -139,7 +195,7 @@ export default function PlayerProfilePopover({
       aria-modal="false"
       aria-label={`Profile for ${seat.username || 'player'}`}
       className="w-[280px] rounded-xl border border-zinc-600/60 bg-zinc-900/98 p-3 shadow-2xl"
-      style={style}
+      style={initialStyle}
       onClick={(e) => e.stopPropagation()}
     >
       <div className="flex items-start gap-3">
@@ -197,6 +253,13 @@ export default function PlayerProfilePopover({
                 <Stat label="Hands" value={info.handsPlayed} />
                 <Stat label="Win%" value={info.handsPlayed > 0 ? `${Math.round(100 * info.handsWon / info.handsPlayed)}%` : '—'} />
               </div>
+              {/* Luck row — combined side-bet + all-in underdog history.
+                  Score is 5 (neutral) until the player has a handful of
+                  resolved events; new accounts start there too. */}
+              <div className="mt-2 grid grid-cols-2 gap-2 text-center">
+                <Stat label="Luck" value={`${info.luckScore ?? 5}/10`} accent={luckAccent(info.luckScore)} />
+                <Stat label="Side bets won" value={info.sideBetsWon ?? 0} />
+              </div>
               <div className="mt-2 grid grid-cols-2 gap-2 text-center">
                 <Stat label="Followers" value={info.followersCount} />
                 <Stat label="Following" value={info.followingCount} />
@@ -239,6 +302,16 @@ export default function PlayerProfilePopover({
     </div>,
     document.body
   )
+}
+
+// Pick a tint for the Luck stat based on its 0-10 score. 7+ glows green
+// (running hot), 4 or below tints red (cold streak), middle stays neutral.
+// Anything missing falls back to neutral via the default.
+function luckAccent(score) {
+  if (typeof score !== 'number') return 'zinc'
+  if (score >= 7) return 'emerald'
+  if (score <= 3) return 'red'
+  return 'zinc'
 }
 
 function Stat({ label, value, accent = 'zinc' }) {

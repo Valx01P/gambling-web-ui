@@ -2,6 +2,11 @@ import { Deck } from './deck.js'
 import { GAME_PHASES, POKER_CONFIG, MESSAGE_TYPES } from '../config/constants.js'
 import { evaluateHand, compareHands, getHandName } from './handEvaluator.js'
 import { attachRunItTwice } from './runItTwice.js'
+import { recordAllInShowdown, computeAllInEquity } from '../users/luckStats.js'
+
+// Phase → number of community cards visible. Used to reconstruct the
+// board state at the moment of an all-in for the luck-stat equity calc.
+const PHASE_BOARD_SIZE = { preflop: 0, flop: 3, turn: 4, river: 5, showdown: 5 }
 
 export class PokerGame {
   constructor(onBroadcast, onStateBroadcast = null, onTurnTimeout = null) {
@@ -1027,6 +1032,7 @@ export class PokerGame {
     this.phase = GAME_PHASES.SHOWDOWN
     this._clearTurnTimeout()
     this._cancelRunoutVote()
+    this._recordAllInLuckForShowdown(active, winnersOutput)
     this.recordCompletedHand({
       type: 'showdown',
       winners: Array.from(winnersOutput.values()),
@@ -1144,6 +1150,54 @@ export class PokerGame {
       this.broadcastState()
       this.scheduleNextHand()
     }, 5000)
+  }
+
+  // Per-signed-in-user luck snapshot for any all-in player who reached
+  // this showdown. Reconstructs the board state at the latest all-in
+  // (using handActionHistory's phase tag) and Monte-Carlos each active
+  // hand's equity from that point. Bots are skipped. Fire-and-forget DB
+  // writes inside luckStats — engine never blocks on them.
+  _recordAllInLuckForShowdown(active, winnersOutput) {
+    const allInActive = active.filter(p => this.allInPlayers.has(p.id))
+    if (allInActive.length < 2) return
+    // Need at least one signed-in human all-in to bother computing equity.
+    if (!allInActive.some(p => p.userId && !p.isBot)) return
+
+    let latestAllIn = null
+    for (const a of this.handActionHistory) {
+      if (a.action === 'all_in') latestAllIn = a
+    }
+    if (!latestAllIn) return
+
+    const boardSize = PHASE_BOARD_SIZE[latestAllIn.phase] ?? 0
+    const boardAtAllIn = this.communityCards.slice(0, boardSize)
+
+    // Every active player's hole cards feed the equity sim (a bot's hand
+    // still affects a human's equity even though the bot itself isn't
+    // recorded). Skip if any active seat is missing hole cards.
+    const equityInput = active
+      .map(p => ({
+        playerId: p.id,
+        userId: p.userId || null,
+        isBot: !!p.isBot,
+        hole: this.playerHands.get(p.id)
+      }))
+      .filter(p => Array.isArray(p.hole) && p.hole.length === 2)
+    if (equityInput.length < 2) return
+
+    const equityMap = computeAllInEquity(
+      equityInput.map(p => ({ playerId: p.playerId, hole: p.hole })),
+      boardAtAllIn
+    )
+
+    for (const p of equityInput) {
+      if (!p.userId || p.isBot) continue
+      if (!this.allInPlayers.has(p.playerId)) continue
+      const equity = equityMap.get(p.playerId) ?? 0.5
+      const won = winnersOutput.has(p.playerId)
+      recordAllInShowdown({ userId: p.userId, equity, won })
+        .catch(err => console.warn('[luck] all-in write failed:', err.message))
+    }
   }
 
   recordCompletedHand({ type, winners, playerHandNames }) {

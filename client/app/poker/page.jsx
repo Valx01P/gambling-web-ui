@@ -338,7 +338,10 @@ export default function PokerPage() {
   // bounding rect captured at click-time — that decouples placement
   // from re-renders of the seat (animations, chip changes, etc.).
   const [popoverSeat, setPopoverSeat] = useState(null)
-  const [popoverAnchorRect, setPopoverAnchorRect] = useState(null)
+  // Anchor by seat id rather than a static rect: the popover queries
+  // [data-seat-id] every frame so it tracks scroll, seat reflow, and
+  // closes cleanly if the underlying seat element disappears.
+  const [popoverSeatId, setPopoverSeatId] = useState(null)
   const [username, setUsername] = useState('')
   const [joined, setJoined] = useState(false)
   const [isSpectator, setIsSpectator] = useState(false)
@@ -2807,17 +2810,18 @@ export default function PokerPage() {
                       to open the profile popover; bots and "you" aren't
                       (your own profile lives behind the account menu). */}
                   <div
+                    data-seat-id={player.id}
                     role={player.isBot || isMe ? undefined : 'button'}
                     tabIndex={player.isBot || isMe ? undefined : 0}
                     onClick={player.isBot || isMe ? undefined : (e) => {
                       e.stopPropagation()
-                      setPopoverAnchorRect(e.currentTarget.getBoundingClientRect())
+                      setPopoverSeatId(player.id)
                       setPopoverSeat(player)
                     }}
                     onKeyDown={player.isBot || isMe ? undefined : (e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
-                        setPopoverAnchorRect(e.currentTarget.getBoundingClientRect())
+                        setPopoverSeatId(player.id)
                         setPopoverSeat(player)
                       }
                     }}
@@ -2938,8 +2942,8 @@ export default function PokerPage() {
       <PlayerProfilePopover
         open={!!popoverSeat}
         seat={popoverSeat}
-        anchorRect={popoverAnchorRect}
-        onClose={() => { setPopoverSeat(null); setPopoverAnchorRect(null) }}
+        anchorSeatId={popoverSeatId}
+        onClose={() => { setPopoverSeat(null); setPopoverSeatId(null) }}
       />
 
       {/* Run-it-twice flow: vote modal (server starts when both humans are

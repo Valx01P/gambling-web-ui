@@ -22,6 +22,7 @@ import {
   PROPS_AT_HAND_START,
   PROP_TYPES
 } from './propCatalog.js'
+import { recordSideBetResult } from '../users/luckStats.js'
 
 const EDGE = 0.04                    // 4% total spread (≈2% per side)
 const PRICE_FLOOR = 0.02
@@ -339,6 +340,19 @@ export class SideBetEngine {
             credit,
             result: label,
           })
+        }
+        // Persist the win/loss to the user's luck counters (fire-and-forget;
+        // anonymous seats have no userId and silently no-op). Voids don't
+        // count — the stake was refunded, so the player neither got lucky
+        // nor unlucky on that prop.
+        if (player?.userId && (label === 'win' || label === 'loss')) {
+          const avgEntryPrice = pos.shares > 0 ? pos.costPaid / pos.shares : null
+          recordSideBetResult({
+            userId: player.userId,
+            outcome: label,
+            entryPrice: avgEntryPrice,
+            chipDelta: credit - pos.costPaid
+          }).catch(err => console.warn('[luck] sidebet write failed:', err.message))
         }
         bag.delete(key)
       }

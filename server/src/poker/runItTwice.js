@@ -408,6 +408,14 @@ function _finalizeMultiRunout() {
 
   this.phase = GAME_PHASES.SHOWDOWN
   this._clearTurnTimeout()
+  // Same luck-stat hook as resolveShowdown: every signed-in all-in player
+  // gets one all_in_showdowns tick + maybe an underdog_win, based on their
+  // equity at the moment of the latest all-in. "Won" here = took chips
+  // across any of the N runouts.
+  const winnersSet = new Set(
+    [...totals.entries()].filter(([, chips]) => chips > 0).map(([id]) => id)
+  )
+  this._recordAllInLuckForShowdown(active, winnersSet)
   this.recordCompletedHand({ type: 'showdown', winners, playerHandNames })
   this.broadcastState()
 

@@ -19,6 +19,7 @@ import {
   countFollowsForUser
 } from './followsRepository.js'
 import { deriveStatus } from './presence.js'
+import { deriveLuckProfile } from './luckStats.js'
 
 // Public-profile reads are cheap (one indexed lookup + a count) but the
 // popover can fire on every seat click, so cap to 120/min per viewer.
@@ -68,6 +69,7 @@ export function userPublicRoutes() {
     const lastActiveMs = user.last_active_at ? new Date(user.last_active_at).getTime() : null
     const status = deriveStatus(target, lastActiveMs)
 
+    const luck = deriveLuckProfile(user)
     res.json({
       user: {
         id: user.id,
@@ -83,7 +85,17 @@ export function userPublicRoutes() {
         followersCount: counts.followers,
         followingCount: counts.following,
         isFollowedByMe: !!viewerFollows,
-        isSelf: req.user?.id === user.id
+        isSelf: req.user?.id === user.id,
+        // Luck snapshot — sideBetsWon is the headline counter; luckScore
+        // is the 0-10 derived value. New users see 5 (neutral) until they
+        // accumulate a few resolved events.
+        luckScore: luck?.luckScore ?? 5,
+        sideBetsWon: luck?.sideBetsWon ?? 0,
+        sideBetsLost: luck?.sideBetsLost ?? 0,
+        sideBetLongshotWins: luck?.sideBetLongshotWins ?? 0,
+        sideBetChipPl: luck?.sideBetChipPl ?? 0,
+        allInShowdowns: luck?.allInShowdowns ?? 0,
+        allInUnderdogWins: luck?.allInUnderdogWins ?? 0
       }
     })
   })

@@ -21,7 +21,9 @@ export async function upsertGoogleUser({ sub, email, name, picture }) {
 export async function findUserById(id) {
   const { rows } = await query(
     `SELECT id, email, display_name, avatar_url, created_at, last_active_at,
-            elo, hands_played, hands_won
+            elo, hands_played, hands_won,
+            side_bets_won, side_bets_lost, side_bet_longshot_wins,
+            side_bet_chip_pl, all_in_showdowns, all_in_underdog_wins
        FROM users WHERE id = $1`,
     [id]
   )
