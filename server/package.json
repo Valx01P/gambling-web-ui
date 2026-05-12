@@ -9,7 +9,7 @@
     "dev": "nodemon --exec \"node --env-file-if-exists=.env\" server.js",
     "migrate": "node --env-file-if-exists=.env src/db/migrate.js",
     "migrate:prod": "NODE_ENV=production node --env-file-if-exists=.env.production src/db/migrate.js",
-    "test": "node --env-file-if-exists=.env --test"
+    "test": "node --env-file-if-exists=.env --test --test-force-exit"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",

@@ -1,6 +1,7 @@
 import { Deck } from './deck.js'
 import { GAME_PHASES, POKER_CONFIG, MESSAGE_TYPES } from '../config/constants.js'
 import { evaluateHand, compareHands, getHandName } from './handEvaluator.js'
+import { attachRunItTwice } from './runItTwice.js'
 
 export class PokerGame {
   constructor(onBroadcast, onStateBroadcast = null, onTurnTimeout = null) {
@@ -65,6 +66,26 @@ export class PokerGame {
     // null whenever handHistory mutates; signals.js fills it on first read.
     this._handHistorySnapshot = null
     this._boardTextureCache = null
+
+    // Run-it-twice state. Lifecycle:
+    //   _runoutVote: vote in progress → set when 2 humans both all-in
+    //     pre-river with pot ≥ threshold. Cleared on resolve.
+    //   _runoutVoteDone: latched true once a vote resolves (any outcome).
+    //     Prevents re-firing the vote on the same hand. Cleared in
+    //     startHand for the next hand.
+    //   _runoutInProgress: true between vote-resolve and final showdown
+    //     when running ≥ 2 boards. Blocks normal runOutBoard re-entry.
+    //   _runoutSnapshot: cached deck + board + pots at trigger time,
+    //     reused for every runout step so each is independently shuffled
+    //     from the same starting deck.
+    this._runoutVote = null
+    this._runoutVoteDone = false
+    this._runoutInProgress = false
+    this._runoutSnapshot = null
+    this._runoutTotal = 0
+    this._runoutIndex = 0
+    this._runoutBoardsRevealed = []
+    this._runoutPerPlayerTotal = new Map()
   }
 
   // Toggle the pause flag. When pausing we cancel every game-driven timer and
@@ -252,6 +273,8 @@ export class PokerGame {
   resetToWaiting() {
     clearTimeout(this.runOutBoardTimeout)
     this._clearTurnTimeout()
+    this._cancelRunoutVote()
+    this._clearRunoutInProgress()
     this.players = this.getSeatedPlayers()
     this.communityCards = []
     this.pot = 0
@@ -273,6 +296,11 @@ export class PokerGame {
     this.broadcastState()
     this.scheduleNextHand()
   }
+
+  // Run-it-twice logic lives in ./runItTwice.js — _cancelRunoutVote,
+  // _clearRunoutInProgress, submitRunoutVote, _executeMultiRunout and
+  // friends are all attached to the prototype by attachRunItTwice() at the
+  // bottom of this file.
 
   addPlayer(player) {
     const existingIndex = this.players.findIndex(p => p.id === player.id)
@@ -401,6 +429,13 @@ export class PokerGame {
     this.currentBetContext = null
     this.actionStarted = false
     this.exposeRunoutHands = false
+    this._cancelRunoutVote()
+    this._clearRunoutInProgress()
+    // Per-hand sentinel — cleared so the next hand is eligible for a fresh
+    // vote. _resolveRunoutVote sets it true; this is the only place it gets
+    // cleared. resetToWaiting on a hand-abort does NOT clear it (the abort
+    // is the same hand from the engine's perspective).
+    this._runoutVoteDone = false
     clearTimeout(this.runOutBoardTimeout)
 
     this.dealerIndex = this.dealerIndex % this.players.length
@@ -771,12 +806,30 @@ export class PokerGame {
       return
     }
 
+    // Multi-runout in flight: cards are being dealt by _executeRunoutStep,
+    // the normal street-by-street advance is taken over. Bail out so the
+    // automatic 2.2s timer can't fight that loop.
+    if (this._runoutInProgress) return
+
+    // Vote pending: pause the runout until the vote resolves. _resolveRunoutVote
+    // re-enters runOutBoard (for N=1) or kicks off _executeMultiRunout (for N>1).
+    if (this._runoutVote && !this._runoutVote.resolved) return
+
     if (!this.exposeRunoutHands && this.shouldExposeRunoutHands()) {
       this.exposeRunoutHands = true
       this.broadcastState()
       // Bumped 1200 → 2200ms so spectators can register the reveal before
       // the first runout card lands.
       this.runOutBoardTimeout = this._gameTimeout(() => this.runOutBoard(), 2200)
+      return
+    }
+
+    // After hands have been exposed (or were already visible), check if
+    // run-it-twice should be offered. The vote sits between the reveal and
+    // the first community card of the runout so players see what they're
+    // gambling on before they decide.
+    if (this._shouldOfferRunItTwice()) {
+      this._startRunoutVote()
       return
     }
 
@@ -973,6 +1026,7 @@ export class PokerGame {
 
     this.phase = GAME_PHASES.SHOWDOWN
     this._clearTurnTimeout()
+    this._cancelRunoutVote()
     this.recordCompletedHand({
       type: 'showdown',
       winners: Array.from(winnersOutput.values()),
@@ -1035,6 +1089,8 @@ export class PokerGame {
 
     this.phase = GAME_PHASES.SHOWDOWN
     this._clearTurnTimeout()
+    this._cancelRunoutVote()
+    this._clearRunoutInProgress()
     this.recordCompletedHand({
       type: 'fold_out',
       winners: [{ playerId: winnerId, username: winner?.username, chips: this.pot, handName: 'Won by fold' }],
@@ -1173,9 +1229,17 @@ export class PokerGame {
     const visibleDealerIndex = visiblePlayers.findIndex(p => p.id === dealerPlayerId)
     const activePlayer = this.players[this.activeIndex]
     const runoutLocked = this.exposeRunoutHands || this.shouldExposeRunoutHands()
-    const activePlayerId = activePlayer && !this.removedPlayers.has(activePlayer.id) && activePlayer.isConnected
-      ? activePlayer.id
-      : null
+    // The seat at activeIndex only counts as "active" if it actually has a
+    // decision to make. Once they go all-in, fold, or get removed, the
+    // engine doesn't auto-advance activeIndex — without this gate the
+    // client would still flash "YOUR TURN" + leave action buttons clickable
+    // for the player who just shoved or called all-in.
+    const activeIsActionable = activePlayer
+      && !this.removedPlayers.has(activePlayer.id)
+      && !this.foldedPlayers.has(activePlayer.id)
+      && !this.allInPlayers.has(activePlayer.id)
+      && activePlayer.isConnected
+    const activePlayerId = activeIsActionable ? activePlayer.id : null
     const hasTimedActiveTurn = Boolean(
       activePlayerId &&
       this.phase !== GAME_PHASES.WAITING &&
@@ -1348,4 +1412,10 @@ export class PokerGame {
       player.send({ type: 'game_state', data: this.getGameState(player.id) })
     }
   }
+
 }
+
+// Run-it-twice methods (~300 lines) live in ./runItTwice.js. Attach them
+// to PokerGame's prototype here so `this` binding stays correct without
+// PokerGame ballooning past 1700 lines again.
+attachRunItTwice(PokerGame)

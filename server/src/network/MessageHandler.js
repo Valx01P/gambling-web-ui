@@ -95,6 +95,9 @@ export class MessageHandler {
         case 'sidebet:sell':
           return this.handleSideBetSell(player, data)
 
+        case MESSAGE_TYPES.RUNOUT_VOTE_SUBMIT:
+          return this.handleRunoutVoteSubmit(player, data)
+
         default:
           return this.error('Unknown message type', player)
       }
@@ -590,6 +593,22 @@ export class MessageHandler {
     })
     if (!result.success) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeSideBetError(result.error) } })
+    }
+    return result
+  }
+
+  handleRunoutVoteSubmit(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker' || !room.game) {
+      return this.error('Not at a poker table', player)
+    }
+    const voteId = typeof data?.voteId === 'string' ? data.voteId : null
+    const choice = Number(data?.choice)
+    if (!voteId) return this.error('Missing voteId', player)
+    if (!Number.isFinite(choice)) return this.error('Invalid choice', player)
+    const result = room.game.submitRunoutVote(player.id, voteId, choice)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
     }
     return result
   }

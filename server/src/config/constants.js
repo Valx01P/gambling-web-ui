@@ -33,6 +33,23 @@ export const BLIND_PROPOSAL_TIMEOUT_MS = 60_000
 // Contest mode bumps blinds every N hands at the table.
 export const CONTEST_MODE_HANDS_PER_LEVEL = 10
 
+// Run-it-twice: when exactly two human players are both all-in pre-river
+// and the pot is at least RUN_IT_TWICE_MIN_POT chips, the engine offers
+// both players a vote to deal the remaining streets up to RUN_IT_TWICE_MAX_RUNS
+// times. Each player has RUN_IT_TWICE_VOTE_TIMEOUT_MS to confirm. The pot
+// is split evenly across each runout and awarded to that runout's winner.
+// Both players must agree on the same number; any mismatch (or a timeout)
+// falls back to a single runout.
+export const RUN_IT_TWICE_MIN_POT = 10_000
+export const RUN_IT_TWICE_MAX_RUNS = 4
+export const RUN_IT_TWICE_VOTE_TIMEOUT_MS = 60_000
+// Delay between successive runout reveals so each "boom" lands cleanly
+// instead of stacking on top of the previous one.
+export const RUN_IT_TWICE_STEP_DELAY_MS = 3500
+// How long the multi-runout summary holds on screen before the next-hand
+// reset kicks in. Matches resolveShowdown's 15s for parity.
+export const RUN_IT_TWICE_SUMMARY_HOLD_MS = 12_000
+
 export const PROFILE_AVATARS = [
   { id: 'op1', url: 'https://i.ibb.co/Wpf6XVp0/image.png' },
   { id: 'op2', url: 'https://i.ibb.co/XdFhJ7w/image.png' },
@@ -116,7 +133,16 @@ export const MESSAGE_TYPES = {
   CHIP_THROW: 'chip_throw',
   PLAYER_UPDATE: 'player_update',
   SPECTATOR_UPDATE: 'spectator_update',
-  ERROR: 'error'
+  ERROR: 'error',
+
+  // Run-it-twice flow. Vote messages broadcast to the whole table (so
+  // spectators can render "they're deciding"); only eligible-seat players
+  // can submit. Step messages drive each runout's reveal on the client.
+  RUNOUT_VOTE_START: 'runout_vote_start',
+  RUNOUT_VOTE_SUBMIT: 'runout_vote_submit',
+  RUNOUT_VOTE_UPDATE: 'runout_vote_update',
+  RUNOUT_VOTE_RESOLVED: 'runout_vote_resolved',
+  RUNOUT_STEP: 'runout_step'
 }
 
 // Bank loans: each bank lends $10k principal once at a base rate. The number of

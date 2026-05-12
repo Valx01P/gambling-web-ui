@@ -31,6 +31,7 @@ import Link from 'next/link'
 import StatsPanel from '../components/StatsPanel'
 import SpectatorPanel from '../components/SpectatorPanel'
 import SideBetsPanel from '../components/SideBetsPanel'
+import RunItTwiceVote from '../components/RunItTwiceVote'
 import { buildPokerStatistics, buildSpectatorStatistics, evaluateHand, formatCard, formatPercent, getHandName } from '../lib/pokerOdds'
 // Seat geometry lives in ./lib/seatLayout — shared by spectator view, the
 // table render, and the chip-throw animation. Pure data + helpers, no state.
@@ -437,6 +438,14 @@ export default function PokerPage() {
   // hand-start, every action, every phase advance, every buy/sell, and every
   // resolution — the client is purely a renderer.
   const [sideBetsState, setSideBetsState] = useState(null)
+  // Run-it-twice: vote in progress + opponent's submission status + each
+  // runout step's "boom" reveal (auto-dismissed after a short hold). The
+  // server is authoritative for everything in here — the client just
+  // tracks the latest broadcast to drive the modal + step banner.
+  const [runoutVote, setRunoutVote] = useState(null)
+  const [runoutSubmissions, setRunoutSubmissions] = useState([])
+  const [runoutStepBanner, setRunoutStepBanner] = useState(null)
+  const runoutStepBannerTimerRef = useRef(null)
   
   // New room feature states
   // 'general' | 'private' | 'spectate'. `private` is a UI tab only — the
@@ -875,6 +884,47 @@ export default function PokerPage() {
           // Full snapshot rebroadcast on every state change. Cheap to drop in
           // wholesale — payload tops out at ~6 props + a handful of positions.
           setSideBetsState(msg.data)
+          break
+        case 'runout_vote_start':
+          // Open the vote modal for everyone (eligible players vote;
+          // spectators just watch). Reset submissions to empty for this id.
+          setRunoutVote(msg.data || null)
+          setRunoutSubmissions([])
+          break
+        case 'runout_vote_update':
+          // Functional update so we read the freshest voteId, not whatever
+          // was in the closure when the ws handler was created.
+          setRunoutVote(curr => {
+            if (curr && msg.data?.voteId && curr.voteId === msg.data.voteId) {
+              setRunoutSubmissions(msg.data.submissions || [])
+            }
+            return curr
+          })
+          break
+        case 'runout_vote_resolved':
+          setRunoutVote(null)
+          setRunoutSubmissions([])
+          if (msg.data?.agreedRuns > 1) {
+            addSys(`Running it ${msg.data.agreedRuns} times!`)
+          } else if (msg.data?.outcome === 'disagreement') {
+            addSys('Disagreement — running once.')
+          } else if (msg.data?.outcome === 'timeout') {
+            addSys('No vote in time — running once.')
+          }
+          break
+        case 'runout_step':
+          // Each runout's "boom" reveal. Show a short-lived banner naming
+          // the runout index, winners, and total. Server is already pushing
+          // a game_state with the updated communityCards, so the board
+          // animates on its own — this banner just gives the moment a label.
+          if (msg.data) {
+            if (runoutStepBannerTimerRef.current) clearTimeout(runoutStepBannerTimerRef.current)
+            setRunoutStepBanner(msg.data)
+            runoutStepBannerTimerRef.current = setTimeout(() => {
+              setRunoutStepBanner(null)
+              runoutStepBannerTimerRef.current = null
+            }, 3200)
+          }
           break
         case 'sidebet:resolve':
           // Surface a system-message receipt for any payout that touched the
@@ -2891,6 +2941,35 @@ export default function PokerPage() {
         anchorRect={popoverAnchorRect}
         onClose={() => { setPopoverSeat(null); setPopoverAnchorRect(null) }}
       />
+
+      {/* Run-it-twice flow: vote modal (server starts when both humans are
+          all-in pre-river with pot ≥ threshold) + ephemeral step banner
+          announcing each runout's winner during the reveal sequence. */}
+      <RunItTwiceVote
+        vote={runoutVote}
+        myPlayerId={playerId}
+        submissions={runoutSubmissions}
+        onSubmit={(choice) => {
+          if (!runoutVote?.voteId) return
+          send('runout_vote_submit', { voteId: runoutVote.voteId, choice })
+        }}
+      />
+      {runoutStepBanner && (
+        <div className="pointer-events-none fixed left-1/2 top-20 z-[140] -translate-x-1/2 animate-sidebet-enter">
+          <div className="rounded-xl border border-amber-500/60 bg-zinc-900/95 px-4 py-2 text-center shadow-2xl backdrop-blur-md">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
+              Run {runoutStepBanner.runIndex + 1} of {runoutStepBanner.totalRuns}
+            </div>
+            <div className="mt-0.5 text-sm font-black text-white">
+              {(runoutStepBanner.winners || []).length === 0
+                ? 'Split board'
+                : (runoutStepBanner.winners || [])
+                    .map(w => `${w.username} +${w.chips}`)
+                    .join(' · ')}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Natural Flow Bottom UI — `md:relative` makes this the positioning
           anchor for the right column when seated (sidebets + chat are
