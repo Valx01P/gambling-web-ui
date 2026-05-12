@@ -1604,6 +1604,12 @@ export default function PokerPage() {
         if (next) window.localStorage.removeItem(CHAT_VISIBLE_STORAGE_KEY)
         else window.localStorage.setItem(CHAT_VISIBLE_STORAGE_KEY, '0')
       } catch {}
+      // Arena spectator: only one of chat/sidebets at a time, both anchored
+      // to the same bottom-right slot. Turning chat on closes sidebets.
+      if (next && isArena) {
+        setSideBetsDockVisible(false)
+        try { window.localStorage.setItem(SIDE_BETS_VISIBLE_STORAGE_KEY, '0') } catch {}
+      }
       return next
     })
   }
@@ -1621,6 +1627,12 @@ export default function PokerPage() {
         if (next) window.localStorage.removeItem(SIDE_BETS_VISIBLE_STORAGE_KEY)
         else window.localStorage.setItem(SIDE_BETS_VISIBLE_STORAGE_KEY, '0')
       } catch {}
+      // Arena: mutually exclude with chat. Both docks share the bottom-right
+      // slot, so turning sidebets on closes the chat dock.
+      if (next && isArena) {
+        setChatDockVisible(false)
+        try { window.localStorage.setItem(CHAT_VISIBLE_STORAGE_KEY, '0') } catch {}
+      }
       return next
     })
   }
@@ -3708,17 +3720,45 @@ export default function PokerPage() {
             : 'h-56 lg:h-72'
 
           if (isSpectator) {
-            // Spectator chat + sidebets each pin to the viewport — same
-            // pattern that was already in use for the spectator chat dock.
-            // Heights stay independent of the action panel.
+            // Bot arena: only one dock at a time, both anchored to the same
+            // bottom-right slot. The toggle handlers enforce mutual exclusion
+            // when isArena, but a defensive guard here means even if both
+            // visibility flags somehow stay true we still only render one
+            // (sidebets wins the tiebreak — it's more arena-relevant).
+            if (isArena) {
+              if (sideBetsDockVisible) {
+                return (
+                  <div className={`fixed safe-bottom-offset right-3 z-40 sm:right-4 w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
+                    <SideBetsPanel
+                      sideBets={sideBetsState}
+                      myPlayerId={playerId}
+                      myStack={myPlayer?.chips ?? bankState.chips ?? 0}
+                      onPlace={placeSideBet}
+                      onSell={sellSideBet}
+                      expanded={sideBetsExpanded}
+                      onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
+                      onClose={toggleSideBetsDock}
+                    />
+                  </div>
+                )
+              }
+              if (chatDockVisible) {
+                return (
+                  <div className="fixed safe-bottom-offset right-3 z-40 sm:right-4 w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
+                    {chatBoxInner}
+                  </div>
+                )
+              }
+              return null
+            }
+            // Regular table spectator: both can show. Sidebets uses
+            // spectator-stack-bottom (above chat on mobile, same row sm+);
+            // chat is full-width on mobile and anchors left on sm+ so it
+            // doesn't collide with sidebets on the right.
             return (
               <>
-                {/* Side bets dock — visible to spectators at both regular
-                    tables AND bot arenas. The engine spawns props for every
-                    hand regardless of room type, so arena spectators have
-                    a market to gamble on while watching the bots play. */}
                 {sideBetsDockVisible && (
-                  <div className={`fixed safe-bottom-offset right-3 z-40 sm:right-4 w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0 `}>
+                  <div className={`fixed spectator-stack-bottom right-3 z-40 sm:right-4 w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
                     <SideBetsPanel
                       sideBets={sideBetsState}
                       myPlayerId={playerId}
@@ -3732,7 +3772,7 @@ export default function PokerPage() {
                   </div>
                 )}
                 {chatDockVisible && (
-                  <div className="fixed safe-bottom-offset left-3 right-3 z-40 sm:left-auto sm:right-4 sm:w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
+                  <div className="fixed safe-bottom-offset left-3 right-3 z-40 sm:right-auto sm:left-4 sm:w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
                     {chatBoxInner}
                   </div>
                 )}

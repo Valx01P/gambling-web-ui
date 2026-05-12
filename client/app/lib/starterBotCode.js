@@ -182,23 +182,24 @@ const STARTER_CODE = `/**
 // very wide vs a single raise.
 const OPEN_BB         = 2.8    // preflop open size in BBs (raise to 2.8 × BB + any limp callers)
 const POT_BET         = 0.66   // standard postflop value-bet size as fraction of pot
-const C_BET_FREQ      = 0.55   // base c-bet probability after opening preflop
-const BLUFF_FLOOR_EQ  = 0.18   // never bluff if my own range-equity is below this
-const VALUE_RAISE_EQ  = 0.55   // raise for value when equity ≥ this (used to be 0.62 — too tight)
-const CALL_DOWN_EQ    = 0.28   // base equity required to call a bet — START LOW, drift up on tight reads
+const C_BET_FREQ      = 0.60   // base c-bet probability after opening preflop
+const BLUFF_FLOOR_EQ  = 0.16   // never bluff if my own range-equity is below this
+const VALUE_RAISE_EQ  = 0.52   // raise for value when equity ≥ this — kept slightly loose
+const CALL_DOWN_EQ    = 0.25   // base equity required to call a bet — START LOW, drift up on tight reads
 const RIVER_TIGHTEN   = 0.03   // bump call-equity by this on the river (slightly fewer bluffs in range)
 const SHORT_STACK_BB  = 15     // opponents below this BB depth are treated as jam/fold
 
 // Pre-baked opening cutoffs by position. score ≥ cutoff = we open. The
 // numbers map to roughly: top X% of hands where X = 100 × (1 - cutoff).
-// btn opens ~45% of hands, utg ~15%.
+// btn opens ~50% of hands, utg ~22%. These are intentionally on the looser
+// end of TAG defaults — a tighter version regresses to a fold-machine.
 const OPEN_CUTOFF = {
-  utg: 0.58, mp: 0.52, middle: 0.50, late: 0.45, co: 0.45, btn: 0.40, sb: 0.45
+  utg: 0.54, mp: 0.49, middle: 0.46, late: 0.42, co: 0.42, btn: 0.37, sb: 0.42
 }
 
 // BB defense cutoffs vs a single raise. We defend wider here than at any
 // other seat because we've already paid 1 BB and we close the action.
-const BB_DEFEND_VS_RAISE_CUTOFF = 0.35   // ≈ top 65% of hands
+const BB_DEFEND_VS_RAISE_CUTOFF = 0.32   // ≈ top 68% of hands
 const BB_DEFEND_VS_3BET_CUTOFF  = 0.55   // tighten dramatically vs a 3-bet
 
 // ─── Tiny per-hand deterministic RNG so frequencies actually mix ──────
@@ -357,6 +358,96 @@ function runGood(ctx) {
   }
 }
 
+// ─── buildProfiles — explicit per-opponent dossier you can iterate ────
+// Demonstrates: walking ctx.opponents to assemble a stable dictionary keyed
+// by opponent id. The point is to show an LLM/developer how to extend with
+// custom features (e.g., "is this villain raising me twice on the turn?")
+// without re-walking the list everywhere downstream.
+function buildProfiles(ctx) {
+  const profiles = {}
+  for (const o of ctx.opponents || []) {
+    const p = o.patterns || {}
+    const stats = o.stats || {}
+    profiles[o.id] = {
+      id: o.id,
+      name: o.name,
+      seat: o.seat,
+      isBot: !!o.isBot,
+      folded: !!o.folded,
+      allIn: !!o.allIn,
+      // pot-share state
+      committed: !!o.committed,
+      totalBet: o.totalBet || 0,
+      stackBB: o.stackBB || 0,
+      effStackBB: o.effectiveStackBB || 0,
+      // archetype + behavior
+      archetype: p.archetype || 'unknown',
+      sampleConfidence: p.sampleConfidence || 'low',
+      bluffer: !!p.bluffer,
+      sticky: !!p.stickyCaller,
+      tilted: p.tilt === 'tilted',
+      foldEquity: p.foldEquityScore || 0,
+      bluffCatchScore: p.bluffCatchScore || 0,
+      bluffTargetScore: p.bluffTargetScore || 0,
+      cBetFreq: p.cBetFreq || 0,
+      threeBetFreq: p.threeBetFreq || 0,
+      foldTo3Bet: p.foldTo3BetRate || 0,
+      checkRaises: p.checkRaises || 0,
+      donkBets: p.donkBets || 0,
+      // timing tells
+      avgActionMs: o.avgActionTimeMs || 0,
+      lastActionMs: o.lastActionTookMs || 0,
+      snapped: (o.lastActionTookMs || 0) > 0 && (o.lastActionTookMs || 0) < 800,
+      tanked: (o.lastActionTookMs || 0) > 4000,
+      // session memory
+      sessionProfit: o.sessionProfit || 0,
+      vsMeProfit: o.vsMeProfit || 0,
+      wonLastHand: !!o.wonLastHand,
+      revealedShowdowns: o.revealedShowdowns || [],
+      // inferred range
+      topPct: o.estimatedTopPct,
+      rangeLabel: o.estimatedRangeLabel,
+      // long-run stats (per-seat or per-stableId roll-up)
+      vpip: stats.vpip || 0,
+      pfr: stats.pfr || 0,
+      aggrFreq: stats.aggressionFreq || 0,
+      wtsdRate: stats.wtsdRate || 0,
+      foldsToBet: stats.foldsToBet || 0,
+      handsObserved: stats.handsObserved || 0
+    }
+  }
+  return profiles
+}
+
+// ─── planForBoard — sketch a three-street plan once you know the flop ─
+// Demonstrates: bestHand, draws, boardTexture, post-analysis valueClass.
+// The function returns a per-street intent — your branches below can read
+// from it to make sure the flop / turn / river actions are coherent
+// (e.g., barrel turn if we c-bet flop on a draw-heavy board).
+function planForBoard(ctx, board, post) {
+  if (!board || board.preflop) return { flop: 'check', turn: 'eval', river: 'eval' }
+  const valueClass = post?.valueClass || 'air'
+  const wet = board.wetness === 'wet' || board.wetness === 'volatile'
+  if (valueClass === 'nut') {
+    // Monsters on dry boards: induce by checking at least one street.
+    return wet
+      ? { flop: 'bet_big', turn: 'bet_big', river: 'bet_big' }
+      : { flop: 'check_raise_or_call', turn: 'bet_pot', river: 'overbet' }
+  }
+  if (valueClass === 'strong') {
+    return wet
+      ? { flop: 'bet_big', turn: 'bet_big', river: 'bet_med' }
+      : { flop: 'bet_med', turn: 'bet_med', river: 'thin_value' }
+  }
+  if (post?.semibluffCandidate) {
+    return { flop: 'bet_med', turn: 'eval', river: 'give_up_if_missed' }
+  }
+  if (valueClass === 'medium') {
+    return { flop: 'check_call', turn: 'check_call', river: 'check_fold_river' }
+  }
+  return { flop: 'check_fold', turn: 'check_fold', river: 'fold' }
+}
+
 // ─── analyseCurrentHand — extract patterns from THIS hand's actionHistory
 // Demonstrates: ctx.actionHistory, ctx.lastAggressor, lastOpponentAction.
 function analyseCurrentHand(ctx) {
@@ -399,6 +490,10 @@ function decide(ctx) {
   const villain = villainRead(ctx, ctx.lastAggressor?.id)
   const trend = runGood(ctx)
   const hand = analyseCurrentHand(ctx)
+  // Full opponent dossier + per-street plan. Both purely informational —
+  // referenced by the lines below to keep decisions coherent across streets.
+  const profiles = buildProfiles(ctx)
+  const plan = planForBoard(ctx, board, post)
 
   // ────────────────────────────────────────────────────────────────────
   // 1. ALL-IN SPOTS — call as a favorite or when priced in. Never agonize.
@@ -533,6 +628,28 @@ function decide(ctx) {
   if (board.paired) valueTarget += 0.04
 
   if (!ctx.facingBet) {
+    // 0a. SLOW-PLAY MONSTER on a dry, low-action board — check to induce.
+    //     A check from us looks weak; the next street we either get bluffed
+    //     into or we can lead big. Skipped on wet boards (free cards hurt).
+    if (post && post.valueClass === 'nut' && board.wetness === 'dry' &&
+        ctx.streetIsFlop && chance(ctx, 41) < 0.55) {
+      return { action: 'check', say: 'check' }
+    }
+    // 0b. DONK-BET — we're OOP and weren't the preflop aggressor, but the
+    //     board smashed our range (we called from BB, flop is 7-8-9 etc.).
+    //     Bet small to set the price and deny equity vs broadway-heavy
+    //     ranges that whiff this board.
+    if (!ctx.iWasPreflopAggressor && !ctx.isInPosition && ctx.streetIsFlop &&
+        (post?.valueClass === 'strong' || (post?.semibluffCandidate && t.foldEquity >= 0.40)) &&
+        chance(ctx, 43) < 0.40) {
+      return clampRaise(ctx, ctx.currentBet + Math.floor(ctx.potSize * 0.45))
+    }
+    // 0c. DOUBLE-BARREL — we c-bet flop, action checked back, we're now on
+    //     the turn with a draw or overcards. Fire again sized for fold equity.
+    if (ctx.iWasPreflopAggressor && ctx.streetIsTurn &&
+        plan.turn === 'bet_med' && t.foldEquity >= 0.35 && chance(ctx, 47) < 0.50) {
+      return clampRaise(ctx, ctx.currentBet + Math.floor(ctx.potSize * POT_BET))
+    }
     // 1. C-BET — we were the preflop aggressor on the flop.
     //    Dry, rainbow, ace-low boards → fire larger and more often.
     //    Wet, two-tone, connected boards → check more, smaller when we fire.
@@ -626,6 +743,18 @@ function decide(ctx) {
   if (ctx.currentBet >= ctx.potSize) rangeConfidence -= 0.10
   rangeConfidence = Math.max(0.20, Math.min(0.95, rangeConfidence))
   const effEq = rangeConfidence * eq + (1 - rangeConfidence) * eqVsRandom
+
+  // (A0) CHECK-RAISE — flop OOP, we checked, villain c-bet, we have strong
+  //      equity. This is the highest-EV trap line in poker — most ranges
+  //      give up to a check-raise without 2-pair+. Skip when the villain
+  //      pattern says "doesn't fold to raises" (sticky caller).
+  const weCheckedThisStreet = (ctx.actionHistory || [])
+    .some(a => a.phase === ctx.phase && a.playerId === ctx.me?.id && a.action === 'check')
+  if (ctx.streetIsFlop && weCheckedThisStreet && !ctx.isInPosition &&
+      effEq >= 0.55 && (!villain || !villain.sticky) &&
+      chance(ctx, 53) < 0.50) {
+    return clampRaise(ctx, ctx.currentBet + Math.floor(ctx.potSize * 1.0))
+  }
 
   // (A) Big equity edge → raise for value. Also fire when the analyzer
   //     says we have a 'nut' or 'strong' value class (sets, straights,

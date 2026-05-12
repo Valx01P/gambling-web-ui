@@ -13,6 +13,8 @@ work on this repo — it'll save you 3-4 rounds of grep.
   bar, panels). Everything else is component-scoped.
 - Backend: `server/` — Node 22 with native `--env-file-if-exists` (no
   dotenv). Express + `ws` share one listener. Postgres via `pg`.
+- Auth: Google Identity Services → server-issued JWT in httpOnly cookie.
+  `useAuth` (client) + `apiRouter` middleware (server). See STACK.md.
 - Bot sandbox: `client/app/lib/botCodeRunner.js` (browser) and
   `server/src/bots/` (authoritative). Sandbox is not a security boundary —
   it's user-runs-user-code.
@@ -24,7 +26,7 @@ work on this repo — it'll save you 3-4 rounds of grep.
 
 ```bash
 # server/  (Node 22, no dotenv — uses --env-file-if-exists)
-npm run dev                                   # nodemon + .env
+npm run dev                                   # nodemon + .env, listens on :3001
 npm start                                     # node + .env
 npm run start:prod                            # node + .env.production
 npm run migrate                               # apply pending pg migrations (idempotent)
@@ -33,7 +35,7 @@ node --env-file-if-exists=.env --test test/handEvaluator.test.js   # single file
 node --env-file-if-exists=.env --test --test-name-pattern="straight flush"  # single case
 
 # client/  (Next.js 16)
-npm run dev                                   # :3000
+npm run dev                                   # :3000, expects API on :3001
 npm run build                                 # also the type/syntax sanity check after edits
 npm start
 ```
@@ -66,6 +68,8 @@ The client has no test runner today.
 - **CORS / env**: `server/.env.production` must not include `localhost`
   in `CORS_ORIGINS`. The deployed frontend's *exact* scheme+host is what
   the server compares against.
+- **CloudFront overwrites**: when replacing an object at the same key,
+  issue a `create-invalidation` — propagation is 5–10 min and async.
 
 ## Setup
 

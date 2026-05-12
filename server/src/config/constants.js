@@ -6,7 +6,7 @@ export const POKER_CONFIG = {
   // generous enough for a spectator to gamble all evening without needing
   // a bank loan immediately. Side bets + run-it-twice are calibrated to
   // this size (run-it-twice triggers at 10k pot, side-bets min bet 10).
-  STARTING_CHIPS: 10000,
+  STARTING_CHIPS: 1000,
   SMALL_BLIND: 5,
   BIG_BLIND: 10,
   MIN_RAISE: 10,
