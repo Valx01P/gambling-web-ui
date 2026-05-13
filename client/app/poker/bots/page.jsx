@@ -1064,6 +1064,16 @@ function BotsPageInner() {
   const [publicLimit, setPublicLimit] = useState(MAX_PUBLIC_BOTS_PER_USER)
   const [publicBots, setPublicBots] = useState([])
   const [botLimit, setBotLimit] = useState(MAX_BOTS_PER_USER)
+  // The 10-bot cap on the server (countNonCloneBotsByOwner) ONLY counts
+  // hand-built manual bots — clones, neural slots, and super bots are
+  // off-quota. The Create-tab guard below must match that filter or it
+  // falsely locks the user out as soon as their clones / neural pets
+  // push myBots.length past 10. Memoized so the click-time check and
+  // the per-section badge ("My Bots (N/10)") read from the same source.
+  const manualBotCount = useMemo(
+    () => myBots.filter(b => !b.isClone && !b.isNeural && !b.isSuper).length,
+    [myBots]
+  )
   const [loading, setLoading] = useState(true)
   // Two distinct error channels so a transient validation error (e.g.
   // "at the bot limit, can't create more") doesn't bleed into the
@@ -1159,8 +1169,13 @@ function BotsPageInner() {
               // At the limit → route back to My Bots and explain. The
               // validation banner auto-dismisses, so the user isn't
               // staring at the warning forever.
-              if (myBots.length >= botLimit) {
-                setValidationError(`You can only have up to ${botLimit} bots per account. Delete one to make room.`)
+              // Uses manualBotCount (filters out clones/neural/super) to
+              // match the server-side check in countNonCloneBotsByOwner.
+              // Counting myBots.length here would falsely block creates
+              // as soon as the user has a few neural pets or clones —
+              // those are off-quota on the backend.
+              if (manualBotCount >= botLimit) {
+                setValidationError(`You can only have up to ${botLimit} manual bots per account. Delete one to make room. (Clone + neural slots don't count.)`)
                 setTab('mine')
                 return
               }

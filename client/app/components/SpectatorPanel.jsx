@@ -66,8 +66,11 @@ function HoleCardThumbs({ player, revealed }) {
 function PlayerAvatar({ player, sizeClass = 'h-[42px] w-[42px]', size = 42 }) {
   // Bots get their actual color/initials instead of the generic profile
   // avatar — much easier to tell apart at a glance during arena matches.
+  // If the owner uploaded a custom image, BotAvatar renders that
+  // (avatarUrl wins over the color/initials fallback inside the
+  // component).
   if (player.isBot) {
-    return <BotAvatar name={player.username} color={player.botColor} textColor={player.botTextColor} size={size} />
+    return <BotAvatar name={player.username} color={player.botColor} textColor={player.botTextColor} avatarUrl={player.botAvatarUrl} size={size} />
   }
   return (
     <ProfileAvatar

@@ -26,7 +26,7 @@ export default function BotPill({
 }) {
   const mlp = isMlpFamily(bot)
   const Avatar = useBotAvatar ? (
-    <BotAvatar name={bot.name} color={bot.color} textColor={bot.textColor} size={avatarSize} />
+    <BotAvatar name={bot.name} color={bot.color} textColor={bot.textColor} avatarUrl={bot.avatarUrl} size={avatarSize} />
   ) : (
     <ProfileAvatar
       avatarUrl={bot.avatarUrl}

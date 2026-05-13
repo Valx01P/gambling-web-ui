@@ -212,11 +212,14 @@ export function validateName(name) {
   return trimmed
 }
 
-// Bumped 32 KB → 128 KB so a complex strategy with the full reference comment
-// + sizable lookup tables (e.g., per-opponent opening charts, hand ranges as
-// data) comfortably fits. The sandbox compile/run timeouts still cap CPU; the
-// length cap is purely about keeping the bot row small in the database.
-const MAX_CODE_LENGTH = 131_072
+// 256 KB. Earlier bumps walked this up from 32 KB → 128 KB → 256 KB to
+// accommodate progressively bigger strategies — full reference comment,
+// per-opponent opening charts, embedded hand ranges as data, neural-style
+// lookup tables baked into the script, etc. The sandbox compile/run
+// timeouts still cap CPU per decision; this limit is purely a DB-row
+// size guard. Postgres TEXT handles ~1GB per field so we're nowhere near
+// the storage ceiling — no need to externalize to S3 at this size.
+const MAX_CODE_LENGTH = 262_144
 
 export function validateCode(code) {
   if (code === undefined || code === null) return

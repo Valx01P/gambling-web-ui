@@ -166,7 +166,7 @@ export default function JsCodeEditor({ code, onCodeChange }) {
 
         <div className="text-[11px] font-bold leading-snug text-zinc-300">
           Server runs <code className="text-emerald-300">decide(ctx)</code> on every turn with a 150 ms CPU budget,
-          32 KB max source, no I/O. Return one of:
+          256 KB max source, no I/O. Return one of:
           {' '}<code className="text-zinc-100">{'{ action: "fold|check|call" }'}</code>,
           {' '}<code className="text-zinc-100">{'{ action: "raise", amount: <chips> }'}</code>,
           {' '}<code className="text-zinc-100">{'{ action: "all_in" }'}</code>.

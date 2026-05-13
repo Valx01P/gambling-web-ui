@@ -2810,7 +2810,7 @@ export default function PokerPage() {
                     <div className="flex flex-wrap gap-1.5">
                       {seatedBots.map(b => (
                         <span key={b.id} className="inline-flex items-center gap-1 rounded-md border border-zinc-700/70 bg-zinc-900/60 pl-1 pr-0.5 py-0.5">
-                          <BotAvatar name={b.username} color={b.botColor} textColor={b.botTextColor} size={18} />
+                          <BotAvatar name={b.username} color={b.botColor} textColor={b.botTextColor} avatarUrl={b.botAvatarUrl} size={18} />
                           <span className="max-w-[90px] truncate text-[10px] font-black text-white">{b.username}</span>
                           <button
                             type="button"
@@ -3154,7 +3154,7 @@ export default function PokerPage() {
                     <div className="flex flex-wrap gap-1.5 mb-2">
                       {seatedBots.map(b => (
                         <span key={b.id} className="inline-flex items-center gap-1 rounded-md border border-zinc-700/70 bg-zinc-900/60 pl-1 pr-0.5 py-0.5">
-                          <BotAvatar name={b.username} color={b.botColor} textColor={b.botTextColor} size={18} />
+                          <BotAvatar name={b.username} color={b.botColor} textColor={b.botTextColor} avatarUrl={b.botAvatarUrl} size={18} />
                           <span className="max-w-[90px] truncate text-[10px] font-black text-white">{b.username}</span>
                           <button
                             type="button"
