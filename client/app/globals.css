@@ -206,25 +206,10 @@ body {
   bottom: max(1rem, env(safe-area-inset-bottom));
 }
 
-/* When spectating on mobile, the chat dock sits at the bottom and the
-   SpectatorPanel needs to stack ABOVE it instead of overlapping. The chat
-   dock is `h-40` (10rem) on mobile and anchors at `safe-bottom-offset`
-   (max(0.75rem, safe-area-inset-bottom)). Position the spectator panel
-   `chat_height + 0.75rem gap` above that anchor.
-   On `sm:` and up we revert to the side-anchored layout (spectator on the
-   left, chat on the right) — the screen has room for both side by side. */
-.spectator-stack-bottom {
-  bottom: calc(10.75rem + max(0.75rem, env(safe-area-inset-bottom)));
-}
-@media (min-width: 640px) {
-  /* Desktop value must match .safe-bottom-offset so toggling chat on/off
-     doesn't visibly shift the spectator panel. (On mobile the two are
-     intentionally different — chat lives below the panel and the panel
-     has to stack above it.) */
-  .spectator-stack-bottom {
-    bottom: max(0.75rem, env(safe-area-inset-bottom));
-  }
-}
+/* (No spectator-specific bottom-anchor helpers needed anymore — the
+   SpectatorPanel and sidebets/chat docks all live in-flow inside the
+   page's bottom-UI flex wrapper now, so they stack naturally via flex
+   order/gap rather than fixed bottom-offset math.) */
 
 /* iOS Safari auto-zooms into any input whose computed font-size is below 16px
    on focus, then doesn't always zoom back out — leaves the page wedged at the

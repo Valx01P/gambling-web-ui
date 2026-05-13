@@ -7,6 +7,7 @@ import { BetChips, PotChips } from '../components/ChipStack'
 import { EMOTE_OPTIONS, EmoteIcon, SeatEmotes, SeatYells, getEmoteOptions } from '../components/PokerEmotes'
 import ProfileSelector, { getProfileAvatar, ProfileAvatar } from '../components/ProfileSelector'
 import HomeBackLink from '../components/HomeBackLink'
+import RouteNavCluster from '../components/RouteNavCluster'
 // AccountMenu (profile + DMs + notifications) is mounted globally via
 // AccountDock in the root layout. The table header keeps the Tools and
 // Lobby buttons but no longer renders the account/messages cluster.
@@ -2023,11 +2024,17 @@ export default function PokerPage() {
     <div className="min-h-[100dvh] flex flex-col p-3 md:p-4 max-w-7xl mx-auto overflow-x-hidden">
 
       {/* Top Header Row.
-          `flex-wrap` lets the right cluster drop below the left cluster
-          on narrow widths instead of colliding with the spectator chips
-          / P/L badge that used to float at top-center. `gap-y-2` keeps a
-          consistent vertical rhythm when wrapping occurs. */}
-      <div className="relative flex flex-wrap items-center justify-between gap-y-2 mb-3 sm:mb-4 z-50 shrink-0">
+          Tools + Lobby cluster used to live INSIDE this row with
+          `mr-X` to clear the AccountDock. That positioned it relative
+          to the parent (max-w-7xl mx-auto, centered), so on wide
+          desktops the cluster sat far from the viewport edge while
+          the dock was fixed AT the viewport edge — leaving a big gap
+          between the two. Now Tools + Lobby live in a fixed-positioned
+          RouteNavCluster (below) so they share the dock's coordinate
+          system. The row keeps only the left cluster + a right-padding
+          reservation to prevent that cluster from sliding under the
+          fixed Tools+Lobby chips. */}
+      <div className={`relative flex flex-wrap items-center gap-y-2 mb-3 sm:mb-4 z-50 shrink-0 ${authUser ? 'pr-36 sm:pr-44' : 'pr-48 sm:pr-60'}`}>
         <div className="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0">
           {isArena && (
             <button
@@ -2085,18 +2092,17 @@ export default function PokerPage() {
              </button>
           )}
         </div>
-        {/* Auth-reactive right reservation. Signed-out → clear room
-            for the "Sign in" text chip (~75-80px) at mr-24/28. Signed-in
-            → dock collapses to a 36px avatar so mr-14/16 is plenty, and
-            anything wider just leaves a dead gap to the right of the
-            Lobby button. Same pattern as RouteNavCluster on the other
-            routes, but inline here because this is a flex sibling
-            (margin) rather than absolute positioning. */}
-        <div className={`flex items-center gap-2 ${authUser ? 'mr-14 sm:mr-16' : 'mr-24 sm:mr-28'}`}>
-          {/* The profile / notifications / DMs cluster used to live here
-              but is now globally docked top-right (see AccountDock).
-              Only the table-scoped controls (Tools, Leave) remain in
-              this header row. */}
+        {/* Tools + Lobby cluster. RouteNavCluster uses `position: fixed`
+            so it lives in the viewport coordinate system (same as the
+            AccountDock) — even though it's authored inside the row in
+            the DOM, it's pulled OUT of the row's flex flow at render
+            time. That fixes the wide-desktop gap that the old `mr-X`
+            approach had: mr was measured from the parent container's
+            right edge (max-w-7xl mx-auto), but the dock is anchored to
+            the viewport's right edge. With fixed positioning both are
+            in the same frame. The parent row reserves right-side
+            padding so its left cluster never slides under these chips. */}
+        <RouteNavCluster>
           <div ref={tableMenuRef} className="relative">
             <button
               type="button"
@@ -2464,7 +2470,7 @@ export default function PokerPage() {
             <span aria-hidden="true" className="text-base leading-none sm:text-lg">&lt;</span>
             <span className="hidden sm:inline">{leaveTableArmed ? 'Confirm leave' : 'Lobby'}</span>
           </button>
-        </div>
+        </RouteNavCluster>
       </div>
 
       {/* Persistent finance widget. Wrapped in a centered max-w-7xl band so
@@ -3616,7 +3622,14 @@ export default function PokerPage() {
       {/* Main Table Wrapper */}
       <div className="flex-1 flex flex-col justify-center relative w-full mb-4">
         
-        <div className="relative w-full max-w-5xl mx-auto aspect-[1.1/1] sm:aspect-[1.8/1] md:aspect-[2.2/1] rounded-[50%] border-4 border-emerald-900/40 shrink-0 mt-10 sm:mt-6 mb-24 md:mb-24"
+        {/* `mb-` here is the gap between the table felt's lower edge
+            (where the "You" seat protrudes outward) and the bottom-UI
+            wrapper below. The original mb-24 (96px) was too far; the
+            first revision pulled it to mb-8 (32px) which the user said
+            was too close. mb-12 / md:mb-16 (48/64px) splits the
+            difference — comfortable room for the seat's protrusion +
+            visible gap, without a big empty band of felt. */}
+        <div className="relative w-full max-w-5xl mx-auto aspect-[1.1/1] sm:aspect-[1.8/1] md:aspect-[2.2/1] rounded-[50%] border-4 border-emerald-900/40 shrink-0 mt-10 sm:mt-6 mb-12 md:mb-16"
              style={{
                background: 'radial-gradient(ellipse 70% 60% at 50% 45%, #1a5c3a 0%, #14472c 45%, #0f3521 80%, #0a2a18 100%)',
                boxShadow: 'inset 0 2px 50px rgba(0,0,0,0.5), 0 0 100px rgba(0,0,0,0.4)',
@@ -3852,23 +3865,13 @@ export default function PokerPage() {
           Header Row above — that placement prevents the centered float
           from overlapping the Tools/Lobby cluster on narrow widths. */}
 
-      {isSpectator && (
-        <SpectatorPanel
-          players={orderedPlayers}
-          oddsByPlayer={spectatorOddsByPlayer}
-          blindMode={spectatorBlindMode}
-          revealAll={spectatorRevealAll}
-          visiblePlayerIds={spectatorVisiblePlayerIds}
-          activePlayerId={gameState?.activePlayerId || null}
-          isArena={isArena}
-          arenaRunning={arenaRunning}
-          chatVisible={chatDockVisible}
-          onToggleArenaRunning={toggleArenaRunning}
-          onToggleBlind={toggleSpectatorBlind}
-          onToggleRevealAll={toggleSpectatorRevealAll}
-          onTogglePlayer={toggleSpectatorPlayer}
-        />
-      )}
+      {/* SpectatorPanel used to render here as a standalone fixed-
+          positioned overlay. It now renders INSIDE the bottom-UI flex
+          wrapper below (search for "Spectator panel — in-flow"), so it
+          participates in the same layout system as the regular table's
+          action panel and sidebets/chat docks. This unifies the
+          spectator/arena UI with the regular-play UI: vertical stack
+          on mobile, side-by-side on md+, no fixed-positioning math. */}
 
       <AchievementToast
         achievement={achievement}
@@ -3959,11 +3962,17 @@ export default function PokerPage() {
       )}
 
       {/* Natural Flow Bottom UI — `md:relative` makes this the positioning
-          anchor for the right column when seated (sidebets + chat are
-          absolutely positioned inside it at md+ so they share the action
-          panel's baseline AND don't inflate the row's height when sidebets
-          expands). */}
-      <div className={`w-full flex flex-col md:flex-row md:relative justify-center md:justify-between items-center md:items-end gap-3 sm:gap-4 shrink-0 mt-auto ${isSpectator ? 'pb-[310px] md:pb-0 md:min-h-[210px]' : 'pb-4 md:pb-0'}`}>
+          anchor for the right column at md+ (sidebets + chat are absolutely
+          positioned inside it so they share the action / spectator panel's
+          baseline AND don't inflate the row's height when sidebets expands).
+          Same pattern for every mode now: action panel OR spectator panel
+          on the left, sidebets/chat docks on the right. Mobile (flex-col)
+          stacks them via order-1 / order-2. md+ (flex-row + md:absolute
+          for the docks) puts them side-by-side.
+          No more pb-[XXXpx] reservations — panels are in-flow, the wrapper
+          takes their natural height, and flex-1 on the table area auto-
+          adjusts to fit whatever's left. */}
+      <div className={`w-full flex flex-col md:flex-row md:relative justify-center md:justify-between items-center md:items-end gap-3 sm:gap-4 shrink-0 mt-auto pb-4 md:pb-0 ${isSpectator ? 'md:min-h-[210px]' : ''}`}>
         
         {/* Actions Panel — fixed-size chrome regardless of turn so the rest
             of the layout doesn't shift between waiting and acting. */}
@@ -4154,11 +4163,59 @@ export default function PokerPage() {
           </div>
         )}
 
-        {/* Side bets dock (sidebets only — chat lives under the yell input
-            on the left now). Spectators get their own fixed-position chat +
-            sidebets pair; seated players have the dock anchored to the
-            bottom-right of the row, sharing the action panel's baseline and
-            growing upward when expanded without pushing the action UI. */}
+        {/* Spectator panel — in-flow. Wrapper classes exactly mirror
+            the action panel's wrapper above (order-2 mobile / md:order-1
+            desktop, same 92%/360px mobile sizing, same md:w-[320px] /
+            md:max-w-none / shrink-0). That parity is the whole point of
+            this refactor: spectator mode and seated-player mode now use
+            the IDENTICAL bottom-UI layout, with the panel itself the
+            only thing that varies between the two.
+
+            ── DESKTOP LIFT (tweak `md:-translate-y-N` below) ──
+            On md+ the panel is lifted UP by `-translate-y-20` (= 80px)
+            so it sits over the lower felt of the table area instead of
+            being pushed to the very bottom of the page (which was
+            forcing the user to scroll to see the panel fully). Tweak
+            in 4px units:
+              -translate-y-12 = -48px (subtle)
+              -translate-y-16 = -64px
+              -translate-y-20 = -80px (current default)
+              -translate-y-24 = -96px
+              -translate-y-28 = -112px (aggressive)
+            KEEP IN SYNC with the dock wrapper below — both lifts must
+            match or the spectator panel + sidebets/chat row will sit
+            at different heights on desktop.
+            Mobile gets NO lift — sidebets stacks directly above the
+            spectator panel there, so lifting would cause overlap. */}
+        {isSpectator && (
+          <div className="order-2 w-[92%] max-w-[360px] md:order-1 md:w-[320px] md:max-w-none shrink-0 md:-translate-y-20 md:relative md:z-10">
+            <SpectatorPanel
+              players={orderedPlayers}
+              oddsByPlayer={spectatorOddsByPlayer}
+              blindMode={spectatorBlindMode}
+              revealAll={spectatorRevealAll}
+              visiblePlayerIds={spectatorVisiblePlayerIds}
+              activePlayerId={gameState?.activePlayerId || null}
+              isArena={isArena}
+              arenaRunning={arenaRunning}
+              onToggleArenaRunning={toggleArenaRunning}
+              onToggleBlind={toggleSpectatorBlind}
+              onToggleRevealAll={toggleSpectatorRevealAll}
+              onTogglePlayer={toggleSpectatorPlayer}
+            />
+          </div>
+        )}
+
+        {/* Sidebets / chat dock — unified layout for ALL modes
+            (non-spectator, non-arena spectator, arena spectator).
+            One `order-1 mx-auto md:order-2 md:absolute md:bottom-0
+            md:right-0` wrapper holds whichever docks are toggled on.
+            On mobile this sits ABOVE the action/spectator panel; on
+            md+ it pins to the bottom-right of the row.
+            The previous code had three branches with fixed-position
+            tricks for each spectator sub-mode — replaced here with the
+            same in-flow pattern the seated-player view has used all
+            along. */}
         {(() => {
           // Sidebets dock height. Two states the panel ever needs to be in:
           //   collapsed (the standard, glanceable size) — h-56 lg:h-72.
@@ -4174,78 +4231,31 @@ export default function PokerPage() {
             ? 'h-fit max-h-[80dvh]'
             : 'h-56 lg:h-72'
 
-          if (isSpectator) {
-            // Bot arena: only one dock at a time, both anchored to the same
-            // bottom-right slot. The toggle handlers enforce mutual exclusion
-            // when isArena, but a defensive guard here means even if both
-            // visibility flags somehow stay true we still only render one
-            // (sidebets wins the tiebreak — it's more arena-relevant).
-            if (isArena) {
-              if (sideBetsDockVisible) {
-                return (
-                  <div className={`fixed safe-bottom-offset right-3 z-40 sm:right-4 w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
-                    <SideBetsPanel
-                      sideBets={sideBetsState}
-                      myPlayerId={playerId}
-                      myStack={myPlayer?.chips ?? bankState.chips ?? 0}
-                      onPlace={placeSideBet}
-                      onSell={sellSideBet}
-                      expanded={sideBetsExpanded}
-                      onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
-                      onClose={toggleSideBetsDock}
-                    />
-                  </div>
-                )
-              }
-              if (chatDockVisible) {
-                return (
-                  <div className="fixed safe-bottom-offset right-3 z-40 sm:right-4 w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
-                    {chatBoxInner}
-                  </div>
-                )
-              }
-              return null
-            }
-            // Regular table spectator: both can show. Sidebets uses
-            // spectator-stack-bottom (above chat on mobile, same row sm+);
-            // chat is full-width on mobile and anchors left on sm+ so it
-            // doesn't collide with sidebets on the right.
-            return (
-              <>
-                {sideBetsDockVisible && (
-                  <div className={`fixed spectator-stack-bottom right-3 z-40 sm:right-4 w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
-                    <SideBetsPanel
-                      sideBets={sideBetsState}
-                      myPlayerId={playerId}
-                      myStack={myPlayer?.chips ?? bankState.chips ?? 0}
-                      onPlace={placeSideBet}
-                      onSell={sellSideBet}
-                      expanded={sideBetsExpanded}
-                      onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
-                      onClose={toggleSideBetsDock}
-                    />
-                  </div>
-                )}
-                {chatDockVisible && (
-                  <div className="fixed safe-bottom-offset left-3 right-3 z-40 sm:right-auto sm:left-4 sm:w-[calc(100vw-1.5rem)] sm:max-w-[320px] md:w-[320px] flex flex-col h-40 md:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
-                    {chatBoxInner}
-                  </div>
-                )}
-              </>
-            )
-          }
-
-          // Non-spectator: sidebets-shaped slot on the right at md+, top of
-          // the bottom row on mobile (order-1). If sidebets is hidden but
-          // chat is on, the chat dock takes over the same slot — gives users
-          // their full right-hand column back for chat. If both are hidden,
-          // nothing renders here at all.
-          const showSidebetsRight = sideBetsDockVisible
-          const showChatRight = !sideBetsDockVisible && chatDockVisible
-          if (!showSidebetsRight && !showChatRight) return null
+          // Visibility rules:
+          //   • Spectator (arena or not): show whichever toggles are on.
+          //     Arena enforces mutual exclusion at the toggle handler;
+          //     non-arena spectator lets the user have both.
+          //   • Non-spectator: chat takes the sidebets slot ONLY when
+          //     sidebets is hidden — preserves the existing behavior
+          //     where seated players use one or the other in this slot,
+          //     not both (the inline chat under the yell input handles
+          //     the always-on case for them).
+          const showSidebets = sideBetsDockVisible
+          const showChat = isSpectator
+            ? chatDockVisible
+            : (!sideBetsDockVisible && chatDockVisible)
+          if (!showSidebets && !showChat) return null
+          // Match the spectator panel's md+ lift so both sides of the
+          // bottom-UI row visually align. KEEP THIS VALUE IN SYNC with
+          // `md:-translate-y-20` on the spectator wrapper above —
+          // changing one without the other will make the dock + panel
+          // sit at different heights on desktop. For seated players
+          // (no spectator wrapper), no lift is applied — the action
+          // panel + sidebets sit at their natural position.
+          const lift = isSpectator ? 'md:-translate-y-20' : ''
           return (
-            <div className="order-1 w-[92%] max-w-[360px] mx-auto md:order-2 md:absolute md:bottom-0 md:right-0 md:mx-0 md:w-auto md:max-w-none md:z-30 flex flex-col items-end gap-3 shrink-0">
-              {showSidebetsRight && (
+            <div className={`order-1 w-[92%] max-w-[360px] mx-auto md:order-2 md:absolute md:bottom-0 md:right-0 md:mx-0 md:w-auto md:max-w-none md:z-30 flex flex-col items-end gap-3 shrink-0 ${lift}`}>
+              {showSidebets && (
                 <div className={`w-full md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
                   <SideBetsPanel
                     sideBets={sideBetsState}
@@ -4259,11 +4269,7 @@ export default function PokerPage() {
                   />
                 </div>
               )}
-              {showChatRight && (
-                // Taller than the inline-left chat — when chat owns the
-                // sidebets slot it has the full right column to itself, so
-                // give it the same vertical footprint sidebets would have
-                // had instead of the squat h-40 the inline version uses.
+              {showChat && (
                 <div className="w-full md:w-[320px] flex flex-col h-56 lg:h-72 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
                   {chatBoxInner}
                 </div>

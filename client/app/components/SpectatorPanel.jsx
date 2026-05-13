@@ -37,9 +37,9 @@ function actionText(action) {
   return action.action.replace('_', ' ').toUpperCase()
 }
 
-// Pair of hole-card thumbnails sized for the wider panel. Larger than the
-// row-fitting thumbs we used to render — the spectator panel is the primary
-// place a watcher reads each bot's hand, so cards need to be legible.
+// Pair of hole-card thumbnails. 50×36 each — the largest the panel can
+// fit without scrolling at 5-6 seats. CardSprite is 80:110 aspect, so
+// w-9 (36px) renders ~49px tall, matching the container's h-[50px].
 function HoleCardThumbs({ player, revealed }) {
   const cards = player.cards || []
   return (
@@ -48,7 +48,7 @@ function HoleCardThumbs({ player, revealed }) {
         const card = cards[idx]
         const visible = revealed && card?.rank && card?.suit
         return (
-          <div key={idx} className="h-[52px] w-9 overflow-hidden">
+          <div key={idx} className="h-[50px] w-9 overflow-hidden">
             {cards.length === 0 ? (
               <div className="h-full w-full rounded-[4px] bg-zinc-900/60" />
             ) : visible ? (
@@ -87,44 +87,60 @@ function SpectatorPanelImpl({
   activePlayerId = null,
   isArena = false,
   arenaRunning = false,
-  chatVisible = true,
   onToggleBlind,
   onToggleRevealAll,
   onTogglePlayer,
   onToggleArenaRunning,
 }) {
-  // 'expanded' = full panel (default), 'compact' = single-row strip with
-  // active-player chip + controls (no per-player rows). Lets watchers free up
-  // vertical space without losing the pause / reveal-all controls.
+  // Three view modes:
+  //   'expanded' — big rows: avatar, hole cards, equity bar, status, chips.
+  //                The "primary watching" view; takes ~80px per player.
+  //   'compact'  — tight per-player strip: 24px avatar + name + chips +
+  //                inline equity % + acting state, no hole cards, no bar.
+  //                ~28-32px per player. Best for arenas with many seats
+  //                or for mobile where vertical space is scarce.
+  //   'minimal'  — single-line header strip with active player + controls.
+  //                Frees up the entire bottom of the screen.
+  //
+  // Cycle on the toggle button: expanded → compact → minimal → expanded.
   const [view, setView] = useState('expanded')
+  const isExpanded = view === 'expanded'
   const isCompact = view === 'compact'
+  const isMinimal = view === 'minimal'
+  const cycleView = () => setView(prev =>
+    prev === 'expanded' ? 'compact' : prev === 'compact' ? 'minimal' : 'expanded'
+  )
   const activePlayer = players.find(p => p.id === activePlayerId) || null
-  // When the chat dock is visible we need to stack above it; when it's been
-  // toggled off via Tools, drop to the flat safe-area-aware bottom offset.
-  const bottomAnchorClass = chatVisible ? 'spectator-stack-bottom' : 'safe-bottom-offset'
+  // Tighter padding everywhere — the panel is a glance widget, not a
+  // page, so cramming the chrome is fine.
+  const padClass = isMinimal ? 'px-2 py-2' : 'px-2.5 py-2'
+  // No max-h, no internal scroll. With the row dimensions shrunk
+  // (avatar 32px, hole cards 32px, py-1), 5 players fit at ~225px and
+  // 10 players at ~440px — the panel sizes itself naturally and the
+  // bottom-UI wrapper (mt-auto) lets the table area auto-shrink to
+  // the remaining flex-1 space above.
 
   return (
-    <div className={`fixed ${bottomAnchorClass} left-3 right-3 z-50 rounded-xl border border-zinc-600/60 bg-zinc-900/95 shadow-2xl backdrop-blur-md sm:left-4 sm:right-auto sm:w-[calc(100vw-1.5rem)] ${isCompact ? 'sm:max-w-[420px] px-2 py-2' : 'sm:max-w-[460px] px-3 py-3'}`}>
-      <div className={`flex items-center justify-between gap-2 ${isCompact ? 'mb-0' : 'mb-2'}`}>
+    <div className={`w-full flex flex-col rounded-xl border border-zinc-600/60 bg-zinc-900/95 shadow-2xl backdrop-blur-md ${padClass}`}>
+      <div className={`flex items-center justify-between gap-2 ${isMinimal ? 'mb-0' : 'mb-1.5'}`}>
         <div className="min-w-0 flex items-center gap-2">
-          {isCompact && activePlayer ? (
+          {isMinimal && activePlayer ? (
             <>
-              <PlayerAvatar player={activePlayer} sizeClass="h-7 w-7" size={28} />
-              <div className="min-w-0">
-                <div className="truncate text-xs font-black text-white">{activePlayer.username}</div>
+              <PlayerAvatar player={activePlayer} sizeClass="h-6 w-6" size={24} />
+              <div className="min-w-0 flex items-baseline gap-1.5">
+                <div className="truncate text-[11px] font-black text-white">{activePlayer.username}</div>
                 <div className="truncate text-[9px] font-bold text-amber-200">
                   {actionText(activePlayer.lastAction) || 'Acting…'}
                 </div>
               </div>
             </>
-          ) : isCompact ? (
-            <div className="text-xs font-black text-white">Spectating · {players.length} seated</div>
           ) : (
-            <div>
-              <div className="text-sm font-black text-white">Spectator View</div>
-              <div className="text-[10px] font-bold text-zinc-400">
-                {players.length} seated · {revealAll ? 'all cards revealed' : `${visiblePlayerIds.size} pinned · hover to peek`}
-              </div>
+            // Single-word title — every player is visible in the list
+            // below, so showing the count up here is redundant and
+            // just steals horizontal room from the toolbar buttons on
+            // narrow panels.
+            <div className="truncate text-xs font-black text-white">
+              Spectator
             </div>
           )}
         </div>
@@ -172,22 +188,110 @@ function SpectatorPanelImpl({
           >
             <EyeIcon closed={blindMode} />
           </button>
-          {/* Collapse / expand — vertical-space saver for mobile or for
-              uncluttering the table view while still keeping the controls. */}
+          {/* Three-state density cycle: expanded → compact → minimal →
+              expanded. Each state shows the next state's label as the
+              tooltip so the user can predict the click. */}
           <button
             type="button"
-            onClick={() => setView(prev => prev === 'compact' ? 'expanded' : 'compact')}
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-600/60 bg-zinc-800 text-zinc-200 transition-colors hover:bg-zinc-700"
-            title={isCompact ? 'Expand spectator view' : 'Collapse spectator view'}
-            aria-label={isCompact ? 'Expand spectator view' : 'Collapse spectator view'}
+            onClick={cycleView}
+            className="flex h-7 w-auto items-center justify-center gap-0.5 rounded-md border border-zinc-600/60 bg-zinc-800 px-1.5 text-zinc-200 transition-colors hover:bg-zinc-700"
+            title={
+              isExpanded ? 'Switch to compact view'
+              : isCompact ? 'Switch to minimal view'
+              : 'Switch to expanded view'
+            }
+            aria-label={
+              isExpanded ? 'Switch to compact view'
+              : isCompact ? 'Switch to minimal view'
+              : 'Switch to expanded view'
+            }
           >
-            <span className={`text-xs font-black transition-transform ${isCompact ? '' : 'rotate-180'}`}>▾</span>
+            {/* Visual indicator of current density: three dots, one filled
+                for the active state. Reads as a state-meter that the next
+                click advances. */}
+            <span className={`h-1.5 w-1.5 rounded-full ${isExpanded ? 'bg-amber-300' : 'bg-zinc-600'}`} />
+            <span className={`h-1.5 w-1.5 rounded-full ${isCompact ? 'bg-amber-300' : 'bg-zinc-600'}`} />
+            <span className={`h-1.5 w-1.5 rounded-full ${isMinimal ? 'bg-amber-300' : 'bg-zinc-600'}`} />
           </button>
         </div>
       </div>
 
-      {!isCompact && (
-      <div className="max-h-[58dvh] space-y-2 overflow-y-auto overscroll-contain pr-1">
+      {/* Compact rows: one tight per-player strip per seat. ~28-30px
+          each. No internal scroll — let it grow to whatever height the
+          seat count needs. */}
+      {isCompact && (
+      <div className="space-y-1">
+        {players.map(player => {
+          const odds = oddsByPlayer.get(player.id)
+          const pinned = visiblePlayerIds.has(player.id)
+          const disabled = blindMode || player.waitingNextHand || !player.cards?.length
+          const equityPercent = blindMode || !odds ? null : Math.min(100, Math.max(0, odds.equity))
+          const isActive = activePlayerId && player.id === activePlayerId && !player.folded && !player.waitingNextHand
+          const last = actionText(player.lastAction)
+          const statusText = player.folded
+            ? 'Fold'
+            : player.allIn
+              ? 'All In'
+              : player.waitingNextHand
+                ? 'Sit out'
+                : last || ''
+          return (
+            <div
+              key={player.id}
+              className={`flex items-center gap-2 rounded-md border px-2 py-1 ${
+                isActive
+                  ? 'border-amber-300/80 bg-amber-400/15'
+                  : pinned && !blindMode
+                    ? 'border-amber-400/40 bg-amber-500/5'
+                    : 'border-zinc-700/70 bg-zinc-950/40'
+              }`}
+            >
+              <PlayerAvatar player={player} sizeClass="h-6 w-6" size={24} />
+              <div className="min-w-0 flex-1 flex items-center gap-1.5">
+                <span className="truncate text-[11px] font-black text-white">{player.username}</span>
+                {isActive && (
+                  <span className="shrink-0 rounded bg-amber-400/25 px-1 text-[8px] font-black uppercase tracking-widest text-amber-100">●</span>
+                )}
+                {statusText && (
+                  <span className="truncate text-[9px] font-bold text-zinc-400">{statusText}</span>
+                )}
+              </div>
+              <span className="shrink-0 text-[10px] font-bold tabular-nums text-zinc-400">
+                {(player.chips ?? 0).toLocaleString()}
+              </span>
+              <span className="shrink-0 w-10 text-right text-[11px] font-black tabular-nums text-amber-200">
+                {equityPercent !== null ? formatPercent(odds.equity, 0) : '--'}
+              </span>
+              <button
+                type="button"
+                onClick={() => onTogglePlayer(player.id)}
+                disabled={disabled}
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded border transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
+                  pinned && !blindMode
+                    ? 'border-amber-400/60 bg-amber-500/20 text-amber-100'
+                    : 'border-zinc-600/60 bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                }`}
+                title={pinned ? 'Hide cards' : 'Show cards'}
+                aria-label={pinned ? 'Hide cards' : 'Show cards'}
+              >
+                <EyeIcon closed={!pinned || blindMode} />
+              </button>
+            </div>
+          )
+        })}
+        {players.length === 0 && (
+          <div className="rounded-md border border-zinc-700/70 bg-zinc-950/45 px-2 py-2 text-[11px] font-bold text-zinc-400">
+            Waiting for seated players.
+          </div>
+        )}
+      </div>
+      )}
+
+      {isExpanded && (
+      // No scroll — the rows are now sized so all seats fit naturally.
+      // (avatar 32 + hole cards 32 + py-1 = ~40px per row, so 10 seats
+      // ≈ 400px which is still under half a typical mobile viewport.)
+      <div className="space-y-1">
         {players.map((player) => {
           const odds = oddsByPlayer.get(player.id)
           const pinned = visiblePlayerIds.has(player.id)
@@ -196,18 +300,23 @@ function SpectatorPanelImpl({
           const equityPercent = blindMode || !odds ? null : Math.min(100, Math.max(0, odds.equity))
           const isActive = activePlayerId && player.id === activePlayerId && !player.folded && !player.waitingNextHand
           const last = actionText(player.lastAction)
+          // Status is now folded into the chip count on the lower line
+          // ("Fold · 1,000" / "1,000 · CALL 50") so the name + bar can
+          // each have their own dedicated single line instead of three
+          // stacked lines. Drops total row height by ~10-12px.
           const statusText = player.folded
-            ? 'Folded'
+            ? 'Fold'
             : player.allIn
               ? 'All In'
               : player.waitingNextHand
-                ? 'Sitting out'
-                : last || `${player.chips?.toLocaleString?.() ?? player.chips} chips`
+                ? 'Out'
+                : last || ''
+          const chipsText = (player.chips ?? 0).toLocaleString()
 
           return (
             <div
               key={player.id}
-              className={`rounded-lg border px-2.5 py-2 transition-colors ${
+              className={`rounded-md border px-2 py-1.5 transition-colors ${
                 isActive
                   ? 'border-amber-300/80 bg-amber-400/15 shadow-[0_0_0_1px_rgba(251,191,36,0.4)]'
                   : pinned && !blindMode
@@ -215,40 +324,38 @@ function SpectatorPanelImpl({
                     : 'border-zinc-700/70 bg-zinc-950/45'
               }`}
             >
-              <div className="flex items-center gap-2.5">
+              <div className="flex items-center gap-2">
                 <div className="relative shrink-0">
-                  <PlayerAvatar player={player} sizeClass="h-[42px] w-[42px]" size={42} />
+                  <PlayerAvatar player={player} sizeClass="h-9 w-9" size={36} />
                   {isActive && (
                     <span className="absolute -inset-0.5 rounded-full ring-2 ring-amber-300 animate-pulse pointer-events-none" />
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[13px] font-black leading-tight text-white">
+                  {/* Line 1: name (+ status fragment if any) */}
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="truncate text-xs font-black leading-tight text-white">
                       {player.username}
                     </span>
-                    {isActive && (
-                      <span className="rounded border border-amber-400/60 bg-amber-400/20 px-1 py-px text-[8px] font-black uppercase tracking-widest text-amber-100">
-                        Acting
+                    {statusText && (
+                      <span className="shrink-0 truncate text-[9px] font-bold uppercase tracking-widest leading-tight text-zinc-400">
+                        {statusText}
                       </span>
                     )}
                   </div>
-                  <div className="truncate text-[10px] font-bold leading-tight text-zinc-300">
-                    {statusText}
-                    {!player.folded && !player.waitingNextHand && (
-                      <span className="text-zinc-500"> · {player.chips?.toLocaleString?.() ?? player.chips} chips</span>
-                    )}
-                  </div>
-                  {/* Bigger equity bar so the percentage is readable at a glance. */}
-                  <div className="mt-1.5 flex items-center gap-2">
+                  {/* Line 2: equity bar (fills width) + chips + % */}
+                  <div className="mt-1 flex items-center gap-1.5">
                     <div className="h-2 flex-1 overflow-hidden rounded-full bg-zinc-800">
                       <div
                         className={`h-full rounded-full ${isActive ? 'bg-amber-300' : 'bg-amber-400'}`}
                         style={{ width: `${equityPercent ?? 0}%` }}
                       />
                     </div>
-                    <span className="shrink-0 text-[12px] font-black tabular-nums text-amber-200 min-w-[42px] text-right">
-                      {equityPercent !== null ? formatPercent(odds.equity, 1) : '--'}
+                    <span className="shrink-0 text-[10px] font-bold tabular-nums text-zinc-500">
+                      {chipsText}
+                    </span>
+                    <span className="shrink-0 text-[11px] font-black tabular-nums text-amber-200 min-w-[30px] text-right">
+                      {equityPercent !== null ? formatPercent(odds.equity, 0) : '--'}
                     </span>
                   </div>
                 </div>
@@ -257,7 +364,11 @@ function SpectatorPanelImpl({
                   type="button"
                   onClick={() => onTogglePlayer(player.id)}
                   disabled={disabled}
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
+                  // Smaller eye button (h-7 instead of h-8) gives the
+                  // hole-card thumbs more horizontal room. The icon
+                  // inside is still h-4 so the actual hit target loses
+                  // only ~4px each side, well within tap-target spec.
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded border transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
                     pinned && !blindMode
                       ? 'border-amber-400/60 bg-amber-500/20 text-amber-100'
                       : 'border-zinc-600/60 bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
@@ -273,7 +384,7 @@ function SpectatorPanelImpl({
         })}
 
         {players.length === 0 && (
-          <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 px-3 py-3 text-xs font-bold text-zinc-400">
+          <div className="rounded-md border border-zinc-700/70 bg-zinc-950/45 px-2 py-2 text-[11px] font-bold text-zinc-400">
             Waiting for seated players.
           </div>
         )}

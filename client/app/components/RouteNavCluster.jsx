@@ -22,12 +22,22 @@ import { useAuth } from '../lib/useAuth'
 //
 // The `as` prop preserves semantic intent — the home page's nav is
 // rendered as a <header>, other routes use a plain <div>.
+//
+// `fixed` (not `absolute`) is intentional. The in-game poker page wraps
+// its content in `max-w-7xl mx-auto`, so on wide desktops the centered
+// container is narrower than the viewport. An absolute child inside
+// would resolve relative to that container's right edge — leaving a
+// huge gap on wide screens, because the dock is fixed to the *viewport*.
+// `fixed` puts both the cluster and the dock in the same coordinate
+// system, so the offset math is meaningful on every viewport width.
+// On the other routes (LobbyView, bot pages, home) the outer wrapper
+// already spans the viewport, so fixed and absolute behave identically.
 export default function RouteNavCluster({ as: As = 'div', className = '', children, ...rest }) {
   const { user } = useAuth()
   const offset = user ? 'right-14 sm:right-16' : 'right-24 sm:right-28'
   return (
     <As
-      className={`absolute ${offset} top-3 z-10 flex items-center gap-2 sm:top-4 ${className}`}
+      className={`fixed ${offset} top-3 z-10 flex items-center gap-2 sm:top-4 ${className}`}
       {...rest}
     >
       {children}
