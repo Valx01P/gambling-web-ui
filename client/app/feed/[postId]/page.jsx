@@ -154,13 +154,15 @@ export default function PostDetailPage({ params }) {
   }
 
   return (
-    <div className="min-h-screen px-4 pb-12 pt-4 text-white">
+    <div className="min-h-screen px-4 pb-12 pt-14 text-white sm:pt-16">
+      {/* Home pinned to viewport-left mirrors the AccountDock on the
+          viewport-right. Symmetric chrome. */}
+      <div className="fixed left-3 top-3 z-20 sm:left-4 sm:top-4">
+        <HomeBackLink />
+      </div>
       <div className="mx-auto flex max-w-2xl flex-col gap-4">
-        {/* Right side reserved for the global AccountDock. */}
-        <header className="flex items-center justify-between gap-2 pr-12 sm:pr-14">
-          <HomeBackLink />
+        <header className="flex items-center justify-center gap-2">
           <Link href="/feed" className="text-[11px] font-black uppercase tracking-widest text-zinc-300 hover:text-white">← Feed</Link>
-          <div className="w-9" aria-hidden="true" />
         </header>
 
         {loading && (

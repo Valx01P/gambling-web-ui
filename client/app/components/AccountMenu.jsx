@@ -7,35 +7,10 @@ import { useZoom } from '../lib/useZoom'
 import { colorForKey, getInitials } from '../lib/initials'
 import { ProfileAvatar } from './ProfileSelector'
 import ProfileModal from './ProfileModal'
+import AuthGateModal from './AuthGateModal'
 // DMs + Notifications used to mount inline here as siblings of the
 // profile avatar. They now live alongside the avatar inside the global
 // AccountDock instead, so this component just owns the profile button.
-
-const SCRIPT_SRC = 'https://accounts.google.com/gsi/client'
-const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
-
-let scriptPromise = null
-function loadGsi() {
-  if (typeof window === 'undefined') return Promise.reject(new Error('SSR'))
-  if (window.google?.accounts?.id) return Promise.resolve()
-  if (scriptPromise) return scriptPromise
-  scriptPromise = new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${SCRIPT_SRC}"]`)
-    if (existing) {
-      existing.addEventListener('load', () => resolve())
-      existing.addEventListener('error', reject)
-      return
-    }
-    const s = document.createElement('script')
-    s.src = SCRIPT_SRC
-    s.async = true
-    s.defer = true
-    s.onload = () => resolve()
-    s.onerror = reject
-    document.head.appendChild(s)
-  })
-  return scriptPromise
-}
 
 function InitialsCircle({ name, color }) {
   return (
@@ -50,18 +25,21 @@ function InitialsCircle({ name, color }) {
 }
 
 export default function AccountMenu() {
-  const { user, signInWithGoogle, signOut } = useAuth()
+  const { user, signOut } = useAuth()
   const { zoom, adjust: adjustZoom, MIN: ZOOM_MIN, MAX: ZOOM_MAX, STEP: ZOOM_STEP } = useZoom()
   const wrapperRef = useRef(null)
-  const gsiHostRef = useRef(null)
   const [open, setOpen] = useState(false)
-  const [error, setError] = useState(null)
   // profileOpen has to live up here, not after the `!user` early return.
   // Hook order must be identical on every render — a useState declared
   // only on the signed-in branch flips the hook count when the user
   // signs in mid-session and React throws "change in the order of Hooks".
   const [profileOpen, setProfileOpen] = useState(false)
-  const initialized = useRef(false)
+  // Signed-out auth modal. Used to render a Google-only dropdown here;
+  // that hid the native email/password flow entirely. Now the Sign-in
+  // chip opens the full AuthGateModal (signin + signup + verify code +
+  // forgot/reset + Google), which is the same modal other parts of the
+  // app already use to gate actions.
+  const [authOpen, setAuthOpen] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -73,64 +51,37 @@ export default function AccountMenu() {
     return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [open])
 
+  // Listen for the global "open the sign-in popup" event. Other
+  // components (notably PostComposer's "Sign in to post" empty state)
+  // dispatch this so the user can land in the auth modal without
+  // hunting for the top-right button. No-op when already signed in.
   useEffect(() => {
     if (user) return
-    if (!open) return
-    if (!GOOGLE_CLIENT_ID) { setError('Google client ID not configured'); return }
-    let cancelled = false
-    loadGsi()
-      .then(() => {
-        if (cancelled || !gsiHostRef.current) return
-        if (!initialized.current) {
-          window.google.accounts.id.initialize({
-            client_id: GOOGLE_CLIENT_ID,
-            callback: async (response) => {
-              try {
-                await signInWithGoogle(response.credential)
-                setOpen(false)
-              } catch (err) {
-                setError(err.message || 'Sign-in failed')
-              }
-            }
-          })
-          initialized.current = true
-        }
-        gsiHostRef.current.innerHTML = ''
-        window.google.accounts.id.renderButton(gsiHostRef.current, {
-          type: 'standard',
-          theme: 'filled_black',
-          size: 'large',
-          text: 'continue_with',
-          shape: 'rectangular',
-          width: 220
-        })
-      })
-      .catch(err => setError(err.message || 'Failed to load Google sign-in'))
-    return () => { cancelled = true }
-  }, [open, user, signInWithGoogle])
+    function onOpen() { setAuthOpen(true) }
+    window.addEventListener('pokerxyz:open-signin', onOpen)
+    return () => window.removeEventListener('pokerxyz:open-signin', onOpen)
+  }, [user])
 
   if (!user) {
     return (
-      <div ref={wrapperRef} className="relative inline-flex h-9 items-center">
-        <button
-          type="button"
-          onClick={() => { setError(null); setOpen(prev => !prev) }}
-          className="inline-flex h-9 items-center rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-bold text-white shadow-sm transition-colors hover:bg-zinc-700/80 sm:px-3 sm:text-sm"
-        >
-          Sign in
-        </button>
-        {open && (
-          <div className="absolute right-0 top-full mt-2 z-[100] w-[min(16rem,calc(100vw-1rem))] overflow-hidden rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
-            <div className="px-3 py-2 text-[10px] font-black uppercase tracking-widest text-zinc-300">
-              Sign in to build bots
-            </div>
-            <div className="px-3 pb-3 pt-1 flex justify-center">
-              <div ref={gsiHostRef} />
-            </div>
-            {error && <div className="px-3 pb-3 text-xs font-bold text-red-300">{error}</div>}
-          </div>
-        )}
-      </div>
+      // Text "Sign in" chip — labelled clearly so users don't have to
+      // decode an icon. Clicking opens AuthGateModal which exposes BOTH
+      // native email/password (signin/signup/verify/reset) AND Google.
+      // The earlier dropdown rendered only the Google button, which
+      // made the native option invisible even though the server has
+      // supported it since migration 022.
+      <>
+        <div ref={wrapperRef} className="relative inline-flex h-9 items-center">
+          <button
+            type="button"
+            onClick={() => setAuthOpen(true)}
+            className="inline-flex h-9 items-center rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 sm:px-3 sm:text-sm"
+          >
+            Sign in
+          </button>
+        </div>
+        <AuthGateModal open={authOpen} onClose={() => setAuthOpen(false)} />
+      </>
     )
   }
 

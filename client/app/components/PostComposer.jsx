@@ -112,10 +112,18 @@ export default function PostComposer({ onPosted, defaultBody = '', defaultTableI
   }
 
   if (!user) {
+    // Click → fire the global open-signin event. The AccountDock's
+    // AccountMenu listens for this and pops its sign-in dropdown open
+    // at the top-right, so the user lands on the right action without
+    // having to find the dock button themselves.
     return (
-      <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/40 p-3 text-center text-[11px] font-bold text-zinc-400 sm:p-4 sm:text-[12px]">
-        Sign in to post.
-      </div>
+      <button
+        type="button"
+        onClick={() => window.dispatchEvent(new CustomEvent('pokerxyz:open-signin'))}
+        className="block w-full rounded-xl border border-zinc-700/70 bg-zinc-900/40 p-3 text-center text-[11px] font-bold text-zinc-300 transition-colors hover:border-amber-400/40 hover:bg-zinc-800/60 hover:text-amber-200 sm:p-4 sm:text-[12px]"
+      >
+        Sign in to post →
+      </button>
     )
   }
 

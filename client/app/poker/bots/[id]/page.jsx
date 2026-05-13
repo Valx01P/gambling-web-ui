@@ -4,6 +4,7 @@ import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import HomeBackLink from '../../../components/HomeBackLink'
+import RouteNavCluster from '../../../components/RouteNavCluster'
 // AccountMenu (profile + DMs + notifications) is mounted globally via
 // AccountDock in the root layout. This page only owns the back link.
 import ConfirmPopoverButton from '../../../components/ConfirmPopoverButton'
@@ -258,9 +259,8 @@ export default function BotDetailPage({ params }) {
 
   return (
     <div className="min-h-[100dvh] flex flex-col items-center px-4 pt-4 pb-12">
-      {/* Local back-link sits just to the LEFT of the AccountDock's
-          profile avatar (fixed at right-3/right-4). */}
-      <div className="absolute right-14 top-3 z-10 flex items-center gap-2 sm:right-16 sm:top-4">
+      {/* Local back-link, auth-reactive offset via RouteNavCluster. */}
+      <RouteNavCluster>
         <Link
           href="/poker/bots"
           className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
@@ -268,7 +268,7 @@ export default function BotDetailPage({ params }) {
           <span aria-hidden="true" className="text-base leading-none sm:text-lg">&lt;</span>
           <span className="hidden sm:inline">Bots</span>
         </Link>
-      </div>
+      </RouteNavCluster>
 
       <div className="mt-12 flex w-full max-w-4xl flex-col items-center gap-4">
         {loading && (

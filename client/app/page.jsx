@@ -1,7 +1,11 @@
 import Link from 'next/link'
+import RouteNavCluster from './components/RouteNavCluster'
 // AccountMenu (profile + DMs + notifications) is now mounted globally
 // via AccountDock in the root layout, so individual routes don't import
-// or position it themselves.
+// or position it themselves. RouteNavCluster wraps the local nav links
+// and is auth-aware: it shrinks the right-offset when the dock collapses
+// to a 36px avatar (signed-in), and widens it back to clear the "Sign in"
+// chip (signed-out).
 
 // Inline suit SVGs — kept here so the landing page is a single self-contained
 // file. Tiny and tree-shakable, no asset request.
@@ -85,26 +89,25 @@ export default function Home() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(SITE_JSONLD) }}
       />
-      {/* Route-local nav sits on the RIGHT, immediately to the LEFT of
-          the AccountDock's profile avatar (anchored at right-3/right-4).
-          `right-14 sm:right-16` reserves room for the dock's 36px-wide
-          avatar plus its right padding so the two clusters never overlap.
-          The nav row only spans the avatar's row height, so DMs/Notifs
-          below the avatar in the dock still get a clean vertical strip. */}
-      <header className="absolute right-14 top-3 z-10 flex items-center gap-2 sm:right-16 sm:top-4">
+      {/* Route-local nav. RouteNavCluster handles vertical alignment
+          + the auth-reactive right-offset so the links sit flush
+          beside whichever pill the AccountDock is currently rendering
+          (wide "Sign in" chip vs 36px avatar). Each link uses h-9 so
+          the chips share the same baseline as the dock. */}
+      <RouteNavCluster as="header">
         <Link
           href="/poker/bots"
-          className="rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 sm:px-3 sm:text-sm"
+          className="inline-flex h-9 items-center rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 sm:px-3 sm:text-sm"
         >
           Bots
         </Link>
         <Link
           href="/feed"
-          className="rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 sm:px-3 sm:text-sm"
+          className="inline-flex h-9 items-center rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 sm:px-3 sm:text-sm"
         >
           Feed
         </Link>
-      </header>
+      </RouteNavCluster>
 
       <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col items-center justify-center px-4 text-center">
         {/* Suit banner */}

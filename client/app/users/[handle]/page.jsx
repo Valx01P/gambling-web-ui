@@ -88,14 +88,15 @@ export default function UserProfilePage({ params }) {
   const onPostDeleted = (id) => setPosts(prev => prev.filter(p => p.id !== id))
 
   return (
-    <div className="min-h-screen px-4 pb-12 pt-4 text-white">
+    <div className="min-h-screen px-4 pb-12 pt-14 text-white sm:pt-16">
+      {/* Home pinned to viewport-left mirrors the AccountDock on the
+          viewport-right — symmetric chrome. */}
+      <div className="fixed left-3 top-3 z-20 sm:left-4 sm:top-4">
+        <HomeBackLink />
+      </div>
       <div className="mx-auto flex max-w-2xl flex-col gap-4">
-        {/* Right side reserved for the global AccountDock — header keeps
-            the back link on the left and a centered Profile label. */}
-        <header className="flex items-center justify-between gap-2 pr-12 sm:pr-14">
-          <HomeBackLink />
+        <header className="flex items-center justify-center gap-2">
           <div className="text-[11px] font-black uppercase tracking-widest text-zinc-300">Profile</div>
-          <div className="w-9" aria-hidden="true" />
         </header>
 
         {loading && (

@@ -2085,11 +2085,14 @@ export default function PokerPage() {
              </button>
           )}
         </div>
-        {/* `mr-12 sm:mr-14` keeps the Tools + Leave cluster clear of the
-            AccountDock anchored to the very top-right corner. Without
-            the reservation, the buttons would slide underneath the
-            fixed profile avatar on every viewport width. */}
-        <div className="flex items-center gap-2 mr-12 sm:mr-14">
+        {/* Auth-reactive right reservation. Signed-out → clear room
+            for the "Sign in" text chip (~75-80px) at mr-24/28. Signed-in
+            → dock collapses to a 36px avatar so mr-14/16 is plenty, and
+            anything wider just leaves a dead gap to the right of the
+            Lobby button. Same pattern as RouteNavCluster on the other
+            routes, but inline here because this is a flex sibling
+            (margin) rather than absolute positioning. */}
+        <div className={`flex items-center gap-2 ${authUser ? 'mr-14 sm:mr-16' : 'mr-24 sm:mr-28'}`}>
           {/* The profile / notifications / DMs cluster used to live here
               but is now globally docked top-right (see AccountDock).
               Only the table-scoped controls (Tools, Leave) remain in
@@ -2446,7 +2449,13 @@ export default function PokerPage() {
               setLeaveTableArmed(false)
             }}
             title="Leave the table and return to the lobby"
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-black shadow-sm transition-colors active:scale-95 sm:px-3 sm:text-sm ${
+            // h-9 matches the sibling Tools button (also h-9) AND the
+            // global AccountDock's Sign-in chip / profile avatar. Drop
+            // h-9 and `py-1.5` makes this chip ~30px tall, which leaves
+            // it visibly shorter than Tools and the dock — the top
+            // chrome stair-steps. h-9 keeps every chip on the same
+            // baseline.
+            className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-black shadow-sm transition-colors active:scale-95 sm:px-3 sm:text-sm ${
               leaveTableArmed
                 ? 'border-red-400/70 bg-red-700/90 hover:bg-red-600 text-white'
                 : 'border-zinc-500/50 bg-zinc-800/80 hover:bg-zinc-700/90 text-white'
@@ -4119,21 +4128,19 @@ export default function PokerPage() {
             <div className="relative mx-auto max-w-7xl">
               <div
                 ref={statsPanelRef}
-                // The equity widget's right edge has to clear the
-                // global AccountDock (profile + DMs + bell stacked
-                // top-right). The dock occupies ~48-56px of the right
-                // margin, so we pin the panel's right edge at the
-                // same column as the Tools/Lobby cluster header
-                // (which uses `mr-12 sm:mr-14`). On wider expansion
-                // sizes the panel still respects this offset, so the
-                // dock icons stay visible no matter how the panel
-                // grows.
-                className={`pointer-events-auto absolute right-14 top-0 sm:right-16 ${
+                // The equity widget's right edge stays in lockstep
+                // with the Tools/Lobby cluster header — same auth-
+                // reactive offset (mr-24/28 signed-out, mr-14/16
+                // signed-in). Without this, the widget would still
+                // park at the wider offset after sign-in and leave
+                // a visible gap between its right edge and the
+                // avatar.
+                className={`pointer-events-auto absolute top-0 ${authUser ? 'right-14 sm:right-16' : 'right-24 sm:right-28'} ${
                   statsExpansion === 'minimized'
                     ? 'w-[180px]'
                     : statsExpansion === 'detailed'
-                      ? 'w-[calc(100vw-5.5rem)] max-w-[420px]'
-                      : 'w-[calc(100vw-5.5rem)] max-w-[320px]'
+                      ? 'w-[calc(100vw-8rem)] max-w-[420px]'
+                      : 'w-[calc(100vw-8rem)] max-w-[320px]'
                 }`}
               >
                 <StatsPanel

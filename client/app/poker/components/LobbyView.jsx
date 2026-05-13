@@ -2,9 +2,12 @@
 
 import Link from 'next/link'
 import HomeBackLink from '../../components/HomeBackLink'
+import RouteNavCluster from '../../components/RouteNavCluster'
 // AccountMenu (profile + DMs + notifications) is mounted globally via
 // AccountDock in the root layout, so the lobby's local nav only owns
-// the back link and the Bots link.
+// the back link and the Bots link. RouteNavCluster makes the right-
+// offset auth-reactive so the cluster snugs up to the avatar when
+// signed in (instead of leaving a ~50px dead gap).
 import AuthGateModal from '../../components/AuthGateModal'
 import ProfileSelector, { ProfileAvatar } from '../../components/ProfileSelector'
 
@@ -65,10 +68,9 @@ export default function LobbyView({
     // visually centered when there's headroom and lets the page scroll
     // when there isn't.
     <div className="min-h-[100dvh] flex flex-col items-center px-4 pt-16 pb-8 sm:pt-20">
-      {/* Lobby-local nav sits to the LEFT of the AccountDock's profile
-          avatar (which is fixed at right-3/right-4). right-14/16 reserves
-          the dock's column so the two clusters never overlap. */}
-      <div className="absolute right-14 top-3 z-10 flex items-center gap-2 sm:right-16 sm:top-4">
+      {/* Lobby-local nav. RouteNavCluster picks the right-offset
+          based on dock state (wide chip vs narrow avatar). */}
+      <RouteNavCluster>
         <HomeBackLink />
         <Link
           href="/poker/bots"
@@ -76,7 +78,7 @@ export default function LobbyView({
         >
           Bots
         </Link>
-      </div>
+      </RouteNavCluster>
 
       {/* `my-auto` centers the content stack within the available
           vertical space when the viewport has headroom, but yields

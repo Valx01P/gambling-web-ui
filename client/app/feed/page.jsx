@@ -57,15 +57,21 @@ export default function FeedPage() {
     // Tighter outer padding + gaps on mobile so the feed reads at the
     // same density as the rest of the app (bot rows, lobby cards) on
     // narrow screens. sm:+ keeps the original generous spacing for
-    // tablets/desktop.
-    <div className="min-h-screen px-3 pb-8 pt-3 text-white sm:px-4 sm:pb-12 sm:pt-4">
+    // tablets/desktop. Top padding bumped so the centered content
+    // starts below the fixed Home / Sign-in chips at top-left/right.
+    <div className="min-h-screen px-3 pb-8 pt-14 text-white sm:px-4 sm:pb-12 sm:pt-16">
+      {/* Home pinned to the viewport's LEFT edge so it mirrors the
+          AccountDock (Sign-in / profile cluster) at the viewport's
+          RIGHT edge. Both are fixed-position chips at the same height
+          and roughly the same width, so the page chrome reads
+          symmetrically instead of one nav being in-flow-left and the
+          other floating-right. */}
+      <div className="fixed left-3 top-3 z-20 sm:left-4 sm:top-4">
+        <HomeBackLink />
+      </div>
       <div className="mx-auto flex max-w-2xl flex-col gap-2.5 sm:gap-4">
-        {/* Right side reserved for the global AccountDock; pr-12/14
-            keeps the centered Feed title from drifting under it. */}
-        <header className="flex items-center justify-between gap-2 pr-12 sm:pr-14">
-          <HomeBackLink />
+        <header className="flex items-center justify-center gap-2">
           <div className="text-xs font-black uppercase tracking-widest text-zinc-300 sm:text-sm">Feed</div>
-          <div className="w-9" aria-hidden="true" />
         </header>
 
         <PostComposer onPosted={onPosted} />

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import HomeBackLink from '../../components/HomeBackLink'
+import RouteNavCluster from '../../components/RouteNavCluster'
 import AccountMenu from '../../components/AccountMenu'
 import AuthGateModal from '../../components/AuthGateModal'
 import ConfirmPopoverButton from '../../components/ConfirmPopoverButton'
@@ -1123,10 +1124,8 @@ function BotsPageInner() {
 
   return (
     <div className="min-h-[100dvh] flex flex-col items-center px-4 pt-4 pb-12">
-      {/* Local back-link sits just to the LEFT of the AccountDock
-          (right-3/right-4 fixed). right-14/16 reserves the dock's
-          column. */}
-      <div className="absolute right-14 top-3 z-10 flex items-center gap-2 sm:right-16 sm:top-4">
+      {/* Local back-link, auth-reactive offset via RouteNavCluster. */}
+      <RouteNavCluster>
         <Link
           href="/poker"
           className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
@@ -1134,7 +1133,7 @@ function BotsPageInner() {
           <span aria-hidden="true" className="text-base leading-none sm:text-lg">&lt;</span>
           <span className="hidden sm:inline">Lobby</span>
         </Link>
-      </div>
+      </RouteNavCluster>
 
       <div className="mt-12 flex flex-col items-center gap-6 w-full max-w-[620px]">
         <div className="text-sm sm:text-base px-6 py-2.5 rounded-full font-bold shadow-sm bg-zinc-950/35 text-white border border-zinc-700/70">
