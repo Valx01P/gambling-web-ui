@@ -2765,7 +2765,7 @@ export default function PokerPage() {
                     without bouncing between panels. Updates live from
                     gameState.players via the WS feed. */}
                 <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-2.5">
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
                     <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">
                       Bots at the table ({seatedBots.length}/5)
                     </div>

@@ -47,7 +47,12 @@ function CollapsibleSection({ collapseKey, title, subtitle, headerRight, childre
   }[accent] || 'border-zinc-600/50'
   return (
     <div className={`w-full rounded-xl border ${borderClass} bg-zinc-800/90 p-3 shadow-lg`}>
-      <div className="flex items-center justify-between gap-2">
+      {/* `flex-wrap` + `gap-y-2` lets the headerRight controls drop
+          below the title on narrow widths (My Bots section has both
+          "Reset all stats" AND "+ New bot" buttons, which fight the
+          title for space on phones). `min-w-0` on the title side
+          keeps `truncate` working even after wrap. */}
+      <div className="flex flex-wrap items-center justify-between gap-2 gap-y-2">
         <button
           type="button"
           onClick={() => setCollapsed(c => !c)}
@@ -61,7 +66,7 @@ function CollapsibleSection({ collapseKey, title, subtitle, headerRight, childre
           </div>
         </button>
         {headerRight && (
-          <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+          <div className="shrink-0 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
             {headerRight}
           </div>
         )}
@@ -861,7 +866,11 @@ function BotRow({ bot, mine, onDeleted, onUpdated, onVisibilityError, onResetErr
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); router.push(href) } }}
       className="group cursor-pointer rounded-lg border border-zinc-700/70 bg-zinc-950/35 px-3 py-3 transition-colors hover:border-zinc-500/60 hover:bg-zinc-900/60 focus:outline-none focus:ring-2 focus:ring-zinc-400/40"
     >
-      <div className="flex items-center justify-between gap-3">
+      {/* `flex-wrap` lets the action cluster (info + Public + Edit +
+          Reset + Delete) drop below the avatar/name on narrow widths.
+          Without it the cluster squeezes the name down to ~3 chars
+          on a 360px phone. */}
+      <div className="flex flex-wrap items-center justify-between gap-3 gap-y-2">
         <div className="flex items-center gap-3 min-w-0">
           <BotAvatar name={bot.name} color={bot.color} textColor={bot.textColor} avatarUrl={bot.avatarUrl} size={40} />
           <div className="min-w-0">

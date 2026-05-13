@@ -113,20 +113,23 @@ export default function PostComposer({ onPosted, defaultBody = '', defaultTableI
 
   if (!user) {
     return (
-      <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/40 p-4 text-center text-[12px] font-bold text-zinc-400">
+      <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/40 p-3 text-center text-[11px] font-bold text-zinc-400 sm:p-4 sm:text-[12px]">
         Sign in to post.
       </div>
     )
   }
 
   return (
-    <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/60 p-3">
-      <div className="flex items-start gap-3">
+    <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/60 p-2.5 sm:p-3">
+      {/* Compact avatar + tighter gap on mobile to claw back vertical
+          space — the textarea is forced to 16px on phones (iOS zoom
+          floor) so the rest of the card needs to scale around it. */}
+      <div className="flex items-start gap-2 sm:gap-3">
         <ProfileAvatar
           avatarUrl={user.avatarUrl}
           name={user.displayName || user.username}
           nameKey={user.id}
-          size={36}
+          size={32}
         />
         <div className="min-w-0 flex-1">
           <textarea
@@ -142,9 +145,12 @@ export default function PostComposer({ onPosted, defaultBody = '', defaultTableI
               if ((e.key === 'Enter') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit() }
             }}
             placeholder="Share a hand, a strategy thought, or a table you're at. @mention to ping someone."
-            rows={3}
+            // 2 rows on mobile (smaller composer footprint), 3 rows
+            // sm+ for the more spacious desktop layout. The 16px iOS
+            // floor in globals.css keeps focus from zooming.
+            rows={2}
             disabled={busy}
-            className="w-full resize-none rounded-md border border-zinc-700 bg-zinc-950/50 px-3 py-2 text-sm font-bold text-white outline-none disabled:opacity-50"
+            className="w-full resize-none rounded-md border border-zinc-700 bg-zinc-950/50 px-2.5 py-1.5 text-sm font-bold text-white outline-none disabled:opacity-50 sm:px-3 sm:py-2"
           />
 
           {/* Mention suggestions popdown — appears under the textarea

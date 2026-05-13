@@ -215,7 +215,12 @@ export default function DmsPopup() {
                   value={searchQ}
                   onChange={(e) => setSearchQ(e.target.value)}
                   placeholder="Search a user to start a new message"
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-950/60 px-3 py-1.5 text-[12px] font-bold text-white outline-none focus:border-zinc-500"
+                  // text-sm = 14px desktop (matches the lobby + bot
+                  // editor inputs). globals.css already forces 16px
+                  // under the 640px breakpoint so iOS doesn't zoom on
+                  // focus — but the visual style now ALSO matches the
+                  // rest of the app's inputs on desktop.
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm font-bold text-white placeholder-zinc-500 outline-none transition-colors focus:border-zinc-500"
                 />
               </div>
               {/* Body: while the query is too short to search (<2 chars)
@@ -225,7 +230,7 @@ export default function DmsPopup() {
               {searchQ.trim().length >= 2 ? (
                 <ul className="max-h-[60vh] overflow-y-auto">
                   {searchResults.length === 0 && (
-                    <li className="px-3 py-3 text-center text-[11px] font-bold text-zinc-500">No matches.</li>
+                    <li className="px-3 py-2.5 text-center text-[11px] font-bold text-zinc-500">No matches.</li>
                   )}
                   {searchResults.map(u => (
                     <li key={u.id} className="border-b border-zinc-800/60 last:border-b-0">
@@ -236,10 +241,10 @@ export default function DmsPopup() {
               ) : (
                 <ul className="max-h-[60vh] overflow-y-auto">
                   {loading && conversations.length === 0 && (
-                    <li className="px-3 py-4 text-center text-[11px] font-bold text-zinc-500">Loading…</li>
+                    <li className="px-3 py-3 text-center text-[11px] font-bold text-zinc-500">Loading…</li>
                   )}
                   {!loading && conversations.length === 0 && (
-                    <li className="px-3 py-6 text-center text-[11px] font-bold text-zinc-500">
+                    <li className="px-3 py-4 text-center text-[11px] font-bold text-zinc-500">
                       No messages yet. Search above to start one.
                     </li>
                   )}
@@ -383,7 +388,7 @@ function ChatView({ other, meId, onSend }) {
             placeholder="Write a message — Enter to send"
             rows={1}
             disabled={busy}
-            className="max-h-24 min-h-[34px] flex-1 resize-none rounded-md border border-zinc-700 bg-zinc-950/60 px-2 py-1.5 text-[12px] font-bold text-white outline-none disabled:opacity-50"
+            className="max-h-24 min-h-[36px] flex-1 resize-none rounded-md border border-zinc-700 bg-zinc-950/60 px-2 py-1.5 text-sm font-bold text-white outline-none disabled:opacity-50"
           />
           <button
             type="button"

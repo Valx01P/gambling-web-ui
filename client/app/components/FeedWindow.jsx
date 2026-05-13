@@ -215,16 +215,17 @@ export default function FeedWindow({ open, onClose, onBack }) {
 
       {/* Body — composer + scrollable post list. The scroll container's
           flex-1 lets the composer pin to the top and the list fill the
-          rest of the window. */}
-      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3 text-white">
+          rest of the window. Tighter mobile padding so the window
+          holds more content on small screens. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2 text-white sm:p-3">
         {user && <PostComposer onPosted={(p) => setPosts(prev => [p, ...prev])} />}
         {loading && (
-          <div className="rounded-lg border border-zinc-700/70 bg-zinc-900/40 p-4 text-center text-xs font-bold text-zinc-400">
+          <div className="rounded-lg border border-zinc-700/70 bg-zinc-900/40 p-3 text-center text-[11px] font-bold text-zinc-400 sm:p-4 sm:text-xs">
             Loading the feed…
           </div>
         )}
         {error && (
-          <div className="flex flex-col items-start gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs font-bold text-rose-200">
+          <div className="flex flex-col items-start gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-[11px] font-bold text-rose-200 sm:p-3 sm:text-xs">
             <span>{error}</span>
             <button
               type="button"
@@ -236,7 +237,7 @@ export default function FeedWindow({ open, onClose, onBack }) {
           </div>
         )}
         {!loading && posts.length === 0 && !error && loadedOnce && (
-          <div className="flex flex-col items-center gap-2 rounded-lg border border-zinc-700/70 bg-zinc-900/40 p-4 text-center text-xs font-bold text-zinc-400">
+          <div className="flex flex-col items-center gap-2 rounded-lg border border-zinc-700/70 bg-zinc-900/40 p-3 text-center text-[11px] font-bold text-zinc-400 sm:p-4 sm:text-xs">
             <span>Nothing here yet.</span>
             <button
               type="button"

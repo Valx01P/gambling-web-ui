@@ -87,7 +87,9 @@ export default function InviteToTablePopover({ open, onClose, roomId, fromDispla
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search username or display name"
-          className="w-full rounded-md border border-zinc-700 bg-zinc-950/60 px-3 py-1.5 text-[12px] font-bold text-white outline-none"
+          // text-sm matches the rest of the app's inputs on desktop.
+          // The 16px mobile floor in globals.css still applies.
+          className="w-full rounded-md border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm font-bold text-white placeholder-zinc-500 outline-none transition-colors focus:border-zinc-500"
         />
       </div>
       {error && <div className="px-3 pb-2 text-[10px] font-bold text-rose-300">{error}</div>}

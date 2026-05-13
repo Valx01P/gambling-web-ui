@@ -120,10 +120,10 @@ export default function NotificationsBell() {
 
           <ul className="max-h-[60vh] overflow-y-auto">
             {loading && items.length === 0 && (
-              <li className="px-3 py-4 text-center text-[11px] font-bold text-zinc-500">Loading…</li>
+              <li className="px-3 py-3 text-center text-[11px] font-bold text-zinc-500">Loading…</li>
             )}
             {!loading && items.length === 0 && (
-              <li className="px-3 py-6 text-center text-[11px] font-bold text-zinc-500">
+              <li className="px-3 py-4 text-center text-[11px] font-bold text-zinc-500">
                 No notifications yet. Mentions, replies, and table invites land here.
               </li>
             )}

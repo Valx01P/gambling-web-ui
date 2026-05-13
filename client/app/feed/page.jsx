@@ -54,35 +54,39 @@ export default function FeedPage() {
   }
 
   return (
-    <div className="min-h-screen px-4 pb-12 pt-4 text-white">
-      <div className="mx-auto flex max-w-2xl flex-col gap-4">
+    // Tighter outer padding + gaps on mobile so the feed reads at the
+    // same density as the rest of the app (bot rows, lobby cards) on
+    // narrow screens. sm:+ keeps the original generous spacing for
+    // tablets/desktop.
+    <div className="min-h-screen px-3 pb-8 pt-3 text-white sm:px-4 sm:pb-12 sm:pt-4">
+      <div className="mx-auto flex max-w-2xl flex-col gap-2.5 sm:gap-4">
         {/* Right side reserved for the global AccountDock; pr-12/14
             keeps the centered Feed title from drifting under it. */}
         <header className="flex items-center justify-between gap-2 pr-12 sm:pr-14">
           <HomeBackLink />
-          <div className="text-sm font-black uppercase tracking-widest text-zinc-300">Feed</div>
+          <div className="text-xs font-black uppercase tracking-widest text-zinc-300 sm:text-sm">Feed</div>
           <div className="w-9" aria-hidden="true" />
         </header>
 
         <PostComposer onPosted={onPosted} />
 
         {loading && (
-          <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/40 p-6 text-center text-sm font-bold text-zinc-400">
+          <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/40 p-4 text-center text-xs font-bold text-zinc-400 sm:p-6 sm:text-sm">
             Loading the feed…
           </div>
         )}
         {error && (
-          <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm font-bold text-rose-200">
+          <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-xs font-bold text-rose-200 sm:text-sm">
             {error}
           </div>
         )}
         {!loading && posts.length === 0 && !error && (
-          <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/40 p-6 text-center text-sm font-bold text-zinc-400">
+          <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/40 p-4 text-center text-xs font-bold text-zinc-400 sm:p-6 sm:text-sm">
             Nothing here yet. Be the first to post.
           </div>
         )}
 
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2.5 sm:gap-3">
           {posts.map(p => (
             <PostCard
               key={p.id}

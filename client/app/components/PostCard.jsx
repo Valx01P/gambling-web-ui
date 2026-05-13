@@ -101,14 +101,14 @@ export default function PostCard({ post, viewerId, onChanged, onDeleted, dense =
   const isMine = viewerId && viewerId === post.authorId
 
   return (
-    <article className={`rounded-xl border border-zinc-700/70 bg-zinc-900/60 ${dense ? 'p-3' : 'p-4'} transition-colors hover:border-zinc-600/70`}>
-      <header className="flex items-start gap-3">
+    <article className={`rounded-xl border border-zinc-700/70 bg-zinc-900/60 ${dense ? 'p-2.5 sm:p-3' : 'p-3 sm:p-4'} transition-colors hover:border-zinc-600/70`}>
+      <header className="flex items-start gap-2 sm:gap-3">
         <Link href={`/users/${post.author?.username || post.authorId}`} className="shrink-0">
           <ProfileAvatar
             avatarUrl={post.author?.avatarUrl}
             name={post.author?.displayName || post.author?.username}
             nameKey={post.author?.id}
-            size={36}
+            size={32}
           />
         </Link>
         <div className="min-w-0 flex-1">
@@ -116,15 +116,15 @@ export default function PostCard({ post, viewerId, onChanged, onDeleted, dense =
             <div className="min-w-0">
               <Link
                 href={`/users/${post.author?.username || post.authorId}`}
-                className="truncate text-sm font-black text-white hover:underline"
+                className="truncate text-xs font-black text-white hover:underline sm:text-sm"
               >
                 {post.author?.displayName || post.author?.username || 'Anon'}
               </Link>
               {post.author?.username && (
-                <span className="ml-1 text-[11px] font-bold text-zinc-500">@{post.author.username}</span>
+                <span className="ml-1 text-[10px] font-bold text-zinc-500 sm:text-[11px]">@{post.author.username}</span>
               )}
             </div>
-            <Link href={`/feed/${post.id}`} className="shrink-0 text-[11px] font-bold text-zinc-500 hover:text-zinc-300">
+            <Link href={`/feed/${post.id}`} className="shrink-0 text-[10px] font-bold text-zinc-500 hover:text-zinc-300 sm:text-[11px]">
               {timeAgo(post.createdAt)}
             </Link>
           </div>
@@ -132,7 +132,7 @@ export default function PostCard({ post, viewerId, onChanged, onDeleted, dense =
       </header>
 
       {post.body && (
-        <div className="mt-2 whitespace-pre-wrap break-words text-sm font-bold leading-relaxed text-zinc-100">
+        <div className="mt-2 whitespace-pre-wrap break-words text-xs font-bold leading-relaxed text-zinc-100 sm:text-sm">
           <FormattedBody text={post.body} />
         </div>
       )}
