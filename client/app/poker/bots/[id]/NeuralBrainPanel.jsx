@@ -284,16 +284,16 @@ export default function NeuralBrainPanel({ bot, onUpdated, isMine }) {
         <div className="rounded-xl border border-rose-400/40 bg-rose-500/5 p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
-              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-rose-200">Reset weights</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-rose-200">Reset bot</div>
               <div className="mt-0.5 text-xs font-bold text-zinc-200">
-                Erases all learning and starts the policy over at random init.
+                Full day-one reset: weights re-initialize, ELO resets to 500, every lifetime stat zeros out, and the per-hand history (ELO chart + head-to-head) gets deleted.
               </div>
             </div>
             <ConfirmPopoverButton
-              triggerLabel={resetting ? 'Resetting…' : 'Reset weights'}
+              triggerLabel={resetting ? 'Resetting…' : 'Reset bot'}
               triggerClassName="shrink-0 rounded-md border border-rose-400/60 bg-rose-500/20 px-4 py-2 text-xs font-black uppercase tracking-widest text-rose-100 transition-colors hover:bg-rose-500/30 disabled:opacity-50"
-              description="Erases all training progress. Hands-trained returns to 0 and the LR resets to its initial value."
-              confirmLabel="Reset"
+              description="Fully resets this bot to day one — neural weights re-initialize, ELO drops back to 500, every lifetime stat (hands played, hands won, showdowns, bluff wins, chips P/L) zeros out, and the hand history that drives the ELO chart and head-to-head stats gets deleted. Permanent."
+              confirmLabel="Reset bot"
               align="right"
               persistKey="pokerxyz:confirm:neural-reset:skip"
               busy={resetting}

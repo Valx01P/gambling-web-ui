@@ -1,7 +1,8 @@
-import { query } from '../db/pool.js'
+import { query, withTransaction } from '../db/pool.js'
 import { initialNeuralState, normalizeState } from './neuralPolicy.js'
 import { VARIANTS as NEURAL_VARIANTS } from './neural/registry.js'
 import { initialSuperState, MODES as SUPER_MODES } from './super/transitions.js'
+import { STARTING_RATING } from './runtime/eloEngine.js'
 
 const PUBLIC_FIELDS = `
   b.id, b.owner_user_id, b.name, b.color, b.text_color, b.avatar_url, b.rules, b.phrases, b.is_public,
@@ -295,22 +296,53 @@ export async function updateNeuralState({ botId, ownerUserId, state }) {
 // counters. Used by the "Reset weights" button on the NN edit page. The
 // fresh state is keyed to the bot's variant — MLP gets MLP weights back,
 // Q-learning gets Q-values back, etc.
+// Full reset of a neural bot back to its day-1 state:
+//   - weights → fresh initial policy state (random init)
+//   - ELO → STARTING_RATING (matches the column DEFAULT)
+//   - lifetime stats (hands_played, hands_won, showdowns, bluff_wins,
+//     chips_won_total, etc.) → all zeroed
+//   - bot_hand_results rows for this bot → deleted (so the ELO history
+//     chart and head-to-head stats are wiped too)
+// All four steps run in one transaction so a partial failure can't
+// leave the bot with cleared weights but a stale 4k-hand stat trail
+// dangling behind it.
 export async function resetNeuralBot({ botId, ownerUserId }) {
-  const { rows: kindRows } = await query(
-    'SELECT neural_kind FROM bots WHERE id = $1 AND owner_user_id = $2 AND is_neural = TRUE',
-    [botId, ownerUserId]
-  )
-  if (kindRows.length === 0) return null
-  const fresh = initialNeuralState(kindRows[0].neural_kind)
-  const { rows } = await query(
-    `UPDATE bots
-        SET neural_state = $3::jsonb,
-            updated_at = NOW()
-      WHERE id = $1 AND owner_user_id = $2 AND is_neural = TRUE
-      RETURNING ${PUBLIC_FIELDS.replace(/b\./g, '')}`,
-    [botId, ownerUserId, JSON.stringify(fresh)]
-  )
-  return rows[0] ? toApi(rows[0]) : null
+  return withTransaction(async (client) => {
+    const { rows: kindRows } = await client.query(
+      'SELECT neural_kind FROM bots WHERE id = $1 AND owner_user_id = $2 AND is_neural = TRUE',
+      [botId, ownerUserId]
+    )
+    if (kindRows.length === 0) return null
+    const fresh = initialNeuralState(kindRows[0].neural_kind)
+
+    // Zero every column the per-hand recorder writes to, plus the ELO
+    // history audit table. Mirrors `record_bot_hand`'s UPDATE list
+    // exactly so we don't drift if a new stat column gets added there
+    // and not here.
+    await client.query(
+      `DELETE FROM bot_hand_results WHERE bot_id = $1`,
+      [botId]
+    )
+    const { rows } = await client.query(
+      `UPDATE bots
+          SET neural_state     = $3::jsonb,
+              elo              = $4,
+              hands_played     = 0,
+              hands_voluntary  = 0,
+              hands_won        = 0,
+              showdowns_played = 0,
+              showdowns_won    = 0,
+              bluffs_attempted = 0,
+              bluffs_succeeded = 0,
+              bluff_wins       = 0,
+              chips_won_total  = 0,
+              updated_at       = NOW()
+        WHERE id = $1 AND owner_user_id = $2 AND is_neural = TRUE
+        RETURNING ${PUBLIC_FIELDS.replace(/b\./g, '')}`,
+      [botId, ownerUserId, JSON.stringify(fresh), STARTING_RATING]
+    )
+    return rows[0] ? toApi(rows[0]) : null
+  })
 }
 
 // Counts only the user's manual bots — excludes clones, neural slots,

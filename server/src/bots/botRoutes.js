@@ -29,6 +29,19 @@ const cloneBuildLimiter = rateLimit({
   keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip),
   message: { error: 'rate_limited', detail: 'Clone builds are limited to 10 per minute.' },
 })
+
+// Training simulator is the heaviest CPU-bound endpoint on the bots
+// surface — up to 5000 hands × all-bot decision loops in a single
+// request. Cap at 20/min/user so one tab can't pin a worker process.
+// The per-call hand count is already capped inside SimulationRunner.
+const simulateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip),
+  message: { error: 'rate_limited', detail: 'Training sim runs are capped at 20 per minute.' },
+})
 import {
   createBot,
   createSuperBot,
@@ -47,7 +60,11 @@ import {
   provisionNeuralBotsForUser,
   resetNeuralBot,
   getBotEloHistory,
-  getBotHeadToHead
+  getBotHeadToHead,
+  // Used by the /simulate route to write trained neural weights + per-
+  // hand ELO snapshots when the caller toggles "persist training".
+  updateNeuralState,
+  recordHandResult
 } from './botRepository.js'
 
 // Hard caps per account. Manual bots are user-created and capped to keep
@@ -242,6 +259,129 @@ export function botRoutes() {
     if (!bot) return res.status(404).json({ error: 'not_found' })
     invalidateMyBotsCache(req.user.id)
     res.json({ bot })
+  })
+
+  // Headless training simulator. Pits 2–5 bots against each other for
+  // up to 5000 hands at native CPU speed (no THINK_DELAY, no broadcast)
+  // and returns the per-bot ELO / win-rate / chips P/L summary the UI
+  // shows. If `persistTraining` is true and the caller owns the neural
+  // bot in question, its trained weights + ELO are written back to the
+  // DB just like a live arena would do. Public + other-user bots are
+  // *played* but never mutated.
+  //
+  // Body:
+  //   { botIds: [string, ...], numHands: number, persistTraining?: bool,
+  //     startingChips?: number, blinds?: { sb, bb } }
+  router.post('/simulate', authRequired, simulateLimiter, async (req, res) => {
+    const { SimulationRunner } = await import('./simulator/SimulationRunner.js')
+    const body = req.body || {}
+    const botIds = Array.isArray(body.botIds) ? body.botIds : []
+    const numHands = Number(body.numHands)
+    const persistTraining = !!body.persistTraining
+    const startingChips = Number.isFinite(body.startingChips) ? body.startingChips : 1000
+    const blinds = body.blinds && typeof body.blinds === 'object'
+      ? { sb: Number(body.blinds.sb) || 5, bb: Number(body.blinds.bb) || 10 }
+      : { sb: 5, bb: 10 }
+
+    if (botIds.length < 2 || botIds.length > 5) {
+      return res.status(400).json({ error: 'invalid_input', detail: 'Pick 2 to 5 bots.' })
+    }
+    if (!Number.isFinite(numHands) || numHands < 1 || numHands > 5000) {
+      return res.status(400).json({ error: 'invalid_input', detail: 'numHands must be between 1 and 5000.' })
+    }
+
+    // Load each bot. Owner gets the full record (including neural weights
+    // + super members); non-owners get the public-view row so we can run
+    // them as opponents without leaking private code. A non-public bot
+    // owned by someone else is rejected — the caller has no permission
+    // to even read its decision function for sim play.
+    const bots = []
+    for (const id of botIds) {
+      const bot = await getBotById(id, { viewerUserId: req.user.id })
+      if (!bot) {
+        return res.status(404).json({ error: 'bot_not_found', detail: `Bot ${id} not found.` })
+      }
+      const ownsBot = bot.ownerUserId === req.user.id
+      if (!ownsBot && !bot.isPublic) {
+        return res.status(403).json({
+          error: 'forbidden',
+          detail: `Bot ${bot.name} isn't public and you don't own it.`
+        })
+      }
+      bots.push(bot)
+    }
+
+    let summary
+    try {
+      const runner = new SimulationRunner({
+        bots, numHands, startingChips, blinds,
+        persistTraining,
+        ownerUserId: req.user.id
+      })
+      summary = runner.run()
+    } catch (err) {
+      return res.status(400).json({ error: 'sim_failed', detail: err.message })
+    }
+
+    // Optional persistence: only flush state for neural bots the caller
+    // actually owns, and only when explicitly requested. We mirror the
+    // live game by also persisting per-hand ELO snapshots so trained
+    // bots' elo-history charts stay continuous.
+    if (persistTraining) {
+      const ownerWrites = []
+      for (const t of summary._trainedStates || []) {
+        const bot = bots.find(b => b.id === t.botId)
+        if (!bot || !bot.isNeural || bot.ownerUserId !== req.user.id || !t.state) continue
+        ownerWrites.push(
+          updateNeuralState({
+            botId: bot.id,
+            ownerUserId: req.user.id,
+            state: t.state
+          }).catch(err => console.error('[sim] persist neural failed:', err.message))
+        )
+      }
+      // Per-hand ELO + counters for ALL the caller's own bots that
+      // played. Lets the bot detail page show "Training Sim · 200 hands"
+      // bumps in the elo-history chart. Non-owned (public) bots are
+      // never written.
+      const tableId = `sim:${Date.now().toString(36)}`
+      for (const hand of summary._handResults || []) {
+        for (const r of hand.seats || []) {
+          const bot = bots.find(b => b.id === r.botId)
+          if (!bot || bot.ownerUserId !== req.user.id) continue
+          ownerWrites.push(
+            recordHandResult({
+              botId: r.botId,
+              tableId,
+              chipsDelta: r.chipsDelta,
+              wentToShowdown: r.wentToShowdown,
+              won: r.won,
+              foldedPreflop: r.foldedPreflop,
+              voluntarilyIn: r.voluntarilyIn,
+              eloChange: r.eloChange,
+              bluffWin: r.bluffWin,
+              preflopScore: r.preflopScore,
+              performanceScore: r.performanceScore
+            }).catch(err => console.error('[sim] persist hand failed:', err.message))
+          )
+        }
+      }
+      await Promise.all(ownerWrites)
+      // Caller's own bot list cache is now stale — drop it so the next
+      // /api/bots/mine fetch shows the new ELO.
+      invalidateMyBotsCache(req.user.id)
+    }
+
+    // Don't leak _trainedStates or _handResults to the client — they're
+    // internal-only (raw weights + full per-hand action logs). UI only
+    // needs the participants summary + counts.
+    res.json({
+      handsRequested: summary.handsRequested,
+      handsCompleted: summary.handsCompleted,
+      elapsedMs: summary.elapsedMs,
+      participants: summary.participants,
+      persisted: persistTraining
+    })
   })
 
   // Per-user clone shelf. Returns one entry per tier (1..5) with current

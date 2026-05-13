@@ -171,6 +171,19 @@ export const api = {
   // own reset paths.
   resetBotCode: (id) => apiFetch(`/api/bots/${id}/reset-code`, { method: 'POST', auth: true }),
 
+  // Headless training simulator. Runs `numHands` hands between the
+  // chosen bots (2-5 ids) at native server speed and returns the
+  // per-bot ELO / chips / win-rate summary. If `persistTraining` is
+  // true, the trained neural weights + per-hand ELO snapshots are
+  // written back for any bot the caller owns — other bots are played
+  // but never mutated. Server caps numHands at 5000.
+  simulateBots: ({ botIds, numHands, persistTraining = false, startingChips, blinds } = {}) =>
+    apiFetch('/api/bots/simulate', {
+      method: 'POST',
+      auth: true,
+      body: { botIds, numHands, persistTraining, startingChips, blinds }
+    }),
+
   // Uploads. `presign` is auth-optional — anonymous users get tmp/ keys that
   // the bucket lifecycle reaps after 24h; signed-in users get persistent
   // users/<id>/ keys that they manage via the PFP endpoints below.
