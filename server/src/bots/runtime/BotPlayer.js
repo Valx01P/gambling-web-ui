@@ -30,6 +30,25 @@ export class BotPlayer {
     // instead of the color+initials fallback. Null = no custom image.
     this.botAvatarUrl = bot.avatarUrl || null
     this.botId = bot.id
+    // Snapshot the bot's persistent profile so seats can render the
+    // "click any seat to see its stats" popover even for private bots
+    // that other players can't fetch via /api/bots/:id. The values are
+    // a snapshot at sit-down time; if the table runs long enough that
+    // the bot's lifetime stats drift, that's fine for the popover — it
+    // shows table-relevant context, not a live dashboard.
+    this.botOwnerUserId = bot.ownerUserId || null
+    this.botElo = typeof bot.elo === 'number' ? bot.elo : null
+    this.botHandsPlayed = bot.stats?.handsPlayed ?? 0
+    this.botHandsWon    = bot.stats?.handsWon    ?? 0
+    this.botShowdownsPlayed = bot.stats?.showdownsPlayed ?? 0
+    this.botShowdownsWon    = bot.stats?.showdownsWon    ?? 0
+    this.botIsPublic = Boolean(bot.isPublic)
+    // Kind tag for the popover badge: 'rule' (user-coded), 'clone'
+    // (auto-built from play history), or 'neural' (policy net). The
+    // client labels each with a chip + color.
+    this.botKind = bot.isNeural ? 'neural' : bot.isClone ? 'clone' : 'rule'
+    this.botNeuralKind = bot.isNeural ? (bot.neuralKind || 'reinforce') : null
+    this.botCloneTier  = bot.isClone  ? (bot.cloneTier  || null)        : null
 
     this.currentRoom = null
     this.isSpectator = false
@@ -247,7 +266,17 @@ export class BotPlayer {
       botTextColor: this.botTextColor,
       botAvatarUrl: this.botAvatarUrl,
       addedByPlayerId: this.addedByPlayerId,
-      ownerDisplayName: this.ownerDisplayName
+      ownerDisplayName: this.ownerDisplayName,
+      ownerUserId: this.botOwnerUserId,
+      botElo: this.botElo,
+      botHandsPlayed: this.botHandsPlayed,
+      botHandsWon: this.botHandsWon,
+      botShowdownsPlayed: this.botShowdownsPlayed,
+      botShowdownsWon: this.botShowdownsWon,
+      botKind: this.botKind,
+      botNeuralKind: this.botNeuralKind,
+      botCloneTier: this.botCloneTier,
+      botIsPublic: this.botIsPublic
     }
   }
 }

@@ -38,6 +38,54 @@ function buildCalendar(year, month) {
   return cells
 }
 
+// GitHub-style year strip. Returns:
+//   - cells: 53-week × 7-day array in column-major order (each column is
+//            one week, rows 0..6 = Sun..Sat). Cells before the start date
+//            or after today are null.
+//   - monthMarkers: [{ col, label }] for month-name labels above the grid
+// Anchors to today (UTC) so the rightmost column is the current week.
+function buildYearStrip(today) {
+  const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()))
+  const TOTAL_WEEKS = 53
+  const totalDays = TOTAL_WEEKS * 7
+  // Walk back so the last column ends at today's weekday — leaves a
+  // jagged "future" tail in the current week (rendered as nulls).
+  const todayDow = todayUTC.getUTCDay()
+  const lastColStart = new Date(todayUTC)
+  lastColStart.setUTCDate(lastColStart.getUTCDate() - todayDow)
+  const startDate = new Date(lastColStart)
+  startDate.setUTCDate(startDate.getUTCDate() - (TOTAL_WEEKS - 1) * 7)
+
+  const cells = new Array(totalDays).fill(null)
+  for (let i = 0; i < totalDays; i++) {
+    const d = new Date(startDate)
+    d.setUTCDate(d.getUTCDate() + i)
+    if (d > todayUTC) continue // future-of-current-week stays null
+    const col = Math.floor(i / 7)
+    const row = i % 7
+    cells[col * 7 + row] = d // column-major: 7 rows per column
+  }
+
+  // Month markers: place a label at the column where each new month
+  // first appears in row 0 (the Sunday). Skip the first column if it
+  // would crowd the prior month's label.
+  const monthMarkers = []
+  let lastMonth = -1
+  for (let col = 0; col < TOTAL_WEEKS; col++) {
+    const cell = cells[col * 7] // Sunday of this column
+    if (!cell) continue
+    const m = cell.getUTCMonth()
+    if (m !== lastMonth) {
+      monthMarkers.push({
+        col,
+        label: cell.toLocaleString(undefined, { month: 'short' })
+      })
+      lastMonth = m
+    }
+  }
+  return { cells, monthMarkers, totalWeeks: TOTAL_WEEKS }
+}
+
 function fmtChips(n) {
   const v = Number(n) || 0
   const sign = v >= 0 ? '+' : '-'
@@ -86,6 +134,10 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
   const [editOpen, setEditOpen] = useState(false)
   const [username, setUsername] = useState('')
   const [avatarUrl, setAvatarUrl] = useState(null)
+  const [description, setDescription] = useState('')
+  // Cap chosen to match the server's MAX_DESCRIPTION_LENGTH. The textarea
+  // shows the count live so the user knows when they're near the limit.
+  const DESCRIPTION_MAX = 280
   const [pfps, setPfps] = useState([])
   const [pfpsLoading, setPfpsLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -125,6 +177,7 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
     if (!open || !user) return
     setUsername(user.displayName || '')
     setAvatarUrl(user.avatarUrl || null)
+    setDescription(user.description || '')
     setSaveOk(false)
     setSaveError(null)
     setEditOpen(false)
@@ -133,6 +186,19 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
     // immediately instead of asking the user to click anywhere.
     setSelectedDay(ymd(new Date()))
   }, [open, user, resetUpload])
+
+  // Public bots — load lazily when the modal opens. Mirrors the activity
+  // fetch pattern; a profile without any public bots just hides the section.
+  const [publicBots, setPublicBots] = useState([])
+  const [publicBotsLoading, setPublicBotsLoading] = useState(false)
+  useEffect(() => {
+    if (!open || !user?.id) return
+    setPublicBotsLoading(true)
+    api.publicBotsByUser(user.id)
+      .then(r => setPublicBots(r.bots || []))
+      .catch(() => setPublicBots([]))
+      .finally(() => setPublicBotsLoading(false))
+  }, [open, user?.id])
 
   // Body scroll-lock + ESC.
   useEffect(() => {
@@ -226,7 +292,13 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
     for (const d of days) map.set(d.day, d)
     return map
   }, [days])
-  const cells = useMemo(() => buildCalendar(viewYear, viewMonth), [viewYear, viewMonth])
+  // GitHub-style year strip. We rebuild whenever the modal opens (nowRef
+  // updates) so a session that stays open over midnight slides the strip
+  // forward correctly.
+  const { cells, monthMarkers, totalWeeks } = useMemo(
+    () => buildYearStrip(nowRef.current),
+    [nowRef.current]
+  )
 
   // Visible-range export. Uses authed fetch + saveAs because the endpoint
   // is auth-walled and a bare <a download> can't carry a Bearer token.
@@ -348,6 +420,12 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
       const trimmed = username.trim()
       if (trimmed && trimmed !== user.displayName) patch.displayName = trimmed
       if (avatarUrl !== user.avatarUrl) patch.avatarUrl = avatarUrl
+      // Bio: send the trimmed value when it differs from the current one.
+      // Empty string is a valid value (clears the bio); send it explicitly
+      // so the server knows the user intended to clear it.
+      const trimmedDescription = description.trim()
+      const currentDescription = user.description || ''
+      if (trimmedDescription !== currentDescription) patch.description = trimmedDescription
       if (Object.keys(patch).length === 0) {
         setSaveOk(true); setTimeout(() => setSaveOk(false), 1500); return
       }
@@ -360,10 +438,13 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
     } finally { setSaving(false) }
   }
 
-  const dirty = (username.trim() && username.trim() !== user.displayName) || (avatarUrl !== user.avatarUrl)
+  const dirty = (username.trim() && username.trim() !== user.displayName)
+    || (avatarUrl !== user.avatarUrl)
+    || (description.trim() !== (user.description || ''))
   const sm = summary?.user || user
   const rival = summary?.rival
   const totalHands = days.reduce((acc, d) => acc + d.handsPlayed, 0)
+  const totalAnonHands = days.reduce((acc, d) => acc + (d.anonHands || 0), 0)
   const winRate = (sm.handsPlayed ?? 0) > 0 ? Math.round(100 * (sm.handsWon ?? 0) / sm.handsPlayed) : null
   const lastSeenRel = sm.lastActiveAt ? formatRelative(sm.lastActiveAt) : null
 
@@ -449,58 +530,193 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
             {lastSeenRel && <span className="ml-auto text-zinc-500">last active {lastSeenRel}</span>}
           </div>
 
-          {/* Calendar + day-list. The visual heart. Calendar leans left
-              with the date pager inline; day list reuses the same
-              container so the eye sees one continuous panel. */}
-          <div className="grid grid-cols-1 gap-0 lg:grid-cols-[1.05fr_1fr]">
-            <div className="border-b border-zinc-800/80 px-4 py-3 lg:border-b-0 lg:border-r">
+          {/* Bio strip — shows the user's description in read mode. The
+              edit affordance lives inside the "Edit" disclosure below;
+              clicking the bio here jumps straight into edit mode so the
+              user doesn't have to scroll. Empty state nudges users to
+              add one. */}
+          <div className="border-b border-zinc-800/80 px-4 py-3">
+            {user.description ? (
+              <button
+                type="button"
+                onClick={() => setEditOpen(true)}
+                className="block w-full text-left text-[12px] leading-snug text-zinc-200 hover:text-white"
+                title="Click to edit"
+              >
+                {user.description}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setEditOpen(true)}
+                className="block w-full text-left text-[11px] italic text-zinc-500 hover:text-zinc-300"
+              >
+                + Add a short bio — what's your poker style?
+              </button>
+            )}
+          </div>
+
+          {/* Public bots — what this user is currently sharing. Hidden
+              when the user has none (keeps the modal short). Each row
+              links to the bot detail page so a viewer can sit one at
+              their table. */}
+          {(publicBots.length > 0 || publicBotsLoading) && (
+            <div className="border-b border-zinc-800/80 px-4 py-3">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={() => { if (viewMonth === 0) { setViewYear(y => y - 1); setViewMonth(11) } else setViewMonth(m => m - 1) }}
-                  className="cursor-pointer rounded-md border border-zinc-800 px-2 py-0.5 text-[12px] font-black text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800 hover:text-white"
-                  aria-label="Previous month"
-                >‹</button>
-                <div className="text-[11px] font-black uppercase tracking-widest text-zinc-300">{monthLabel(viewYear, viewMonth)}</div>
-                <button
-                  type="button"
-                  onClick={() => { if (viewMonth === 11) { setViewYear(y => y + 1); setViewMonth(0) } else setViewMonth(m => m + 1) }}
-                  className="cursor-pointer rounded-md border border-zinc-800 px-2 py-0.5 text-[12px] font-black text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800 hover:text-white"
-                  aria-label="Next month"
-                >›</button>
+                <div className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-300">
+                  Public bots
+                </div>
+                <div className="text-[10px] font-bold text-zinc-500">
+                  {publicBotsLoading ? 'Loading…' : `${publicBots.length} shared`}
+                </div>
               </div>
-
-              <div className="grid grid-cols-7 gap-[3px] text-center text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                {['S','M','T','W','T','F','S'].map((d, i) => <div key={i}>{d}</div>)}
-              </div>
-              <div className="mt-1 grid grid-cols-7 gap-[3px]">
-                {cells.map((cell, i) => {
-                  if (!cell) return <div key={i} className="aspect-square rounded bg-zinc-900/30" />
-                  const key = ymd(cell)
-                  const info = daysByKey.get(key)
-                  const isSelected = selectedDay === key
-                  const intensity = !info ? 0
-                    : info.handsPlayed < 5 ? 1
-                    : info.handsPlayed < 15 ? 2
-                    : info.handsPlayed < 40 ? 3 : 4
-                  const intensityClass = ['bg-zinc-900/40','bg-emerald-900/40','bg-emerald-700/50','bg-emerald-500/60','bg-emerald-400/80'][intensity]
-                  return (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => setSelectedDay(key)}
-                      disabled={!info}
-                      className={`group relative aspect-square rounded text-[10px] font-bold leading-tight transition-all ${isSelected ? 'ring-2 ring-amber-300' : ''} ${intensityClass} ${info ? 'cursor-pointer hover:ring-2 hover:ring-amber-300/70 hover:brightness-110' : 'cursor-default'}`}
-                      title={info ? `${info.handsPlayed} hands · ELO ${info.eloEnd}` : 'No activity'}
+              {publicBots.length > 0 && (
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  {publicBots.slice(0, 6).map(b => (
+                    <a
+                      key={b.id}
+                      href={`/poker/bots/${b.id}`}
+                      className="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950/40 px-2 py-1.5 transition-colors hover:border-zinc-600 hover:bg-zinc-900"
                     >
-                      <div className="absolute left-1 top-0.5 text-zinc-300">{cell.getUTCDate()}</div>
-                    </button>
-                  )
-                })}
-              </div>
+                      <div
+                        className="h-6 w-6 shrink-0 rounded-full flex items-center justify-center text-[9px] font-black text-white"
+                        style={{ background: b.color || '#3b82f6' }}
+                      >
+                        {(b.name || '?').slice(0, 2).toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[12px] font-black text-white">{b.name}</div>
+                        <div className="truncate text-[9px] font-bold text-zinc-400">
+                          ELO {b.elo} · {b.stats?.handsPlayed ?? 0} hands
+                        </div>
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              )}
+              {publicBots.length > 6 && (
+                <div className="mt-1 text-right text-[10px] font-bold text-zinc-500">+ {publicBots.length - 6} more</div>
+              )}
+            </div>
+          )}
 
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] font-bold text-zinc-500">
-                <span>{daysLoading ? 'Loading…' : `${totalHands} hands · last year`}</span>
+          {/* Calendar + day list — GitHub-style year strip on top, day
+              drill-down panel below. The strip stretches across the full
+              modal width; on smaller screens it scrolls horizontally so
+              cells stay readable instead of being squeezed flat. */}
+          <div className="border-b border-zinc-800/80 px-4 py-3">
+            {/* Headline total + (lightly) the Less/More color ramp. The
+                headline mirrors GitHub's "264 contributions in the last
+                year" copy — gives the strip a single anchor sentence. */}
+            <div className="mb-2 flex items-baseline justify-between gap-3">
+              <div className="text-[12px] font-bold text-zinc-200">
+                {daysLoading ? 'Loading…' : (
+                  <>
+                    <span className="text-amber-200">{totalHands + totalAnonHands}</span>
+                    {' '}hands played in the last year
+                  </>
+                )}
+              </div>
+            </div>
+            {/* Scrollable container at narrow widths. The grid sits in a
+                fixed-cell layout (10px squares) so the heatmap pattern
+                stays stable regardless of viewport width. */}
+            <div className="overflow-x-auto">
+              <div className="inline-block">
+                {/* Month labels along the top. Each marker is absolutely
+                    placed via its grid column so the labels track the
+                    cells underneath even if the user scrolls. */}
+                <div
+                  className="relative ml-6 mb-1"
+                  style={{ width: `${totalWeeks * 13}px`, height: '12px' }}
+                >
+                  {monthMarkers.map(m => (
+                    <span
+                      key={`${m.col}-${m.label}`}
+                      className="absolute top-0 text-[9px] font-bold uppercase tracking-widest text-zinc-500"
+                      style={{ left: `${m.col * 13}px` }}
+                    >
+                      {m.label}
+                    </span>
+                  ))}
+                </div>
+
+                {/* Strip itself: a 6px-wide day-of-week column on the
+                    left (M / W / F labels) + a column-major grid of
+                    cells. CSS grid with grid-auto-flow:column lets us
+                    drop the cells in column-by-column without manually
+                    transposing the array. */}
+                <div className="flex items-start gap-1">
+                  <div className="flex flex-col gap-[3px] pr-1 pt-[2px] text-[8px] font-bold uppercase tracking-widest text-zinc-600">
+                    {/* Match GitHub: only label Mon / Wed / Fri so the
+                        column stays narrow. Rows 0/2/4/6 stay blank. */}
+                    {['', 'M', '', 'W', '', 'F', ''].map((d, i) => (
+                      <div key={i} className="h-[10px] leading-[10px]">{d}</div>
+                    ))}
+                  </div>
+                  <div
+                    className="grid gap-[3px]"
+                    style={{
+                      gridTemplateRows: 'repeat(7, 10px)',
+                      gridAutoFlow: 'column',
+                      gridAutoColumns: '10px'
+                    }}
+                  >
+                    {cells.map((cell, i) => {
+                      if (!cell) return <div key={i} className="h-[10px] w-[10px] rounded-sm bg-transparent" />
+                      const key = ymd(cell)
+                      const info = daysByKey.get(key)
+                      const isSelected = selectedDay === key
+                      const publicHands = info?.handsPlayed ?? 0
+                      const privateHands = info?.anonHands ?? 0
+                      const total = publicHands + privateHands
+                      // Single amber heatmap — any day you played gets
+                      // the same light-yellow treatment, intensity scales
+                      // with total hands. Whether play was public or
+                      // private surfaces only on hover/click.
+                      let bgClass = 'bg-zinc-800/70'
+                      if (total > 0) {
+                        const intensity = total < 5 ? 1
+                          : total < 15 ? 2
+                          : total < 40 ? 3 : 4
+                        bgClass = ['bg-zinc-800/70','bg-amber-200/20','bg-amber-300/40','bg-amber-300/60','bg-amber-300/85'][intensity]
+                      }
+                      // GitHub-style tooltip phrasing. Inactive days
+                      // explicitly say "No hands played" so the click
+                      // still surfaces useful context instead of being
+                      // a dead cell.
+                      const dateLabel = cell.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })
+                      const title = total > 0
+                        ? `${total} hand${total === 1 ? '' : 's'} played on ${dateLabel}${info?.dailyCompleted ? ' · daily ✓' : ''}`
+                        : `No hands played on ${dateLabel}`
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setSelectedDay(key)}
+                          className={`relative h-[10px] w-[10px] cursor-pointer rounded-sm transition-all hover:ring-1 hover:ring-amber-200 ${isSelected ? 'ring-2 ring-amber-300' : ''} ${bgClass}`}
+                          title={title}
+                        >
+                          {/* Star marks a completed daily for that day.
+                              Sits inside the 10px cell, centered. */}
+                          {info?.dailyCompleted && (
+                            <span
+                              className="absolute inset-0 flex items-center justify-center text-[7px] leading-none text-amber-100"
+                              aria-label="daily completed"
+                            >★</span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+              {/* GitHub-style "Less ▢▢▣▣▤ More" legend on the right,
+                  Export buttons on the left. Both sit below the grid so
+                  the cells get top billing. */}
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] font-bold text-zinc-500">
                 <div className="flex items-center gap-1">
                   <span>Export</span>
                   <button
@@ -517,6 +733,13 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
                   >csv</button>
                   {exportBusy && <span className="ml-1">…</span>}
                   {exportError && <span className="ml-1 text-red-300">{exportError}</span>}
+                </div>
+                <div className="flex items-center gap-1">
+                  <span>Less</span>
+                  {['bg-zinc-800/70','bg-amber-200/20','bg-amber-300/40','bg-amber-300/60','bg-amber-300/85'].map((c, i) => (
+                    <span key={i} className={`h-[10px] w-[10px] rounded-sm ${c}`} />
+                  ))}
+                  <span>More</span>
                 </div>
               </div>
             </div>
@@ -557,7 +780,6 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
                 </>
               )}
             </div>
-          </div>
 
           {/* Edit disclosure — viewing is the common case, editing is
               behind a click. Avatar history loads only when this opens.
@@ -591,6 +813,26 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
                     maxLength={32}
                     placeholder="What other players see at the table"
                     className="w-full rounded-md border border-zinc-700 bg-zinc-950/50 px-3 py-2 text-sm font-bold text-white outline-none focus:border-zinc-400"
+                  />
+                </label>
+
+                {/* Free-text bio. Showed up-top in read mode (clicking it
+                    jumps here). Live character counter — turns rose when
+                    near the cap so the user gets ahead of the validation
+                    error rather than hitting it on save. */}
+                <label className="block">
+                  <div className="mb-1 flex items-baseline justify-between">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Bio</div>
+                    <div className={`text-[9px] font-bold ${description.length > DESCRIPTION_MAX - 20 ? 'text-rose-300' : 'text-zinc-500'}`}>
+                      {description.length}/{DESCRIPTION_MAX}
+                    </div>
+                  </div>
+                  <textarea
+                    value={description}
+                    onChange={e => setDescription(e.target.value.slice(0, DESCRIPTION_MAX))}
+                    rows={3}
+                    placeholder="A line or two about your poker style, your bots, anything"
+                    className="w-full resize-none rounded-md border border-zinc-700 bg-zinc-950/50 px-3 py-2 text-sm font-bold text-white outline-none focus:border-zinc-400"
                   />
                 </label>
 

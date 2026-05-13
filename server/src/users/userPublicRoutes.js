@@ -12,6 +12,7 @@ import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
 import { asyncRouter as Router } from '../api/asyncRouter.js'
 import { authRequired, authOptional } from '../auth/middleware.js'
 import { findUserById } from './userRepository.js'
+import { listPublicBotsByOwner } from '../bots/botRepository.js'
 import {
   followUser,
   unfollowUser,
@@ -75,6 +76,7 @@ export function userPublicRoutes() {
         id: user.id,
         displayName: user.display_name,
         avatarUrl: user.avatar_url,
+        description: user.description ?? null,
         elo: user.elo ?? 500,
         handsPlayed: user.hands_played ?? 0,
         handsWon: user.hands_won ?? 0,
@@ -98,6 +100,19 @@ export function userPublicRoutes() {
         allInUnderdogWins: luck?.allInUnderdogWins ?? 0
       }
     })
+  })
+
+  // GET /api/users/:userId/public-bots
+  // Public bots owned by the user — surfaced on the profile page so a
+  // visitor can sit one of their bots at a table without bouncing to
+  // the leaderboard and scrolling. Private bots (clones, neural) are
+  // never returned regardless of who's asking.
+  router.get('/:userId/public-bots', authOptional, publicReadLimiter, async (req, res) => {
+    const target = req.params.userId
+    if (!isUuid(target)) return res.status(400).json({ error: 'invalid_user_id' })
+    const bots = await listPublicBotsByOwner(target)
+    res.setHeader('Cache-Control', 'public, max-age=15, stale-while-revalidate=60')
+    res.json({ bots })
   })
 
   // POST /api/users/:userId/follow

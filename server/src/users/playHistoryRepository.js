@@ -144,22 +144,55 @@ export async function recordHumanHand({ userId, tableId, delta, compressed, eloD
   }
 }
 
+// Increment the per-day anon-hands counter for a user. Fire-and-forget
+// upsert keyed on (user_id, day). We don't track ELO / chip deltas for
+// anon play — those hands intentionally don't influence the user's
+// public stats. This is purely "active today, but staying anonymous."
+export async function recordAnonHand(userId) {
+  if (!userId) return
+  await query(
+    `
+    INSERT INTO user_daily_activity (
+      user_id, day, hands_played, hands_won, chips_delta,
+      elo_start, elo_end, first_hand_at, last_hand_at, anon_hands
+    ) VALUES (
+      $1, (NOW() AT TIME ZONE 'UTC')::date, 0, 0, 0,
+      0, 0, NOW(), NOW(), 1
+    )
+    ON CONFLICT (user_id, day) DO UPDATE SET
+      anon_hands   = user_daily_activity.anon_hands + 1,
+      last_hand_at = EXCLUDED.last_hand_at
+    `,
+    [userId]
+  )
+}
+
 // --- Read paths for the profile history UI -------------------------------
 
 // Daily summary list for a date range. Returns days in DESC order so the
 // most recent activity is up top. Caller paginates by adjusting from/to.
+// Joins user_daily_progress on the date so the calendar can mark days
+// where the user completed that day's challenge.
 export async function listDailyActivity(userId, { from, to } = {}) {
   if (!userId) return []
   const params = [userId]
-  let where = 'WHERE user_id = $1'
-  if (from) { params.push(from); where += ` AND day >= $${params.length}` }
-  if (to)   { params.push(to);   where += ` AND day <= $${params.length}` }
+  let where = 'WHERE a.user_id = $1'
+  if (from) { params.push(from); where += ` AND a.day >= $${params.length}` }
+  if (to)   { params.push(to);   where += ` AND a.day <= $${params.length}` }
+  // LEFT JOIN against user_daily_completions so days where the user
+  // completed that day's daily get the flag, regardless of how long ago.
+  // The activity table is the spine — completions sit alongside it.
   const { rows } = await query(
-    `SELECT day, hands_played, hands_won, chips_delta,
-            elo_start, elo_end, first_hand_at, last_hand_at
-       FROM user_daily_activity
+    `SELECT a.day,
+            a.hands_played, a.hands_won, a.chips_delta,
+            a.anon_hands,
+            a.elo_start, a.elo_end, a.first_hand_at, a.last_hand_at,
+            (c.day IS NOT NULL) AS daily_completed
+       FROM user_daily_activity a
+       LEFT JOIN user_daily_completions c
+         ON c.user_id = a.user_id AND c.day = a.day
        ${where}
-       ORDER BY day DESC
+       ORDER BY a.day DESC
        LIMIT 365`,
     params
   )
@@ -167,11 +200,13 @@ export async function listDailyActivity(userId, { from, to } = {}) {
     day: r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day),
     handsPlayed: r.hands_played,
     handsWon: r.hands_won,
+    anonHands: r.anon_hands ?? 0,
     chipsDelta: Number(r.chips_delta),
     eloStart: r.elo_start,
     eloEnd: r.elo_end,
     firstHandAt: r.first_hand_at,
-    lastHandAt: r.last_hand_at
+    lastHandAt: r.last_hand_at,
+    dailyCompleted: !!r.daily_completed
   }))
 }
 

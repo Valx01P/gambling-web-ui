@@ -20,7 +20,7 @@ export async function upsertGoogleUser({ sub, email, name, picture }) {
 
 export async function findUserById(id) {
   const { rows } = await query(
-    `SELECT id, email, display_name, avatar_url, created_at, last_active_at,
+    `SELECT id, email, display_name, avatar_url, description, created_at, last_active_at,
             elo, hands_played, hands_won,
             side_bets_won, side_bets_lost, side_bet_longshot_wins,
             side_bet_chip_pl, all_in_showdowns, all_in_underdog_wins,
@@ -41,17 +41,24 @@ export async function touchLastActive(id) {
   await query('UPDATE users SET last_active_at = NOW() WHERE id = $1', [id])
 }
 
-export async function updateUserProfile(id, { displayName, avatarUrl }) {
+export async function updateUserProfile(id, { displayName, avatarUrl, description }) {
+  // COALESCE pattern lets each field be patched independently — pass
+  // null/undefined to keep the existing value. For description we want
+  // distinct "leave unchanged" (undefined) vs. "clear it" (empty string),
+  // so we treat empty/explicit-null as "clear" via a sentinel.
+  const descParam = description === undefined ? null : (description === '' ? '' : description)
+  const descTouched = description !== undefined
   const { rows } = await query(
     `
     UPDATE users
        SET display_name = COALESCE($2, display_name),
            avatar_url   = COALESCE($3, avatar_url),
+           description  = CASE WHEN $5::boolean THEN $4 ELSE description END,
            updated_at   = NOW()
      WHERE id = $1
-     RETURNING id, email, display_name, avatar_url, elo, hands_played, hands_won
+     RETURNING id, email, display_name, avatar_url, description, elo, hands_played, hands_won
     `,
-    [id, displayName ?? null, avatarUrl ?? null]
+    [id, displayName ?? null, avatarUrl ?? null, descParam, descTouched]
   )
   return rows[0] || null
 }

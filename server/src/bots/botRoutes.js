@@ -38,11 +38,13 @@ import {
   listPublicBots,
   countBotsByOwner,
   countNonCloneBotsByOwner,
+  countPublicBotsByOwner,
   getCloneByTier,
   replaceCloneCode,
   provisionNeuralBotsForUser,
   resetNeuralBot,
-  getBotEloHistory
+  getBotEloHistory,
+  getBotHeadToHead
 } from './botRepository.js'
 
 // Hard caps per account. Manual bots are user-created and capped to keep
@@ -53,6 +55,10 @@ export const MAX_MANUAL_BOTS_PER_USER = 10
 // Kept as an alias for the existing client API surface — equals the manual
 // cap because that's the cap clients actually need to gate their UI on.
 export const MAX_BOTS_PER_USER = MAX_MANUAL_BOTS_PER_USER
+// How many of your bots can be public at once. Half of the theoretical
+// maximum (10 manual + 5 clone + 5 neural = 20) so users have to curate
+// which ones they share. Enforced at create + isPublic-flip time.
+export const MAX_PUBLIC_BOTS_PER_USER = 10
 import {
   validateRules,
   validatePhrases,
@@ -135,6 +141,61 @@ async function getLeaderboardCached() {
   return refreshing
 }
 
+// Per-user cache for /api/bots/mine. Same shape + semantics as the
+// leaderboard cache, but keyed by ownerUserId because each user gets a
+// distinct payload. TTL is short (10s) so a manual create/delete reflects
+// fast even if we forget to invalidate; the invalidate helper below is the
+// fast path. Stale-while-revalidate gives navigation snappiness without
+// sacrificing correctness after a mutation.
+const MINE_TTL_MS = 10 * 1000
+const MINE_STALE_MS = 30 * 1000
+const _mineCache = new Map() // userId → { fetchedAt, payload, refreshing }
+
+async function getMyBotsCached(userId) {
+  const now = Date.now()
+  const entry = _mineCache.get(userId)
+  if (entry && now - entry.fetchedAt < MINE_TTL_MS) {
+    return entry.payload
+  }
+  if (entry?.refreshing) return entry.refreshing
+
+  const refreshing = (async () => {
+    // Lazy-provision the NN squad on first hit. Idempotent INSERT ... ON
+    // CONFLICT DO NOTHING — cheap when bots already exist.
+    try { await provisionNeuralBotsForUser(userId) }
+    catch (err) { console.warn('[bots] neural provisioning failed:', err.message) }
+    const bots = await listBotsByOwner(userId)
+    const payload = { bots, limit: MAX_BOTS_PER_USER, publicLimit: MAX_PUBLIC_BOTS_PER_USER }
+    _mineCache.set(userId, { fetchedAt: Date.now(), payload, refreshing: null })
+    return payload
+  })().catch(err => {
+    const e = _mineCache.get(userId)
+    if (e) e.refreshing = null
+    throw err
+  })
+
+  if (entry) entry.refreshing = refreshing
+  else _mineCache.set(userId, { fetchedAt: 0, payload: null, refreshing })
+  return refreshing
+}
+
+// Drop a user's cache after a write. Called from create/update/delete
+// routes. We don't try to merge — the next read repopulates from a fresh
+// query, which is also when neural provisioning happens if it's needed.
+function invalidateMyBotsCache(userId) {
+  if (userId) _mineCache.delete(userId)
+}
+
+// Background sweep of stale entries so per-user caches don't grow without
+// bound. Keep entries that are still inside the stale-while-revalidate
+// window; the next request after that drops them naturally. Runs every
+// 5 minutes — light enough to be invisible, frequent enough to keep the
+// map small for a server with rotating users.
+setInterval(() => {
+  const cutoff = Date.now() - (MINE_TTL_MS + MINE_STALE_MS)
+  for (const [k, v] of _mineCache) if (v.fetchedAt < cutoff) _mineCache.delete(k)
+}, 5 * 60 * 1000).unref?.()
+
 export function botRoutes() {
   const router = Router()
 
@@ -155,20 +216,15 @@ export function botRoutes() {
   })
 
   router.get('/mine', authRequired, async (req, res) => {
-    // Lazy-provision the two neural-net bots on first /mine fetch. The
-    // INSERT ... ON CONFLICT DO NOTHING in provisionNeuralBotsForUser
-    // makes this idempotent + cheap on the steady-state call. Doing it
-    // here (vs. on signup) means existing users get them on next visit
-    // without a separate backfill job.
-    try {
-      await provisionNeuralBotsForUser(req.user.id)
-    } catch (err) {
-      // Don't fail the list if provisioning hiccups — log and serve
-      // whatever the user already has.
-      console.warn('[bots] neural provisioning failed:', err.message)
-    }
-    const bots = await listBotsByOwner(req.user.id)
-    res.json({ bots, limit: MAX_BOTS_PER_USER })
+    // In-process per-user cache (see getMyBotsCached). Short TTL + SWR
+    // so rapid Bots → Table → Bots navigation feels instant without
+    // sacrificing correctness after a mutation (writes invalidate).
+    const payload = await getMyBotsCached(req.user.id)
+    // Browser-side cache too, scoped private so a shared proxy doesn't
+    // serve one user's bots to another. Pairs naturally with the
+    // in-process cache for layered fast-paths.
+    res.setHeader('Cache-Control', 'private, max-age=10, stale-while-revalidate=30')
+    res.json(payload)
   })
 
   // Reset a neural bot's weights back to the random init + zero its
@@ -177,6 +233,7 @@ export function botRoutes() {
   router.post('/:id/neural/reset', authRequired, botWriteLimiter, async (req, res) => {
     const bot = await resetNeuralBot({ botId: req.params.id, ownerUserId: req.user.id })
     if (!bot) return res.status(404).json({ error: 'not_found' })
+    invalidateMyBotsCache(req.user.id)
     res.json({ bot })
   })
 
@@ -317,6 +374,7 @@ export function botRoutes() {
         bot.elo = finalElo
       }
       await markBotBuilt(req.user.id)
+      invalidateMyBotsCache(req.user.id)
       res.status(201).json({
         bot,
         profile: draft.profile,
@@ -376,6 +434,7 @@ export function botRoutes() {
         name: draft.name
       })
       if (!updated) return res.status(404).json({ error: 'not_found' })
+      invalidateMyBotsCache(req.user.id)
       res.json({
         bot: updated,
         profile: draft.profile,
@@ -391,6 +450,12 @@ export function botRoutes() {
   router.get('/:id', authOptional, async (req, res) => {
     const bot = await getBotById(req.params.id, { viewerUserId: req.user?.id ?? null })
     if (!bot) return res.status(404).json({ error: 'not_found' })
+    // The bot record is read on the edit page plus implicitly by the
+    // ELO chart and H2H panel that mount alongside it — a short browser
+    // cache coalesces those into one round trip on first paint without
+    // sacrificing freshness after a save (PATCH/DELETE go to different
+    // URLs, so this only caches stable reads).
+    res.setHeader('Cache-Control', 'private, max-age=5, stale-while-revalidate=30')
     res.json({ bot })
   })
 
@@ -410,11 +475,46 @@ export function botRoutes() {
     res.json({ points, currentElo: bot.elo })
   })
 
-  // Manual bot creation. `isPublic` is honored — defaults to true so the
-  // public roster keeps growing for users who don't think about visibility,
-  // but the owner can opt into a private bot at create time. The 10-bot cap
-  // counts only NON-clone bots so users always have their 5 reserved clone
-  // slots regardless of how many manual bots they've made.
+  // Head-to-head stats for the bot edit page. Surfaces "which opponents
+  // does this bot actually beat?" — the most useful diagnostic when
+  // iterating on a bot. Same access gate as the bot record itself.
+  router.get('/:id/h2h', authOptional, async (req, res) => {
+    const bot = await getBotById(req.params.id, { viewerUserId: req.user?.id ?? null })
+    if (!bot) return res.status(404).json({ error: 'not_found' })
+    const limit = req.query.limit ? Number(req.query.limit) : undefined
+    const opponents = await getBotHeadToHead(bot.id, { limit })
+    res.setHeader('Cache-Control', 'private, max-age=30, stale-while-revalidate=60')
+    res.json({ opponents })
+  })
+
+  // Reset a rule/JS bot's code back to the starter template. Mirrors the
+  // clone "recalculate" and neural "reset weights" affordances — gives
+  // manual bots a "start over" path that doesn't require deleting +
+  // re-creating. Neural / clone bots reject (they have their own resets).
+  router.post('/:id/reset-code', authRequired, botWriteLimiter, async (req, res) => {
+    const target = await getBotById(req.params.id, { viewerUserId: req.user.id })
+    if (!target || target.ownerUserId !== req.user.id) {
+      return res.status(404).json({ error: 'not_found' })
+    }
+    if (target.isClone || target.isNeural) {
+      return res.status(400).json({
+        error: 'wrong_kind',
+        detail: 'Use the clone recalc / neural reset for those bot types.'
+      })
+    }
+    const bot = await updateBot({
+      botId: target.id,
+      ownerUserId: req.user.id,
+      patch: { code: defaultCode(), codeEnabled: true }
+    })
+    if (!bot) return res.status(404).json({ error: 'not_found' })
+    invalidateMyBotsCache(req.user.id)
+    res.json({ bot })
+  })
+
+  // Manual bot creation. `isPublic` defaults to false now — users have to
+  // opt their bots into the public roster explicitly. The 10-manual cap
+  // still excludes clones / NN slots so users get those for free.
   router.post('/', authRequired, botWriteLimiter, async (req, res) => {
     const { name, color, textColor, rules, phrases, code, codeEnabled, isPublic } = req.body || {}
     try {
@@ -431,9 +531,22 @@ export function botRoutes() {
       if (existing >= MAX_MANUAL_BOTS_PER_USER) {
         return res.status(400).json({
           error: 'bot_limit_reached',
-          detail: `You can only have up to ${MAX_MANUAL_BOTS_PER_USER} bots per account. Delete one to make room. (Clone slots don't count.)`,
+          detail: `You can only have up to ${MAX_MANUAL_BOTS_PER_USER} bots per account. Delete one to make room. (Clone + neural slots don't count.)`,
           limit: MAX_MANUAL_BOTS_PER_USER
         })
+      }
+      // Only check the public cap if the new bot is going public — keeps
+      // the cheap private-by-default path one query lighter.
+      const wantPublic = isPublic === undefined ? false : Boolean(isPublic)
+      if (wantPublic) {
+        const publicCount = await countPublicBotsByOwner(req.user.id)
+        if (publicCount >= MAX_PUBLIC_BOTS_PER_USER) {
+          return res.status(400).json({
+            error: 'public_limit_reached',
+            detail: `You're already sharing ${MAX_PUBLIC_BOTS_PER_USER} bots publicly. Hide one before making this one public.`,
+            limit: MAX_PUBLIC_BOTS_PER_USER
+          })
+        }
       }
 
       const bot = await createBot({
@@ -445,8 +558,9 @@ export function botRoutes() {
         phrases: phrases ?? {},
         code: code ?? defaultCode(),
         codeEnabled: Boolean(codeEnabled),
-        isPublic: isPublic === undefined ? true : Boolean(isPublic)
+        isPublic: wantPublic
       })
+      invalidateMyBotsCache(req.user.id)
       res.status(201).json({ bot })
     } catch (err) {
       try { return handleValidationError(err, res) } catch {}
@@ -498,10 +612,26 @@ export function botRoutes() {
         if (code !== undefined) { validateCode(code); patch.code = code }
         if (codeEnabled !== undefined) patch.codeEnabled = Boolean(codeEnabled)
       }
-      if (isPublic !== undefined) patch.isPublic = Boolean(isPublic)
+      if (isPublic !== undefined) {
+        const next = Boolean(isPublic)
+        // Only enforce the public cap when flipping false → true. Flipping
+        // true → false reduces the count and always succeeds.
+        if (next && !target.isPublic) {
+          const publicCount = await countPublicBotsByOwner(req.user.id)
+          if (publicCount >= MAX_PUBLIC_BOTS_PER_USER) {
+            return res.status(400).json({
+              error: 'public_limit_reached',
+              detail: `You're already sharing ${MAX_PUBLIC_BOTS_PER_USER} bots publicly. Hide one first.`,
+              limit: MAX_PUBLIC_BOTS_PER_USER
+            })
+          }
+        }
+        patch.isPublic = next
+      }
 
       const bot = await updateBot({ botId: req.params.id, ownerUserId: req.user.id, patch })
       if (!bot) return res.status(404).json({ error: 'not_found' })
+      invalidateMyBotsCache(req.user.id)
       res.json({ bot })
     } catch (err) {
       try { return handleValidationError(err, res) } catch {}
@@ -512,7 +642,10 @@ export function botRoutes() {
 
   router.delete('/:id', authRequired, botWriteLimiter, async (req, res) => {
     const result = await deleteBot({ botId: req.params.id, ownerUserId: req.user.id })
-    if (result.ok) return res.status(204).end()
+    if (result.ok) {
+      invalidateMyBotsCache(req.user.id)
+      return res.status(204).end()
+    }
     if (result.reason === 'clone_locked') {
       return res.status(400).json({
         error: 'clone_locked',

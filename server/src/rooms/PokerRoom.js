@@ -14,6 +14,7 @@ import { recordHandResult, updateNeuralState } from '../bots/botRepository.js'
 import { applyReinforceUpdate } from '../bots/neuralPolicy.js'
 import {
   recordHumanHand,
+  recordAnonHand,
   markBotUnlocked,
   tierCrossedByHand,
   applyRivalryDeltas
@@ -729,6 +730,15 @@ export class PokerRoom {
         showdownsWon: (stats.showdownsWon || 0) + (wentToShowdown && won ? 1 : 0),
         bluffWins: liveBluffWins
       }
+      // Mirror the same numbers onto the BotPlayer's seat-facing fields so
+      // the next broadcastGameState carries fresh values to the click-the-
+      // seat popover. Without this the popover would stay frozen at the
+      // sit-down snapshot.
+      seat.botElo = seat.bot.elo
+      seat.botHandsPlayed = seat.bot.stats.handsPlayed
+      seat.botHandsWon = seat.bot.stats.handsWon
+      seat.botShowdownsPlayed = seat.bot.stats.showdownsPlayed
+      seat.botShowdownsWon = seat.bot.stats.showdownsWon
 
       writes.push(
         recordHandResult({
@@ -799,6 +809,17 @@ export class PokerRoom {
       // anonymously keeps a seat off the record entirely — no ELO, no
       // archive, no rivalries — even if the WS itself is authenticated.
       if (seat.isBot) continue
+      // Signed-in but anonymous: doesn't go into the hand archive (the
+      // hands stay private), but we still bump a daily-activity counter
+      // so the profile calendar can show the user was active at all.
+      // Fire-and-forget — failure shouldn't block the rest of the
+      // hand-recording flow.
+      if (seat.userId && !seat.playingAsSelf) {
+        recordAnonHand(seat.userId).catch(err =>
+          console.warn('[anon-activity] persist failed:', err.message)
+        )
+        continue
+      }
       if (!seat.userId || !seat.playingAsSelf) continue
 
       const seatActions = handSummary.actionsByPlayer?.[seat.id] ?? []

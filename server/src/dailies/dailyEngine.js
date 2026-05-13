@@ -112,7 +112,6 @@ export async function applyDailyToPlayer(player, event) {
 }
 
 async function persistDailyProgress(player, dateKey, justCompleted) {
-  const completedAt = justCompleted ? 'NOW()' : 'daily_completed_at'
   await query(
     `UPDATE users
         SET daily_date_key       = $2,
@@ -122,6 +121,16 @@ async function persistDailyProgress(player, dateKey, justCompleted) {
       WHERE id = $1`,
     [player.userId, dateKey, player.dailyProgress, justCompleted ? 1 : 0]
   )
+  if (justCompleted) {
+    // Per-day completion log — the users row is overwritten each day so
+    // historical completions live here. Idempotent via (user_id, day) PK.
+    await query(
+      `INSERT INTO user_daily_completions (user_id, day, daily_id)
+       VALUES ($1, $2::date, $3)
+       ON CONFLICT (user_id, day) DO NOTHING`,
+      [player.userId, dateKey, player.dailyId || null]
+    )
+  }
 }
 
 // ─── Public hook ──────────────────────────────────────────────────────

@@ -86,6 +86,16 @@ export const api = {
     const qs = limit ? `?limit=${limit}` : ''
     return apiFetch(`/api/bots/${id}/elo-history${qs}`, { auth: true })
   },
+  // Head-to-head stats: returns the bot's win count + chips delta vs
+  // each opponent it has shared a hand with, sorted by hand volume.
+  botHeadToHead: (id, { limit } = {}) => {
+    const qs = limit ? `?limit=${limit}` : ''
+    return apiFetch(`/api/bots/${id}/h2h${qs}`, { auth: true })
+  },
+  // Wipe a rule (user-JS) bot's code back to the starter template.
+  // Server rejects this for clones / neural bots — those have their
+  // own reset paths.
+  resetBotCode: (id) => apiFetch(`/api/bots/${id}/reset-code`, { method: 'POST', auth: true }),
 
   // Uploads. `presign` is auth-optional — anonymous users get tmp/ keys that
   // the bucket lifecycle reaps after 24h; signed-in users get persistent
@@ -124,6 +134,10 @@ export const api = {
   // see the same data minus the isFollowedByMe flag).
   publicUser: (userId) =>
     apiFetch(`/api/users/${userId}/public`, { auth: true }),
+  // Bots the target user has explicitly made public. Used by the
+  // profile modal — visitor can see what someone is sharing.
+  publicBotsByUser: (userId) =>
+    apiFetch(`/api/users/${userId}/public-bots`, { auth: true }),
 
   // Dailies + achievements + skin. /today is auth-optional — anon users
   // see the daily catalog entry, but `progress`/`lifetime` only fill in

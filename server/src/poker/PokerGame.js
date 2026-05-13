@@ -1387,6 +1387,20 @@ export class PokerGame {
       botAvatarUrl: p.botAvatarUrl || null,
       addedByPlayerId: p.addedByPlayerId || null,
       ownerDisplayName: p.ownerDisplayName || null,
+      // Bot profile fields used by the seat-click popover. We surface
+      // these for every seat (null on humans) so the client doesn't
+      // need a separate fetch — important for private bots, which
+      // anonymous viewers can't hit /api/bots/:id for.
+      botOwnerUserId: p.botOwnerUserId || null,
+      botElo: typeof p.botElo === 'number' ? p.botElo : null,
+      botHandsPlayed: p.botHandsPlayed ?? null,
+      botHandsWon: p.botHandsWon ?? null,
+      botShowdownsPlayed: p.botShowdownsPlayed ?? null,
+      botShowdownsWon: p.botShowdownsWon ?? null,
+      botKind: p.botKind || null,
+      botNeuralKind: p.botNeuralKind || null,
+      botCloneTier: p.botCloneTier || null,
+      botIsPublic: typeof p.botIsPublic === 'boolean' ? p.botIsPublic : null,
       chips: p.chips,
       bet: this.playerBets.get(p.id) || 0,
       totalBet: this.playerTotalBets.get(p.id) || 0,

@@ -3,6 +3,7 @@ import {
   getBotById,
   listTopUniqueEloBots,
   listNeuralBotsByOwner,
+  listManualBotsByOwner,
   provisionNeuralBotsForUser
 } from "../bots/botRepository.js"
 import { verify as verifyJwt } from "../auth/jwt.js"
@@ -84,6 +85,9 @@ export class MessageHandler {
 
         case MESSAGE_TYPES.POKER_AUTO_FILL_NEURAL:
           return this.handleAutoFillNeural(player)
+
+        case MESSAGE_TYPES.POKER_AUTO_FILL_CUSTOM:
+          return this.handleAutoFillCustom(player)
 
         case MESSAGE_TYPES.AUTH_HELLO:
           return this.handleAuthHello(player, data)
@@ -490,6 +494,36 @@ export class MessageHandler {
       return this.error('Could not load top bots.', player)
     }
     if (!bots.length) return this.error('No public bots available.', player)
+    const result = room.autoFillWithTopBots(player.id, bots)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    }
+    return result
+  }
+
+  // Auto-fill with the caller's own user-coded bots (no clones / NNs).
+  // Requires auth. If you have fewer than slotsLeft bots, you seat
+  // however many you have — no padding from the public catalog.
+  async handleAutoFillCustom(player) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') {
+      return this.error('Not at a poker table', player)
+    }
+    const userId = player.userId
+    if (!userId) {
+      return this.error('Sign in to seat your own bots.', player)
+    }
+    const slotsLeft = Math.max(0, POKER_CONFIG.MAX_PLAYERS - room.players.size)
+    if (slotsLeft === 0) {
+      return this.error(room.isArena ? 'Arena is full.' : 'Table is full.', player)
+    }
+    let bots
+    try { bots = await listManualBotsByOwner(userId) }
+    catch (err) {
+      console.error('[autofill-custom] bot lookup failed:', err.message)
+      return this.error('Could not load your bots.', player)
+    }
+    if (!bots.length) return this.error('You have no custom bots to seat.', player)
     const result = room.autoFillWithTopBots(player.id, bots)
     if (!result.success) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })

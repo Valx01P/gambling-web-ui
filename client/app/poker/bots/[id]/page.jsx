@@ -14,6 +14,7 @@ import { BOT_COLOR_PRESETS, isValidHex } from '../../../lib/botColors'
 import { STARTER_CODE } from '../../../lib/starterBotCode'
 import NeuralBrainPanel from './NeuralBrainPanel'
 import EloChart from './EloChart'
+import HeadToHeadPanel from './HeadToHeadPanel'
 
 // Heavy chunks deferred until the user actually engages with editing.
 // JsCodeEditor pulls in the docs reference panel + linter; Simulator pulls
@@ -167,18 +168,43 @@ export default function BotDetailPage({ params }) {
     }
   }, [draftName, draftColor, draftTextColor, draftAvatarUrl, draftCode, id, bot?.isNeural])
 
+  const [deleteBusy, setDeleteBusy] = useState(false)
   async function destroy() {
     if (!bot) return
-    if (bot.isClone) {
-      setSaveError('Clone bots are permanent — recalculate or edit them instead.')
+    if (bot.isClone || bot.isNeural) {
+      setSaveError('Permanent bot — use recalculate / reset weights instead.')
       return
     }
-    if (!confirm(`Delete bot "${bot.name}"? This cannot be undone.`)) return
+    setDeleteBusy(true)
     try {
       await api.deleteBot(id)
       window.location.href = '/poker/bots'
     } catch (err) {
       setSaveError(err.detail || err.message || 'Failed to delete')
+      setDeleteBusy(false)
+    }
+  }
+
+  // Reset a rule (user-coded) bot's code back to the starter template.
+  // Parallels clone recalc + neural reset — gives manual bots a "start
+  // over" path that doesn't require deleting and re-creating.
+  const [resetCodeBusy, setResetCodeBusy] = useState(false)
+  async function resetCode() {
+    if (!bot || bot.isClone || bot.isNeural) return
+    setResetCodeBusy(true)
+    setSaveError(null)
+    try {
+      const { bot: updated } = await api.resetBotCode(id)
+      const initialCode = updated.code && updated.code.trim() ? updated.code : STARTER_CODE
+      setBot(updated)
+      setDraftCode(initialCode)
+      baselineRef.current = { ...baselineRef.current, code: initialCode }
+      setSaveOk(true)
+      setTimeout(() => setSaveOk(false), 2000)
+    } catch (err) {
+      setSaveError(err.detail || err.message || 'Failed to reset code')
+    } finally {
+      setResetCodeBusy(false)
     }
   }
 
@@ -322,6 +348,12 @@ export default function BotDetailPage({ params }) {
                 page reload. Empty/short series renders an inline hint
                 instead of an empty axis box. */}
             <EloChart botId={bot.id} currentElo={bot.elo} refreshKey={bot.elo} />
+
+            {/* Head-to-head matchups — surfaces "which bots does this bot
+                actually beat?" the one diagnostic worth more than ELO when
+                iterating on a bot. Same refreshKey so it updates after a
+                fresh hand in the background. */}
+            <HeadToHeadPanel botId={bot.id} refreshKey={bot.elo} />
 
             {/* Clone-only banner — surfaces "Recalculate from your last N hands"
                 up top so users don't have to dig into Settings to find it. */}
@@ -630,19 +662,57 @@ export default function BotDetailPage({ params }) {
                     </div>
                   )}
 
+                  {/* Reset to starter code — only for rule bots. Mirrors the
+                      "Recalculate" affordance clones have and "Reset weights"
+                      neural bots have, so all three permanent-or-revertable
+                      bot types offer the same start-over option. */}
+                  {!bot.isClone && !bot.isNeural && (
+                    <div className="rounded-xl border border-zinc-600/50 bg-zinc-800/95 p-3 shadow-sm">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Reset code</div>
+                          <div className="text-[11px] font-bold text-zinc-400">
+                            Replaces this bot's code with the starter template. Stats and ELO stay.
+                          </div>
+                        </div>
+                        <ConfirmPopoverButton
+                          triggerLabel={resetCodeBusy ? 'Resetting…' : 'Reset code'}
+                          triggerClassName="shrink-0 rounded-md border border-zinc-500/60 bg-zinc-700 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-white hover:bg-zinc-600 disabled:opacity-50"
+                          description="Overwrites your current code with the starter template. Your edits will be lost."
+                          confirmLabel="Reset"
+                          align="right"
+                          persistKey="pokerxyz:confirm:reset-code:skip"
+                          busy={resetCodeBusy}
+                          onConfirm={resetCode}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {/* Danger zone — only renders for non-clone, non-neural
                       bots. Clones and NN bots are gated server-side too, but
-                      hiding the button keeps the UI honest. */}
+                      hiding the button keeps the UI honest. Uses the same
+                      confirm popover as everywhere else for consistency
+                      with reset/recalc rather than a window.confirm(). */}
                   {!bot.isClone && !bot.isNeural && (
                     <div className="rounded-xl border border-red-500/50 bg-red-500/10 p-3 shadow-sm">
-                      <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-red-200">Danger zone</div>
-                      <button
-                        type="button"
-                        onClick={destroy}
-                        className="rounded-md border border-red-500/60 bg-red-500/25 px-3 py-1.5 text-xs font-bold text-red-100 hover:bg-red-500/40"
-                      >
-                        Delete bot
-                      </button>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-black uppercase tracking-widest text-red-200">Danger zone</div>
+                          <div className="text-[11px] font-bold text-zinc-300">
+                            Permanently delete this bot.
+                          </div>
+                        </div>
+                        <ConfirmPopoverButton
+                          triggerLabel={deleteBusy ? 'Deleting…' : 'Delete bot'}
+                          triggerClassName="shrink-0 rounded-md border border-red-500/60 bg-red-500/25 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-red-100 hover:bg-red-500/40 disabled:opacity-50"
+                          description={`Delete bot "${bot.name}"? This can't be undone.`}
+                          confirmLabel="Delete"
+                          align="right"
+                          busy={deleteBusy}
+                          onConfirm={destroy}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>

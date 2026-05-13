@@ -130,6 +130,10 @@ export const MESSAGE_TYPES = {
   // POKER_AUTO_FILL_BOTS which seats top-ELO public bots regardless of
   // signed-in state.
   POKER_AUTO_FILL_NEURAL: 'poker_auto_fill_neural',
+  // Auto-fill with the caller's own user-coded (non-clone, non-NN) bots
+  // sorted by ELO. Auth required. Useful when you want a table of your
+  // own creations without picking each one manually.
+  POKER_AUTO_FILL_CUSTOM: 'poker_auto_fill_custom',
 
   // Auth handshake — client sends a JWT after connect so the server knows
   // which signed-in user this socket belongs to (needed for arena creation).

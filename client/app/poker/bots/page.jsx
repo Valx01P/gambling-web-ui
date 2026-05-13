@@ -12,17 +12,90 @@ import { useAuth } from '../../lib/useAuth'
 import { api } from '../../lib/api'
 import { BOT_COLOR_PRESETS, isValidHex } from '../../lib/botColors'
 
+// Persist collapse/expand state per-section across reloads. The key is
+// scoped under a single namespace so all of the page's sections share one
+// place in localStorage — easy to wipe via the browser if it ever feels
+// stuck. Default-open so first-time visitors see content.
+function useCollapsed(key, defaultCollapsed = false) {
+  const fullKey = `pokerxyz:bots:collapsed:${key}`
+  const [collapsed, setCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return defaultCollapsed
+    const raw = window.localStorage.getItem(fullKey)
+    if (raw == null) return defaultCollapsed
+    return raw === '1'
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(fullKey, collapsed ? '1' : '0')
+  }, [fullKey, collapsed])
+  return [collapsed, setCollapsed]
+}
+
+// Section wrapper with a clickable header. Renders a chevron that flips,
+// and hides the body when collapsed. The header is left intact (any
+// existing summary chips / counters keep rendering) — we just wrap it.
+function CollapsibleSection({ collapseKey, title, subtitle, headerRight, children, accent = 'zinc' }) {
+  const [collapsed, setCollapsed] = useCollapsed(collapseKey, false)
+  const borderClass = {
+    zinc:   'border-zinc-600/50',
+    amber:  'border-amber-500/30',
+    cyan:   'border-cyan-400/30'
+  }[accent] || 'border-zinc-600/50'
+  return (
+    <div className={`w-full rounded-xl border ${borderClass} bg-zinc-800/90 p-3 shadow-lg`}>
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setCollapsed(c => !c)}
+          className="flex flex-1 items-center gap-2 text-left min-w-0"
+          aria-expanded={!collapsed}
+        >
+          <span className={`shrink-0 text-zinc-400 transition-transform ${collapsed ? '-rotate-90' : ''}`} aria-hidden>▾</span>
+          <div className="min-w-0">
+            <div className="text-sm font-black text-white truncate">{title}</div>
+            {subtitle && <div className="text-[10px] font-bold text-zinc-300 truncate">{subtitle}</div>}
+          </div>
+        </button>
+        {headerRight && (
+          <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+            {headerRight}
+          </div>
+        )}
+      </div>
+      {!collapsed && (
+        <div className="mt-3">
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Renders a single clone tier's slot in the My Bots shelf. Three states:
 //   * built: existing bot — links to editor, shows ELO badge
 //   * unlocked but not built: shows derived stats + Build button
 //   * locked: progress meter ("3 more hands until v2")
-function CloneSlot({ slot, onBuilt, onUpdated, autoBuild = false }) {
+function CloneSlot({ slot, onBuilt, onUpdated, autoBuild = false, onVisibilityError }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
   const [recalcBusy, setRecalcBusy] = useState(false)
+  const [visBusy, setVisBusy] = useState(false)
   const [error, setError] = useState(null)
   const [recalcOk, setRecalcOk] = useState(false)
   const [autoTriggered, setAutoTriggered] = useState(false)
+
+  async function toggleVisibility() {
+    if (!slot.built || !slot.botId) return
+    setVisBusy(true)
+    try {
+      const { bot } = await api.updateBot(slot.botId, { isPublic: !slot.isPublic })
+      onUpdated?.(bot)
+    } catch (err) {
+      onVisibilityError?.(err.detail || err.message || 'Visibility change failed')
+    } finally {
+      setVisBusy(false)
+    }
+  }
 
   async function build() {
     setBusy(true)
@@ -85,6 +158,19 @@ function CloneSlot({ slot, onBuilt, onUpdated, autoBuild = false }) {
               <div className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">ELO</div>
               <div className="text-sm font-black text-amber-200 tabular-nums">{slot.elo}</div>
             </div>
+            <button
+              type="button"
+              onClick={toggleVisibility}
+              disabled={visBusy}
+              title={slot.isPublic ? 'Public — anyone can sit. Click to make private.' : 'Private — only you can sit. Click to share.'}
+              className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-widest transition-colors disabled:opacity-50 ${
+                slot.isPublic
+                  ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25'
+                  : 'border-zinc-600/60 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white'
+              }`}
+            >
+              {visBusy ? '…' : (slot.isPublic ? 'Public ✓' : 'Private')}
+            </button>
             <ConfirmPopoverButton
               triggerLabel={recalcBusy ? 'Recalculating…' : recalcOk ? 'Recalculated ✓' : '↻ Recalculate'}
               triggerClassName="rounded-md border border-amber-400/50 bg-amber-500/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-amber-100 transition-colors hover:bg-amber-500/30 disabled:opacity-50"
@@ -163,7 +249,7 @@ function CloneSlot({ slot, onBuilt, onUpdated, autoBuild = false }) {
 }
 
 // 5-slot shelf at the top of the My Bots tab.
-function PlayerCloneShelf({ user, onCreated, autoBuildTier = null }) {
+function PlayerCloneShelf({ user, onCreated, autoBuildTier = null, onVisibilityError }) {
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -184,23 +270,25 @@ function PlayerCloneShelf({ user, onCreated, autoBuildTier = null }) {
 
   if (loading) {
     return (
-      <div className="w-full rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 shadow-lg">
-        <div className="text-xs font-bold text-amber-100">Reading your play data…</div>
-      </div>
+      <CollapsibleSection
+        collapseKey="clones"
+        title="Your clone bots"
+        subtitle="Reading your play data…"
+        accent="amber"
+      >
+        <div className="text-xs font-bold text-amber-100">Loading…</div>
+      </CollapsibleSection>
     )
   }
   if (!preview) return null
 
   return (
-    <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/90 p-3 shadow-lg">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div>
-          <div className="text-sm font-black text-white">Your clone bots</div>
-          <div className="text-[10px] font-bold text-zinc-300">
-            Five reserved slots. Each new one is more accurate — built from more of your hands. Played: <span className="text-amber-200">{preview.handsSeated ?? 0}</span> hands.
-          </div>
-        </div>
-      </div>
+    <CollapsibleSection
+      collapseKey="clones"
+      title="Your clone bots"
+      subtitle={`Five reserved slots — each one is more accurate, built from more of your hands. Played: ${preview.handsSeated ?? 0} hands.`}
+      accent="amber"
+    >
       {error && (
         <div className="mb-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] font-bold text-red-200">
           {error}
@@ -221,10 +309,35 @@ function PlayerCloneShelf({ user, onCreated, autoBuildTier = null }) {
               // reflect what the recalc returned. Cheap; preview is small.
               reload()
             }}
+            onVisibilityError={onVisibilityError}
           />
         ))}
       </div>
-    </div>
+    </CollapsibleSection>
+  )
+}
+
+// Five auto-provisioned neural-net bots, one per variant. They live in
+// their own collapsible section so the manual bots count + UI doesn't
+// have to fight five permanent rows. Source list comes from the page's
+// myBots fetch (filtered to isNeural), so we don't need a second API call.
+function PlayerNeuralShelf({ neuralBots, onUpdated, onVisibilityError }) {
+  return (
+    <CollapsibleSection
+      collapseKey="neural"
+      title="Your neural bots"
+      subtitle="Five auto-provisioned learners — each uses a different ML algorithm and updates its weights every hand it plays. Toggle public to let anyone seat them."
+      accent="cyan"
+    >
+      <BotList
+        bots={neuralBots}
+        mine
+        emptyText="No neural bots yet — they're auto-provisioned on your next /poker/bots load."
+        onDeleted={() => { /* NN bots aren't deletable; no-op */ }}
+        onUpdated={onUpdated}
+        onVisibilityError={onVisibilityError}
+      />
+    </CollapsibleSection>
   )
 }
 
@@ -353,15 +466,16 @@ function CreatePanel({ onCreated }) {
       </button>
 
       <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300 text-center">
-        Bots are public. Anyone can sit them at a table.
+        Bots are private by default. Toggle public from the list to share.
       </div>
     </div>
   )
 }
 
-function BotRow({ bot, mine, onDeleted }) {
+function BotRow({ bot, mine, onDeleted, onUpdated, onVisibilityError }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
+  const [visBusy, setVisBusy] = useState(false)
   const href = `/poker/bots/${bot.id}`
 
   async function destroy(e) {
@@ -373,6 +487,23 @@ function BotRow({ bot, mine, onDeleted }) {
       await api.deleteBot(bot.id)
       onDeleted(bot.id)
     } finally { setBusy(false) }
+  }
+
+  // One-click visibility flip. Handles the 10-public-cap error from the
+  // server by surfacing it up to the page-level banner so the user sees
+  // exactly why it didn't go through.
+  async function toggleVisibility(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    setVisBusy(true)
+    try {
+      const { bot: updated } = await api.updateBot(bot.id, { isPublic: !bot.isPublic })
+      onUpdated?.(updated)
+    } catch (err) {
+      onVisibilityError?.(err.detail || err.message || 'Visibility change failed')
+    } finally {
+      setVisBusy(false)
+    }
   }
 
   function openDetail(e) {
@@ -395,11 +526,26 @@ function BotRow({ bot, mine, onDeleted }) {
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-sm font-black text-white">{bot.name}</span>
-              {bot.codeEnabled && (
+              {/* Bot-kind badge — one of (JS code, clone tier, neural variant)
+                  so list rows are scannable. The label for NN bots reflects
+                  the underlying learning algorithm so users can tell their
+                  REINFORCE bots apart from the MLP / Q-learning ones. */}
+              {bot.isNeural ? (
+                <span className="rounded border border-cyan-400/40 bg-cyan-500/10 px-1 py-px text-[9px] font-black uppercase tracking-widest text-cyan-200">
+                  {bot.neuralKind === 'mlp' ? 'MLP'
+                    : bot.neuralKind === 'qlearning' ? 'Q-LEARN'
+                    : bot.neuralKind === 'reinforce_baseline' ? 'PG+BL'
+                    : 'PG'}
+                </span>
+              ) : bot.isClone ? (
+                <span className="rounded border border-amber-400/40 bg-amber-500/10 px-1 py-px text-[9px] font-black uppercase tracking-widest text-amber-200">
+                  CLONE v{bot.cloneTier}
+                </span>
+              ) : bot.codeEnabled ? (
                 <span className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1 py-px text-[9px] font-black uppercase tracking-widest text-emerald-200">
                   JS
                 </span>
-              )}
+              ) : null}
             </div>
             <div className="truncate text-[10px] font-bold text-zinc-300">
               ELO {bot.elo} · {bot.stats.handsPlayed} HANDS · BY {(bot.ownerDisplayName || 'UNKNOWN').toUpperCase()}
@@ -407,23 +553,48 @@ function BotRow({ bot, mine, onDeleted }) {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          {/* Quick visibility toggle on owner rows. Public = emerald
+              "shared", private = zinc "private only" — colors mirror the
+              public-roster filter accent so the state is scannable.
+              Server enforces the 10-public cap; we surface the error
+              up to the page-level banner. */}
+          {mine && (
+            <button
+              type="button"
+              onClick={toggleVisibility}
+              disabled={visBusy}
+              title={bot.isPublic
+                ? 'Public — anyone can sit this bot. Click to make private.'
+                : 'Private — only you can sit this bot. Click to share.'}
+              className={`rounded-md border px-2 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors disabled:opacity-50 ${
+                bot.isPublic
+                  ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25'
+                  : 'border-zinc-600/60 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white'
+              }`}
+            >
+              {visBusy ? '…' : (bot.isPublic ? 'Public ✓' : 'Private')}
+            </button>
+          )}
           <Link
             href={href}
             className="rounded-md border border-zinc-500/50 bg-zinc-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-zinc-600"
           >
             {mine ? 'Edit →' : 'Open →'}
           </Link>
-          {/* Clones are permanent slots and can't be deleted; show a small
-              lock indicator so the missing button isn't confusing. */}
-          {mine && bot.isClone && (
+          {/* Permanent bots (clones, NN) can't be deleted — show a small
+              lock chip so the missing Delete button isn't confusing. The
+              kind badge above already says which type it is. */}
+          {mine && (bot.isClone || bot.isNeural) && (
             <span
-              title="Clone bots can't be deleted — recalculate or edit instead"
-              className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-amber-200"
+              title={bot.isClone
+                ? 'Clone bots can\'t be deleted — recalculate or edit instead'
+                : 'Neural bots can\'t be deleted — reset weights to start over'}
+              className="rounded-md border border-zinc-500/30 bg-zinc-700/30 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-300"
             >
-              v{bot.cloneTier}
+              🔒
             </span>
           )}
-          {mine && !bot.isClone && (
+          {mine && !bot.isClone && !bot.isNeural && (
             <button
               type="button"
               onClick={destroy}
@@ -439,7 +610,7 @@ function BotRow({ bot, mine, onDeleted }) {
   )
 }
 
-function BotList({ bots, mine, onDeleted, emptyText }) {
+function BotList({ bots, mine, onDeleted, onUpdated, onVisibilityError, emptyText }) {
   if (bots.length === 0) {
     return (
       <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/35 px-3 py-6 text-center text-xs font-bold text-zinc-300">
@@ -450,15 +621,24 @@ function BotList({ bots, mine, onDeleted, emptyText }) {
   return (
     <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
       {bots.map(b => (
-        <BotRow key={b.id} bot={b} mine={mine} onDeleted={onDeleted} />
+        <BotRow
+          key={b.id}
+          bot={b}
+          mine={mine}
+          onDeleted={onDeleted}
+          onUpdated={onUpdated}
+          onVisibilityError={onVisibilityError}
+        />
       ))}
     </div>
   )
 }
 
 // Mirror server botRoutes.MAX_BOTS_PER_USER. Hardcoded so we can show the
-// limit before the user even tries to create one.
+// limit before the user even tries to create one. The server-side value
+// wins once /mine resolves (response carries `limit` and `publicLimit`).
 const MAX_BOTS_PER_USER = 10
+const MAX_PUBLIC_BOTS_PER_USER = 10
 
 // Next 13+/14+/16 requires any component that calls useSearchParams() to
 // be rendered inside a <Suspense> boundary, otherwise the production build
@@ -486,6 +666,7 @@ function BotsPageInner() {
                        : null
   const [tab, setTab] = useState(autoBuildTier ? 'mine' : 'public')
   const [myBots, setMyBots] = useState([])
+  const [publicLimit, setPublicLimit] = useState(MAX_PUBLIC_BOTS_PER_USER)
   const [publicBots, setPublicBots] = useState([])
   const [botLimit, setBotLimit] = useState(MAX_BOTS_PER_USER)
   const [loading, setLoading] = useState(true)
@@ -528,6 +709,7 @@ function BotsPageInner() {
       ])
       setMyBots(mine.bots)
       setBotLimit(mine.limit ?? MAX_BOTS_PER_USER)
+      setPublicLimit(mine.publicLimit ?? MAX_PUBLIC_BOTS_PER_USER)
       setPublicBots(pub.bots)
     } catch (err) {
       setLoadError(err.message || 'Failed to load')
@@ -615,58 +797,85 @@ function BotsPageInner() {
           </div>
         )}
 
+        {/* Order: My Bots first (the active editing surface), then neural
+            (your trained pets), then clones (the auto-built history). Most
+            users open this page to edit a manual bot — putting it on top
+            saves a scroll. */}
+        {user && tab === 'mine' && (() => {
+          // Manual bots = neither clone nor neural. The limit only counts
+          // these — clones live in their own shelf and neural bots are
+          // permanent slots that the user didn't create by hand.
+          const manualBots = myBots.filter(b => !b.isClone && !b.isNeural)
+          const publicCount = myBots.filter(b => b.isPublic).length
+          // Common visibility-update handler: replace the bot in-place
+          // across both lists (public roster also caches manual+public).
+          const onBotUpdated = (updated) => {
+            setMyBots(prev => prev.map(x => x.id === updated.id ? updated : x))
+            setPublicBots(prev => {
+              const filtered = prev.filter(x => x.id !== updated.id)
+              return updated.isPublic ? [updated, ...filtered] : filtered
+            })
+          }
+          const onVisibilityError = (msg) => setValidationError(msg)
+          return (
+            <CollapsibleSection
+              collapseKey="manual"
+              title={`My Bots (${manualBots.length}/${botLimit})`}
+              subtitle={`User-coded bots — edit code, share publicly, or sit them at a table. ${publicCount}/${publicLimit} of your bots are currently public.`}
+              accent="zinc"
+              headerRight={
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (manualBots.length >= botLimit) {
+                      setValidationError(`You can only have up to ${botLimit} manual bots per account. Delete one to make room. (Clone + neural slots don't count.)`)
+                      return
+                    }
+                    setTab('create')
+                  }}
+                  className="rounded-md border border-emerald-500/50 bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-emerald-600"
+                >
+                  + New bot
+                </button>
+              }
+            >
+              {loading ? (
+                <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/35 px-3 py-6 text-center text-xs font-bold text-zinc-300">
+                  Loading…
+                </div>
+              ) : (
+                <BotList
+                  bots={manualBots}
+                  mine
+                  emptyText="No manual bots yet. Tap + New bot to build one."
+                  onDeleted={(id) => {
+                    setMyBots(prev => prev.filter(x => x.id !== id))
+                    setPublicBots(prev => prev.filter(x => x.id !== id))
+                  }}
+                  onUpdated={onBotUpdated}
+                  onVisibilityError={onVisibilityError}
+                />
+              )}
+            </CollapsibleSection>
+          )
+        })()}
+
+        {user && tab === 'mine' && (
+          <PlayerNeuralShelf
+            neuralBots={myBots.filter(b => b.isNeural)}
+            onUpdated={(updated) => setMyBots(prev => prev.map(x => x.id === updated.id ? updated : x))}
+            onVisibilityError={(msg) => setValidationError(msg)}
+          />
+        )}
+
         {user && tab === 'mine' && (
           <PlayerCloneShelf
             user={user}
             autoBuildTier={autoBuildTier}
             onCreated={(bot) => setMyBots(prev => [bot, ...prev])}
+            onVisibilityError={(msg) => setValidationError(msg)}
           />
         )}
-
-        {user && tab === 'mine' && (() => {
-          // Clones live in the shelf above; this list is for manual bots
-          // only so the user sees one count (manual / 10) that matches the
-          // server-side cap.
-          const manualBots = myBots.filter(b => !b.isClone)
-          return (
-          <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/90 p-3 shadow-lg">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <div>
-                <div className="text-sm font-black text-white">My Bots <span className="text-zinc-400 font-bold">({manualBots.length}/{botLimit})</span></div>
-                <div className="text-xs font-bold text-zinc-300">Manual bots — edit code, share publicly, or sit them at a table.</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (manualBots.length >= botLimit) {
-                    setValidationError(`You can only have up to ${botLimit} manual bots per account. Delete one to make room. (Clone slots don't count.)`)
-                    return
-                  }
-                  setTab('create')
-                }}
-                className="rounded-md border border-emerald-500/50 bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-emerald-600"
-              >
-                + New bot
-              </button>
-            </div>
-            {loading ? (
-              <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/35 px-3 py-6 text-center text-xs font-bold text-zinc-300">
-                Loading…
-              </div>
-            ) : (
-              <BotList
-                bots={manualBots}
-                mine
-                emptyText="No manual bots yet. Tap Create to build one."
-                onDeleted={(id) => {
-                  setMyBots(prev => prev.filter(x => x.id !== id))
-                  setPublicBots(prev => prev.filter(x => x.id !== id))
-                }}
-              />
-            )}
-          </div>
-          )
-        })()}
 
         {user && tab === 'create' && (
           <CreatePanel

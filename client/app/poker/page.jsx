@@ -12,6 +12,7 @@ import AuthGateModal from '../components/AuthGateModal'
 import AchievementToast from '../components/AchievementToast'
 import BotAvatar from '../components/BotAvatar'
 import PlayerProfilePopover from '../components/PlayerProfilePopover'
+import BotProfilePopover from '../components/BotProfilePopover'
 import { useAuth } from '../lib/useAuth'
 import { useUpload } from '../lib/useUpload'
 import { useZoom, ZOOM_MIN, ZOOM_MAX, ZOOM_STEP } from '../lib/useZoom'
@@ -2086,6 +2087,27 @@ export default function PokerPage() {
                     </button>
                   )
                 })()}
+                {/* Third auto-fill option: the caller's user-coded bots
+                    only (no clones, no NN). Useful for testing your
+                    creations without picking each by hand. */}
+                {(!isSpectator || isArena) && authUser && (() => {
+                  const seatedCount = gameState?.players?.length ?? 0
+                  const openSlots = Math.max(0, 5 - seatedCount)
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (openSlots === 0) return
+                        send('poker_auto_fill_custom')
+                        setTableMenuOpen(false)
+                      }}
+                      disabled={openSlots === 0}
+                      className="block w-full px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      ★ {openSlots === 0 ? 'Custom · Full' : `Seat my custom bots (${Math.min(openSlots, 5)})`}
+                    </button>
+                  )
+                })()}
                 {(!isSpectator || isArena) && (
                   <button type="button" onClick={() => openPokerPanel('bots')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                     Add Bots
@@ -2413,7 +2435,12 @@ export default function PokerPage() {
                       {botRoster.loading ? (
                         <div className="text-xs font-bold text-zinc-500 text-center py-2">Loading…</div>
                       ) : botRoster.mine.length === 0 ? (
-                        <div className="text-xs font-bold text-zinc-500 text-center py-2">No bots yet. Build one in My Bots.</div>
+                        <a
+                          href="/poker/bots"
+                          className="block text-center py-3 px-2 rounded-md border border-zinc-700/70 bg-zinc-950/40 text-xs font-bold text-amber-200 hover:bg-zinc-900 hover:border-amber-400/40"
+                        >
+                          No bots yet — <span className="underline">build your first one →</span>
+                        </a>
                       ) : (
                         <div className="space-y-1.5">
                           {botRoster.mine.map(b => (
@@ -2765,6 +2792,16 @@ export default function PokerPage() {
                             className="mb-2 w-full rounded-md border border-cyan-400/60 bg-cyan-500/15 px-2 py-1.5 text-[11px] font-black text-cyan-100 transition-colors hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             {openSlots === 0 ? 'Arena full' : `★ Seat my NN squad (${Math.min(openSlots, 5)})`}
+                          </button>
+                        )}
+                        {authUser && (
+                          <button
+                            type="button"
+                            onClick={() => send('poker_auto_fill_custom')}
+                            disabled={openSlots === 0}
+                            className="mb-2 w-full rounded-md border border-violet-400/60 bg-violet-500/15 px-2 py-1.5 text-[11px] font-black text-violet-100 transition-colors hover:bg-violet-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {openSlots === 0 ? 'Arena full' : `★ Seat my custom bots (${Math.min(openSlots, 5)})`}
                           </button>
                         )}
                       </>
@@ -3334,14 +3371,14 @@ export default function PokerPage() {
                       (your own profile lives behind the account menu). */}
                   <div
                     data-seat-id={player.id}
-                    role={player.isBot || isMe ? undefined : 'button'}
-                    tabIndex={player.isBot || isMe ? undefined : 0}
-                    onClick={player.isBot || isMe ? undefined : (e) => {
+                    role={isMe ? undefined : 'button'}
+                    tabIndex={isMe ? undefined : 0}
+                    onClick={isMe ? undefined : (e) => {
                       e.stopPropagation()
                       setPopoverSeatId(player.id)
                       setPopoverSeat(player)
                     }}
-                    onKeyDown={player.isBot || isMe ? undefined : (e) => {
+                    onKeyDown={isMe ? undefined : (e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
                         setPopoverSeatId(player.id)
@@ -3354,7 +3391,7 @@ export default function PokerPage() {
                     className={`
                     px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg text-center w-[120px] sm:w-[140px] shadow-xl
                     transition-all border z-10 relative ${(isMe && (bankState.skinId ?? 0) !== 0) ? '' : 'bg-zinc-800/95'}
-                    ${(!player.isBot && !isMe) ? 'cursor-pointer hover:border-zinc-300 focus:outline-none focus:ring-2 focus:ring-amber-300' : ''}
+                    ${!isMe ? 'cursor-pointer hover:border-zinc-300 focus:outline-none focus:ring-2 focus:ring-amber-300' : ''}
                     ${player.folded && !isPlayerWaiting ? 'opacity-50' : ''}
                     ${isPlayerWaiting ? 'opacity-60' : ''}
                     ${isHighlighted
@@ -3503,8 +3540,12 @@ export default function PokerPage() {
         onDismiss={() => setAchievement(null)}
       />
 
+      {/* Two popovers driven by the same `popoverSeat` state — one for
+          humans (lifetime profile + peer-loans), one for bots (lifetime
+          stats + kind badge + jump-to-edit). Only one renders at a time
+          because exactly one of `isBot` is true per seat. */}
       <PlayerProfilePopover
-        open={!!popoverSeat}
+        open={!!popoverSeat && !popoverSeat.isBot}
         seat={popoverSeat}
         anchorSeatId={popoverSeatId}
         onClose={() => { setPopoverSeat(null); setPopoverSeatId(null) }}
@@ -3517,6 +3558,14 @@ export default function PokerPage() {
         negotiations={peerNegotiations}
         onPeerLoanSend={(type, data) => send(type, data)}
         viewerIsSpectator={isSpectator}
+      />
+
+      <BotProfilePopover
+        open={!!popoverSeat && popoverSeat.isBot}
+        seat={popoverSeat}
+        anchorSeatId={popoverSeatId}
+        onClose={() => { setPopoverSeat(null); setPopoverSeatId(null) }}
+        viewerUserId={authUser?.id ?? null}
       />
 
       {/* Run-it-twice flow: vote modal (server starts when both humans are

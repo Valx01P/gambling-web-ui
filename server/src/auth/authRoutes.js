@@ -120,6 +120,7 @@ export function authRoutes() {
         email: user.email,
         displayName: user.display_name,
         avatarUrl: user.avatar_url,
+        description: user.description ?? null,
         elo: user.elo ?? null,
         handsPlayed: user.hands_played ?? 0,
         handsWon: user.hands_won ?? 0
@@ -127,10 +128,25 @@ export function authRoutes() {
     })
   })
 
+  // Cap chosen to fit roughly one short Twitter-style bio. Plenty for a
+  // tagline; not so much that a profile becomes a wall of text.
+  const MAX_DESCRIPTION_LENGTH = 280
+
   router.patch('/me', authRequired, profileUpdateLimiter, async (req, res) => {
-    const { displayName, avatarUrl } = req.body || {}
+    const { displayName, avatarUrl, description } = req.body || {}
     if (displayName !== undefined && (typeof displayName !== 'string' || displayName.length > 64)) {
       return res.status(400).json({ error: 'invalid_display_name' })
+    }
+    // description: undefined = unchanged, '' = clear, string = set.
+    // null is treated as clear so PATCH-with-null also works.
+    if (description !== undefined && description !== null && typeof description !== 'string') {
+      return res.status(400).json({ error: 'invalid_description' })
+    }
+    if (typeof description === 'string' && description.length > MAX_DESCRIPTION_LENGTH) {
+      return res.status(400).json({
+        error: 'invalid_description',
+        detail: `Description is too long (max ${MAX_DESCRIPTION_LENGTH} characters).`
+      })
     }
     // Reject obviously-bogus avatar URLs early — must parse and be http(s).
     if (avatarUrl !== undefined && avatarUrl !== null) {
@@ -152,9 +168,18 @@ export function authRoutes() {
     if (cleanDisplayName !== undefined && cleanDisplayName.length === 0) {
       return res.status(400).json({ error: 'invalid_display_name' })
     }
+    // Sanitize bio the same way we sanitize names (strips control chars,
+    // collapses whitespace). Empty string is preserved — that's the
+    // "clear my bio" signal.
+    const cleanDescription = description === undefined
+      ? undefined
+      : description === null
+        ? ''
+        : sanitizeDisplayString(description, { maxLength: MAX_DESCRIPTION_LENGTH })
     const updated = await updateUserProfile(req.user.id, {
       displayName: cleanDisplayName,
-      avatarUrl: avatarUrl ?? undefined
+      avatarUrl: avatarUrl ?? undefined,
+      description: cleanDescription
     })
     if (!updated) return res.status(404).json({ error: 'user_not_found' })
     res.json({
@@ -162,7 +187,8 @@ export function authRoutes() {
         id: updated.id,
         email: updated.email,
         displayName: updated.display_name,
-        avatarUrl: updated.avatar_url
+        avatarUrl: updated.avatar_url,
+        description: updated.description ?? null
       }
     })
   })

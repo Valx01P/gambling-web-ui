@@ -242,10 +242,13 @@ export async function resetNeuralBot({ botId, ownerUserId }) {
   return rows[0] ? toApi(rows[0]) : null
 }
 
-// Counts only the user's manual (non-clone) bots — drives the 10-bot cap.
+// Counts only the user's manual bots — neither clones nor neural slots,
+// since those are auto-provisioned and shouldn't burn against the 10-bot
+// manual cap. The name stays "NonClone" for backward compat with call
+// sites; the predicate is the source of truth.
 export async function countNonCloneBotsByOwner(ownerUserId) {
   const { rows } = await query(
-    'SELECT COUNT(*)::int AS count FROM bots WHERE owner_user_id = $1 AND is_clone = FALSE',
+    'SELECT COUNT(*)::int AS count FROM bots WHERE owner_user_id = $1 AND is_clone = FALSE AND is_neural = FALSE',
     [ownerUserId]
   )
   return rows[0]?.count || 0
@@ -303,6 +306,17 @@ export async function getBotById(botId, { viewerUserId = null } = {}) {
 export async function countBotsByOwner(ownerUserId) {
   const { rows } = await query(
     'SELECT COUNT(*)::int AS count FROM bots WHERE owner_user_id = $1',
+    [ownerUserId]
+  )
+  return rows[0]?.count || 0
+}
+
+// Total public bots a user is currently sharing — drives the 10-public
+// cap. Counts across all kinds (manual, clone, neural) since the cap is
+// "how many of yours can anyone seat", not "how many of each type".
+export async function countPublicBotsByOwner(ownerUserId) {
+  const { rows } = await query(
+    'SELECT COUNT(*)::int AS count FROM bots WHERE owner_user_id = $1 AND is_public = TRUE',
     [ownerUserId]
   )
   return rows[0]?.count || 0
@@ -374,6 +388,96 @@ export async function listTopUniqueEloBots({ limit = 5 } = {}) {
   return rows.map(r => toApi(r, r.owner_display_name))
 }
 
+// Head-to-head stats: for every opponent this bot has shared a hand with,
+// return aggregate win-count / chips delta / hand count. We don't have an
+// explicit `hand_id` column on bot_hand_results, so we join by table_id +
+// a ~100ms time window around played_at — same hand's audit rows all land
+// within a few ms of each other (Promise.all in _recordBotHandResults).
+//
+// Heavier than a single-bot ELO lookup but bounded by the hand-history
+// retention window; LIMIT N opponents keeps the response payload modest.
+export async function getBotHeadToHead(botId, { limit = 30, sampleHands = 2000 } = {}) {
+  const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 30, 1), 100)
+  const safeSample = Math.min(Math.max(parseInt(sampleHands, 10) || 2000, 100), 10000)
+  const { rows } = await query(
+    `
+    WITH my_hands AS (
+      SELECT table_id, played_at, won, chips_delta
+        FROM bot_hand_results
+       WHERE bot_id = $1
+       ORDER BY played_at DESC
+       LIMIT $2
+    ),
+    pairings AS (
+      SELECT o.bot_id AS opp_id,
+             COUNT(*)::int                                 AS hands_together,
+             SUM(CASE WHEN my.won THEN 1 ELSE 0 END)::int  AS my_wins,
+             SUM(my.chips_delta)::bigint                   AS chips_delta_sum
+        FROM my_hands my
+        JOIN bot_hand_results o
+          ON o.table_id = my.table_id
+         AND o.played_at BETWEEN my.played_at - INTERVAL '150 milliseconds'
+                             AND my.played_at + INTERVAL '150 milliseconds'
+         AND o.bot_id <> $1
+       GROUP BY o.bot_id
+    )
+    SELECT p.opp_id,
+           p.hands_together,
+           p.my_wins,
+           p.chips_delta_sum,
+           b.name  AS opp_name,
+           b.color AS opp_color,
+           b.text_color AS opp_text_color,
+           b.avatar_url AS opp_avatar_url,
+           b.elo   AS opp_elo,
+           b.is_neural AS opp_is_neural,
+           b.neural_kind AS opp_neural_kind,
+           b.is_clone   AS opp_is_clone,
+           u.display_name AS opp_owner_display_name
+      FROM pairings p
+      JOIN bots b ON b.id = p.opp_id
+      JOIN users u ON u.id = b.owner_user_id
+     ORDER BY p.hands_together DESC, p.my_wins DESC
+     LIMIT $3
+    `,
+    [botId, safeSample, safeLimit]
+  )
+  return rows.map(r => ({
+    opponentId: r.opp_id,
+    name: r.opp_name,
+    color: r.opp_color,
+    textColor: r.opp_text_color,
+    avatarUrl: r.opp_avatar_url,
+    elo: r.opp_elo,
+    isNeural: r.opp_is_neural,
+    neuralKind: r.opp_neural_kind,
+    isClone: r.opp_is_clone,
+    ownerDisplayName: r.opp_owner_display_name,
+    handsTogether: r.hands_together,
+    myWins: r.my_wins,
+    myLosses: r.hands_together - r.my_wins,
+    chipsDelta: Number(r.chips_delta_sum)
+  }))
+}
+
+// Manual / user-coded bots only (excludes clones + neural). Used by the
+// "auto-fill with my custom bots" arena action.
+export async function listManualBotsByOwner(ownerUserId) {
+  const { rows } = await query(
+    `
+    SELECT ${PUBLIC_FIELDS}, u.display_name AS owner_display_name
+      FROM bots b
+      JOIN users u ON u.id = b.owner_user_id
+     WHERE b.owner_user_id = $1
+       AND b.is_clone = FALSE
+       AND b.is_neural = FALSE
+     ORDER BY b.elo DESC, b.created_at DESC
+    `,
+    [ownerUserId]
+  )
+  return rows.map(r => toApi(r, r.owner_display_name))
+}
+
 // Per-hand ELO time-series for the bot. Returns rows in chronological
 // order with hand_no = position within the returned window. Filters out
 // rows where elo_after is NULL (pre-migration-018 hands). The default
@@ -404,6 +508,28 @@ export async function getBotEloHistory(botId, { limit = 1000 } = {}) {
     elo: r.elo_after,
     playedAt: r.played_at
   }))
+}
+
+// Public bots owned by a given user — used by profile pages to show
+// "the bots this person is sharing publicly". Excludes clones (private
+// by default anyway) and neural bots (always private). Sorted by ELO so
+// the strongest one shows first.
+export async function listPublicBotsByOwner(ownerUserId) {
+  const { rows } = await query(
+    `
+    SELECT ${LIST_FIELDS}, u.display_name AS owner_display_name
+      FROM bots b
+      JOIN users u ON u.id = b.owner_user_id
+     WHERE b.owner_user_id = $1
+       AND b.is_public = TRUE
+       AND b.is_clone = FALSE
+       AND b.is_neural = FALSE
+     ORDER BY b.elo DESC, b.created_at DESC
+     LIMIT 30
+    `,
+    [ownerUserId]
+  )
+  return rows.map(r => toApi(r, r.owner_display_name))
 }
 
 // Owner's neural-bot squad in tier order (α → ε). Used by the "auto-fill
