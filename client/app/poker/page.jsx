@@ -4171,24 +4171,27 @@ export default function PokerPage() {
             the IDENTICAL bottom-UI layout, with the panel itself the
             only thing that varies between the two.
 
-            ── DESKTOP LIFT (tweak `md:-translate-y-N` below) ──
-            On md+ the panel is lifted UP by `-translate-y-20` (= 80px)
-            so it sits over the lower felt of the table area instead of
-            being pushed to the very bottom of the page (which was
-            forcing the user to scroll to see the panel fully). Tweak
-            in 4px units:
-              -translate-y-12 = -48px (subtle)
-              -translate-y-16 = -64px
-              -translate-y-20 = -80px (current default)
-              -translate-y-24 = -96px
-              -translate-y-28 = -112px (aggressive)
-            KEEP IN SYNC with the dock wrapper below — both lifts must
-            match or the spectator panel + sidebets/chat row will sit
-            at different heights on desktop.
+            ── DESKTOP LIFT (tweak `md:-translate-y-N md:-mb-N` below) ──
+            On md+ the panel is lifted UP by `-translate-y-20` (= 80px).
+            CRITICAL: pair it with a matching `-mb-20` so the layout
+            box ALSO shrinks by 80px — without that, translate moves
+            content visually but the layout still reserves the original
+            footprint, leaving an 80px band of empty space below the
+            panel that extends the page beyond viewport (causing the
+            scrollbar). Both classes must use the SAME N value:
+              -translate-y-12 / -mb-12 = -48px (subtle)
+              -translate-y-16 / -mb-16 = -64px
+              -translate-y-20 / -mb-20 = -80px (current default)
+              -translate-y-24 / -mb-24 = -96px
+              -translate-y-28 / -mb-28 = -112px (aggressive)
+            KEEP BOTH VALUES IN SYNC with the dock wrapper below — all
+            four classes (two pairs) must match or the spectator panel
+            and sidebets/chat row will sit at different heights AND/OR
+            the empty-space scroll bug returns.
             Mobile gets NO lift — sidebets stacks directly above the
             spectator panel there, so lifting would cause overlap. */}
         {isSpectator && (
-          <div className="order-2 w-[92%] max-w-[360px] md:order-1 md:w-[320px] md:max-w-none shrink-0 md:-translate-y-20 md:relative md:z-10">
+          <div className="order-2 w-[92%] max-w-[360px] md:order-1 md:w-[320px] md:max-w-none shrink-0 md:-translate-y-20 md:-mb-20 md:relative md:z-10">
             <SpectatorPanel
               players={orderedPlayers}
               oddsByPlayer={spectatorOddsByPlayer}
@@ -4246,13 +4249,14 @@ export default function PokerPage() {
             : (!sideBetsDockVisible && chatDockVisible)
           if (!showSidebets && !showChat) return null
           // Match the spectator panel's md+ lift so both sides of the
-          // bottom-UI row visually align. KEEP THIS VALUE IN SYNC with
-          // `md:-translate-y-20` on the spectator wrapper above —
-          // changing one without the other will make the dock + panel
-          // sit at different heights on desktop. For seated players
-          // (no spectator wrapper), no lift is applied — the action
-          // panel + sidebets sit at their natural position.
-          const lift = isSpectator ? 'md:-translate-y-20' : ''
+          // bottom-UI row visually align. KEEP THESE VALUES IN SYNC with
+          // `md:-translate-y-20 md:-mb-20` on the spectator wrapper
+          // above — translate moves visually, the negative mb pulls
+          // the layout box up too so the page doesn't grow taller than
+          // viewport. For seated players (no spectator wrapper), no
+          // lift is applied — the action panel + sidebets sit at their
+          // natural position.
+          const lift = isSpectator ? 'md:-translate-y-20 md:-mb-20' : ''
           return (
             <div className={`order-1 w-[92%] max-w-[360px] mx-auto md:order-2 md:absolute md:bottom-0 md:right-0 md:mx-0 md:w-auto md:max-w-none md:z-30 flex flex-col items-end gap-3 shrink-0 ${lift}`}>
               {showSidebets && (
