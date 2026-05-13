@@ -5,6 +5,7 @@ import {
   preflopHandScore,
   postflopStrengthScore,
   calculateRangeEquity,
+  calculateExactEquity,
   inferRangesForOpponents
 } from './equity.js'
 import { computeOpponentPatterns, summarizeTable } from './opponentPatterns.js'
@@ -15,6 +16,22 @@ const ROUND_INDEX = {
   [GAME_PHASES.FLOP]: 1,
   [GAME_PHASES.TURN]: 2,
   [GAME_PHASES.RIVER]: 3
+}
+
+// Heuristic for whether a player username is generated/default rather
+// than something the player chose themselves. Used by the trash-talk
+// helpers (ctx.insultableOpponent + opponent.hasCustomName) so bots
+// can decide whether to use a player's name directly in their say
+// strings — addressing "player_47" is awkward, addressing "Pablo" is
+// what makes the line land.
+function isDefaultName(name) {
+  if (!name || typeof name !== 'string') return true
+  const t = name.trim()
+  if (t.length < 2) return true
+  // player / anon / anonymous / guest / user / seat / random — with
+  // optional trailing digits or separators. Covers every auto-generated
+  // shape the codebase has used.
+  return /^(player|anon(ymous)?|guest|user|seat|random)[\s_\-]*\d*$/i.test(t)
 }
 
 function positionFor(playerIdx, dealerIdx, total) {
@@ -256,6 +273,11 @@ export function buildContext(game, bot) {
       id: p.id,
       seat: players.indexOf(p),
       name: p.username,
+      // True when the player has picked a non-generic username
+      // (i.e. not "player", "anon_123", "guest42", etc.). Bots can
+      // gate name-templated trash talk on this — addressing someone
+      // as "player_47" never lands; addressing them as "Pablo" does.
+      hasCustomName: !isDefaultName(p.username),
       isBot: Boolean(p.isBot),
       botColor: p.botColor || null,
       chips: oppChips,
@@ -350,6 +372,51 @@ export function buildContext(game, bot) {
     equityVsRandom = 1
   }
 
+  // ── Omniscient ctx (Oracle bot only) ───────────────────────────────────
+  // The Oracle bot has third-person spectator access: it sees every
+  // unfolded opponent's actual hole cards and computes equity against
+  // those KNOWN holdings (so the only uncertainty is the runout — much
+  // tighter than range-inferred equity). The rest of the bot types
+  // never receive these fields.
+  //
+  // Note: we only need to expose this on the bot's OWN turn; building
+  // it for everyone every tick would leak info via shared ctx. The
+  // ctx object is per-bot per-decision so this is safe.
+  let allHoleCards = null
+  let exactEquity = null
+  if (bot.isOracle && holeCards.length === 2) {
+    // Collect each unfolded opponent's hole cards. `game.playerHands` is
+    // the canonical map keyed by player.id. Folded seats and seats not
+    // dealt in this hand (waiting) are excluded — they don't affect
+    // equity-vs-known.
+    const oppHoleCardsRaw = []
+    for (const p of opponentsRaw) {
+      if (game.foldedPlayers.has(p.id)) continue
+      const cards = game.playerHands.get(p.id)
+      if (!Array.isArray(cards) || cards.length !== 2) continue
+      oppHoleCardsRaw.push({
+        playerId: p.id,
+        username: p.username,
+        cards: cards.map(c => ({ ...c }))
+      })
+    }
+    allHoleCards = oppHoleCardsRaw
+    if (oppHoleCardsRaw.length > 0) {
+      const exact = calculateExactEquity({
+        holeCards,
+        communityCards,
+        opponentHoleCards: oppHoleCardsRaw,
+        // Cheaper than range MC since there's no per-iteration hand
+        // sampling. 800 iters preflop converges well; river drops to 1
+        // automatically (no runout uncertainty).
+        iterations: communityCards.length === 0 ? 600 : 800
+      })
+      exactEquity = exact.equity
+    } else {
+      exactEquity = 1
+    }
+  }
+
   const facingBet = toCall > 0
   const facingRaise = facingBet && game.aggressionCount >= 2
   const facingAllIn = facingBet && Boolean(game.currentBetContext?.isAllIn)
@@ -368,6 +435,43 @@ export function buildContext(game, bot) {
   }
 
   const actionHistory = (game.handActionHistory || []).slice()
+
+  // --- Player-aware trash-talk inputs --------------------------------------
+  // previousActor: the most recent non-self action this hand, with the
+  // player's name + custom-name flag attached. Useful for bots that
+  // want to react to the last move ("nice raise {name}, classic").
+  // null when nobody has acted yet besides us (or only blinds).
+  let previousActor = null
+  for (let i = actionHistory.length - 1; i >= 0; i--) {
+    const a = actionHistory[i]
+    if (!a || a.playerId === bot.id) continue
+    if (a.phase !== phase) {
+      // Only look this street — earlier-street references read odd in
+      // chat. Comment this `break` out if cross-street recall is wanted.
+      break
+    }
+    const p = players.find(pl => pl.id === a.playerId)
+    if (!p) continue
+    previousActor = {
+      id: p.id,
+      name: p.username,
+      hasCustomName: !isDefaultName(p.username),
+      isBot: Boolean(p.isBot),
+      action: a.action,
+      amount: a.amount || 0
+    }
+    break
+  }
+  // insultableOpponent: a random active opponent with a non-default
+  // name. Bots use this to template player-targeted lines. Returns
+  // null when everyone left is on a generic name. Selection is salted
+  // by handIndex so it varies hand-to-hand without flapping mid-hand.
+  let insultableOpponent = null
+  const insultPool = opponents.filter(o => !o.folded && o.hasCustomName)
+  if (insultPool.length > 0) {
+    const handIdx = game.handIndex || 0
+    insultableOpponent = insultPool[Math.abs(handIdx * 2654435761 | 0) % insultPool.length]
+  }
 
   // Last 25 completed hands — deep-cloned so the context freeze and any user-
   // code mutation can't corrupt the engine's source data. Cache the cloned
@@ -589,6 +693,12 @@ export function buildContext(game, bot) {
     // make calling decisions instead of relying on the categorical bucket.
     equity,
     equityVsRandom,
+    // Omniscient — populated only when bot.isOracle is set. Other bot
+    // types see these as undefined (NOT null) so a guard like
+    // `typeof ctx.exactEquity === 'number'` keeps the regular code path
+    // unchanged for everyone else.
+    exactEquity,
+    allHoleCards,
     potOdds,
     potSize: game.pot,
     currentBet: game.currentBet,
@@ -648,6 +758,12 @@ export function buildContext(game, bot) {
 
     // Opponents (ordered by seat)
     opponents,
+
+    // Player-aware chatter inputs — populated for every bot, not just
+    // Oracle. Use these to template player names + previous moves into
+    // your `say` strings. See ctxDocs for usage patterns.
+    previousActor,
+    insultableOpponent,
 
     // History
     actionHistory,

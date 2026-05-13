@@ -199,6 +199,7 @@ export const CTX_GROUPS = [
       { path: 'opponents[].id', type: 'string', doc: 'Stable seat id for this session. Use as a Map key for "have I seen this player before" tracking.' },
       { path: 'opponents[].seat', type: 'number', doc: 'Their zero-based seat index in game.players.' },
       { path: 'opponents[].name', type: 'string', doc: 'Display name shown on their nameplate.' },
+      { path: 'opponents[].hasCustomName', type: 'boolean', doc: 'True when the opponent set their own username (not the auto-generated "player_47" / "anon" / "guest3" style). Gate name-templated trash talk on this — addressing someone by a real name lands; addressing "player_47" doesn\'t.' },
       { path: 'opponents[].isBot', type: 'boolean', doc: 'True if they\'re a bot (timing tells like avgActionTimeMs are useless against bots).' },
       { path: 'opponents[].chips', type: 'number', doc: 'Chips they have left in their stack right now.' },
       { path: 'opponents[].bet', type: 'number', doc: 'Chips put in this round.' },
@@ -263,6 +264,16 @@ export const CTX_GROUPS = [
       { path: 'opponents[].patterns.bluffCatchScore', type: 'number', doc: '0..1 — how good a bluff-catch target this player is. High = they bluff a lot, oversize, show down weak. Loosen your call threshold by ~0.05 × score.' },
       { path: 'opponents[].patterns.bluffTargetScore', type: 'number', doc: '0..1 — how good a target for YOUR bluffs. High = they fold a lot, don\'t reach showdown often. Gate bluff frequency on this.' },
       { path: 'opponents[].patterns.foldEquityScore', type: 'number', doc: '0..1 — cleaner read of "will a bet make them fold". Use to size bluffs.' }
+    ]
+  },
+  {
+    title: 'Trash talk + chatter',
+    description: 'Inputs for building player-aware `say` strings — react to the previous move, address opponents by name, antagonize specific seats. Return `{ action: "...", say: "your line here" }` from decide() to make your bot speak (max 80 chars). Combine these fields with random throttling so you don\'t spam every turn.',
+    items: [
+      { path: 'previousActor', type: 'object', doc: '{ id, name, hasCustomName, isBot, action, amount } — the most recent NON-SELF action on the current street, or null if nobody else has acted yet. Use to template reactions: e.g. ``` `${ctx.previousActor.name} just raised, classic` ``` (only when hasCustomName=true, otherwise the line reads as "player_47 just raised, classic" which is awkward).' },
+      { path: 'insultableOpponent', type: 'object', doc: 'A random active opponent with `hasCustomName === true`, or null if everyone left has a generic auto-name. Selection is salted by `handIndex` so it varies hand-to-hand but stays stable mid-hand. Use to address a specific player by their real name without picking the same one every line.' },
+      { path: 'opponents[].hasCustomName', type: 'boolean', doc: 'True when the opponent picked their own username (not auto-generated "player_47" / "anon" / "guest3"). Gate name-templated trash talk on this — addressing someone by a name they chose lands harder than addressing "guest12".' },
+      { path: '(action returned).say', type: 'string', doc: 'Attach to the object you return from decide() — e.g. `{ action: "raise", amount: 60, say: "raise it up, Pablo" }`. Server truncates at 80 chars. Throttle yourself: not every action needs chatter, or it gets annoying fast. Recommended floors: fold/check ~15-20%, call ~30-35%, raise ~50-65%, all_in ~75-85%.' }
     ]
   },
   {

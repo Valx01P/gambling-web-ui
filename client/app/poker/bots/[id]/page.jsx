@@ -19,6 +19,20 @@ import EloChart from './EloChart'
 import HeadToHeadPanel from './HeadToHeadPanel'
 import SuperLineupTab from './SuperLineupTab'
 
+// Fallback code shown when the bot's stored `code` field comes back
+// empty (e.g. fresh manual bot before first save). Oracle bots have
+// their own server-side default (ORACLE_DEFAULT_CODE, ~40KB) — if it
+// somehow goes missing, we deliberately DO NOT fall back to
+// STARTER_CODE (the manual-bot tutorial). That confused users into
+// thinking "Reset to default Oracle code" had silently swapped in
+// the standard custom template. For oracle we leave the editor empty
+// instead; the "Reset to default Oracle code" button will pull the
+// real Oracle source from the server.
+function fallbackCodeForBot(bot) {
+  if (bot?.isOracle) return ''
+  return STARTER_CODE
+}
+
 // Heavy chunks deferred until the user actually engages with editing.
 // JsCodeEditor pulls in the docs reference panel + linter; Simulator pulls
 // in the bot-code runner. react-colorful is only used inside the Settings
@@ -79,7 +93,7 @@ export default function BotDetailPage({ params }) {
     api.getBot(id)
       .then(({ bot }) => {
         if (cancelled) return
-        const initialCode = bot.code && bot.code.trim() ? bot.code : STARTER_CODE
+        const initialCode = bot.code && bot.code.trim() ? bot.code : fallbackCodeForBot(bot)
         setBot(bot)
         setDraftName(bot.name)
         setDraftColor(bot.color)
@@ -149,7 +163,7 @@ export default function BotDetailPage({ params }) {
         patch.codeEnabled = true
       }
       const { bot: updated } = await api.updateBot(id, patch)
-      const initialCode = updated.code && updated.code.trim() ? updated.code : STARTER_CODE
+      const initialCode = updated.code && updated.code.trim() ? updated.code : fallbackCodeForBot(updated)
       setBot(updated)
       baselineRef.current = {
         name: updated.name,
@@ -175,8 +189,8 @@ export default function BotDetailPage({ params }) {
   const [deleteBusy, setDeleteBusy] = useState(false)
   async function destroy() {
     if (!bot) return
-    if (bot.isClone || bot.isNeural) {
-      setSaveError('Permanent bot — use recalculate / reset weights instead.')
+    if (bot.isClone || bot.isNeural || bot.isOracle) {
+      setSaveError('Permanent bot — use recalculate / reset weights / reset code instead.')
       return
     }
     setDeleteBusy(true)
@@ -191,7 +205,10 @@ export default function BotDetailPage({ params }) {
 
   // Reset a rule (user-coded) bot's code back to the starter template.
   // Parallels clone recalc + neural reset — gives manual bots a "start
-  // over" path that doesn't require deleting and re-creating.
+  // over" path that doesn't require deleting and re-creating. Oracle is
+  // allowed: the server route detects oracle bots and resets to the
+  // ORACLE_DEFAULT_CODE instead of the manual starter, so users can
+  // restore fresh trash talk after they've edited their copy.
   const [resetCodeBusy, setResetCodeBusy] = useState(false)
   async function resetCode() {
     if (!bot || bot.isClone || bot.isNeural) return
@@ -199,7 +216,7 @@ export default function BotDetailPage({ params }) {
     setSaveError(null)
     try {
       const { bot: updated } = await api.resetBotCode(id)
-      const initialCode = updated.code && updated.code.trim() ? updated.code : STARTER_CODE
+      const initialCode = updated.code && updated.code.trim() ? updated.code : fallbackCodeForBot(updated)
       setBot(updated)
       setDraftCode(initialCode)
       baselineRef.current = { ...baselineRef.current, code: initialCode }
@@ -237,7 +254,7 @@ export default function BotDetailPage({ params }) {
     setSaveError(null)
     try {
       const { bot: updated } = await api.recalculateClone(id)
-      const initialCode = updated.code && updated.code.trim() ? updated.code : STARTER_CODE
+      const initialCode = updated.code && updated.code.trim() ? updated.code : fallbackCodeForBot(updated)
       setBot(updated)
       setDraftName(updated.name)
       setDraftColor(updated.color)
@@ -672,23 +689,32 @@ export default function BotDetailPage({ params }) {
                     </div>
                   )}
 
-                  {/* Reset to starter code — only for rule bots. Mirrors the
-                      "Recalculate" affordance clones have and "Reset weights"
-                      neural bots have, so all three permanent-or-revertable
-                      bot types offer the same start-over option. */}
+                  {/* Reset to starter / oracle code — for rule bots AND for
+                      the Oracle slot. Mirrors clone "Recalculate" and neural
+                      "Reset weights" so every permanent-or-revertable bot
+                      type offers a start-over. Server picks the right
+                      default per bot kind: ORACLE_DEFAULT_CODE for is_oracle,
+                      manual starter for the rest. Copy reflects which one
+                      the user will actually get. */}
                   {!bot.isClone && !bot.isNeural && !bot.isSuper && (
                     <div className="rounded-xl border border-zinc-600/50 bg-zinc-800/95 p-3 shadow-sm">
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">
-                          <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Reset code</div>
+                          <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">
+                            {bot.isOracle ? 'Reset to default Oracle code' : 'Reset code'}
+                          </div>
                           <div className="text-[11px] font-bold text-zinc-400">
-                            Replaces this bot's code with the starter template. Stats and ELO stay.
+                            {bot.isOracle
+                              ? "Restores the omniscient strategy + the full trash talk library. Your name, color, image, and stats stay."
+                              : "Replaces this bot's code with the starter template. Stats and ELO stay."}
                           </div>
                         </div>
                         <ConfirmPopoverButton
                           triggerLabel={resetCodeBusy ? 'Resetting…' : 'Reset code'}
                           triggerClassName="shrink-0 rounded-md border border-zinc-500/60 bg-zinc-700 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-white hover:bg-zinc-600 disabled:opacity-50"
-                          description="Overwrites your current code with the starter template. Your edits will be lost."
+                          description={bot.isOracle
+                            ? "Overwrites your Oracle's code with the latest default (strategy + trash talk). Your edits will be lost; name/color/avatar are untouched."
+                            : "Overwrites your current code with the starter template. Your edits will be lost."}
                           confirmLabel="Reset"
                           align="right"
                           persistKey="pokerxyz:confirm:reset-code:skip"
@@ -699,12 +725,12 @@ export default function BotDetailPage({ params }) {
                     </div>
                   )}
 
-                  {/* Danger zone — only renders for non-clone, non-neural
-                      bots. Clones and NN bots are gated server-side too, but
-                      hiding the button keeps the UI honest. Uses the same
-                      confirm popover as everywhere else for consistency
-                      with reset/recalc rather than a window.confirm(). */}
-                  {!bot.isClone && !bot.isNeural && (
+                  {/* Danger zone — renders only for deletable bot kinds.
+                      Clones, neural, super, AND oracle are permanent slots
+                      (server enforces this in deleteBot; UI hides the
+                      button so the user isn't tempted by an option that
+                      can't succeed). */}
+                  {!bot.isClone && !bot.isNeural && !bot.isOracle && (
                     <div className="rounded-xl border border-red-500/50 bg-red-500/10 p-3 shadow-sm">
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">

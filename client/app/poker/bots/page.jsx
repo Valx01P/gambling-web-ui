@@ -42,9 +42,10 @@ function useCollapsed(key, defaultCollapsed = false) {
 function CollapsibleSection({ collapseKey, title, subtitle, headerRight, children, accent = 'zinc' }) {
   const [collapsed, setCollapsed] = useCollapsed(collapseKey, false)
   const borderClass = {
-    zinc:   'border-zinc-600/50',
-    amber:  'border-amber-500/30',
-    cyan:   'border-cyan-400/30'
+    zinc:    'border-zinc-600/50',
+    amber:   'border-amber-500/30',
+    cyan:    'border-cyan-400/30',
+    fuchsia: 'border-fuchsia-400/40'
   }[accent] || 'border-zinc-600/50'
   return (
     <div className={`w-full rounded-xl border ${borderClass} bg-zinc-800/90 p-3 shadow-lg`}>
@@ -881,7 +882,11 @@ function BotRow({ bot, mine, onDeleted, onUpdated, onVisibilityError, onResetErr
                   so list rows are scannable. The label for NN bots reflects
                   the underlying learning algorithm so users can tell their
                   REINFORCE bots apart from the MLP / Q-learning ones. */}
-              {bot.isSuper ? (
+              {bot.isOracle ? (
+                <span className="rounded border border-fuchsia-400/50 bg-fuchsia-500/15 px-1 py-px text-[9px] font-black uppercase tracking-widest text-fuchsia-200">
+                  ★ ORACLE
+                </span>
+              ) : bot.isSuper ? (
                 <span className="rounded border border-violet-400/40 bg-violet-500/10 px-1 py-px text-[9px] font-black uppercase tracking-widest text-violet-200">
                   SUPER · {bot.superMemberIds?.length || 0}
                 </span>
@@ -988,7 +993,12 @@ function BotRow({ bot, mine, onDeleted, onUpdated, onVisibilityError, onResetErr
               onConfirm={resetStats}
             />
           )}
-          {mine && !bot.isClone && !bot.isNeural && (
+          {/* Delete only for bot kinds that aren't permanent slots. Oracle
+              joins clones / neural here — server-side deleteBot rejects
+              them with `oracle_locked`, so hiding the button keeps the
+              UI honest. Users still get the "Reset to default Oracle
+              code" button on the editor page for a clean slate. */}
+          {mine && !bot.isClone && !bot.isNeural && !bot.isOracle && (
             <button
               type="button"
               onClick={destroy}
@@ -1071,7 +1081,7 @@ function BotsPageInner() {
   // push myBots.length past 10. Memoized so the click-time check and
   // the per-section badge ("My Bots (N/10)") read from the same source.
   const manualBotCount = useMemo(
-    () => myBots.filter(b => !b.isClone && !b.isNeural && !b.isSuper).length,
+    () => myBots.filter(b => !b.isClone && !b.isNeural && !b.isSuper && !b.isOracle).length,
     [myBots]
   )
   const [loading, setLoading] = useState(true)
@@ -1221,10 +1231,12 @@ function BotsPageInner() {
             users open this page to edit a manual bot — putting it on top
             saves a scroll. */}
         {user && tab === 'mine' && (() => {
-          // Manual bots = neither clone nor neural. The limit only counts
-          // these — clones live in their own shelf and neural bots are
-          // permanent slots that the user didn't create by hand.
-          const manualBots = myBots.filter(b => !b.isClone && !b.isNeural && !b.isSuper)
+          // Manual bots = nothing auto-provisioned. The limit only counts
+          // these — clones, neural pets, super ensembles, and the single
+          // Oracle slot are all off-quota and rendered in their own
+          // sections.
+          const manualBots = myBots.filter(b => !b.isClone && !b.isNeural && !b.isSuper && !b.isOracle)
+          const oracleBot = myBots.find(b => b.isOracle) || null
           const publicCount = myBots.filter(b => b.isPublic).length
           // Common visibility-update handler: replace the bot in-place
           // across both lists (public roster also caches manual+public).
@@ -1286,6 +1298,32 @@ function BotsPageInner() {
                   onVisibilityError={onVisibilityError}
                 />
               )}
+            </CollapsibleSection>
+          )
+        })()}
+
+        {/* Oracle slot. Single per-user, auto-provisioned on first load.
+            Renders in its own section so users can find + customize the
+            omniscient bot without it getting lost among neurals/clones.
+            Off-quota: doesn't count toward the 10 manual cap. Customize
+            (name, color, image) through the standard /poker/bots/[id]
+            editor — the BotRow's edit link handles that. */}
+        {user && tab === 'mine' && (() => {
+          const oracleBot = myBots.find(b => b.isOracle)
+          if (!oracleBot) return null
+          return (
+            <CollapsibleSection
+              collapseKey="oracle"
+              title="★ Oracle"
+              subtitle="Omniscient bot — sees every opponent's hole cards and plays exact equity. Off-quota: doesn't count toward your 10 manual bots."
+              accent="fuchsia"
+            >
+              <BotRow
+                bot={oracleBot}
+                mine
+                onUpdated={(updated) => setMyBots(prev => prev.map(x => x.id === updated.id ? updated : x))}
+                onVisibilityError={(msg) => setValidationError(msg)}
+              />
             </CollapsibleSection>
           )
         })()}

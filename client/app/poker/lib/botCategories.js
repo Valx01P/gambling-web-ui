@@ -36,13 +36,18 @@ export function nonMlpNeuralLabel(kind) {
   }
 }
 
-// Bucket a flat bot list into the same five categories the /poker/bots
+// Bucket a flat bot list into the same six categories the /poker/bots
 // page renders as section shelves. Returns named groups so the picker
-// can render labeled strips.
+// can render labeled strips. The is_oracle check runs FIRST so an
+// oracle bot (which has none of the other kind flags set) gets its
+// own slot instead of falling through into `rule` — without that case
+// the Oracle would appear under "Rule / code" and be indistinguishable
+// from a user's hand-coded bots.
 export function bucketByCategory(bots) {
-  const buckets = { mlp: [], otherNeural: [], super: [], clone: [], rule: [] }
+  const buckets = { oracle: [], mlp: [], otherNeural: [], super: [], clone: [], rule: [] }
   for (const b of bots) {
-    if (b.isSuper) buckets.super.push(b)
+    if (b.isOracle) buckets.oracle.push(b)
+    else if (b.isSuper) buckets.super.push(b)
     else if (b.isClone) buckets.clone.push(b)
     else if (isMlpFamily(b)) buckets.mlp.push(b)
     else if (b.isNeural) buckets.otherNeural.push(b)
@@ -52,8 +57,12 @@ export function bucketByCategory(bots) {
 }
 
 // Ordered list of subgroups with display metadata. Skipped if empty.
+// Oracle is at the top of the list — it's the marquee per-user slot,
+// users should see it first in every picker. Fuchsia accent matches
+// the ★ ORACLE badge on the My Bots list.
 export function subgroupsFromBuckets(buckets) {
   return [
+    { key: 'oracle',      bots: buckets.oracle,      label: '★ Oracle',     accent: 'text-fuchsia-200' },
     { key: 'mlp',         bots: buckets.mlp,         label: 'MLP family',   accent: 'text-purple-200' },
     { key: 'otherNeural', bots: buckets.otherNeural, label: 'Other neural', accent: 'text-cyan-200' },
     { key: 'super',       bots: buckets.super,       label: 'Super',        accent: 'text-violet-200' },

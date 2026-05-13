@@ -58,6 +58,8 @@ import {
   getCloneByTier,
   replaceCloneCode,
   provisionNeuralBotsForUser,
+  provisionOracleBotForUser,
+  ORACLE_DEFAULT_CODE,
   resetNeuralBot,
   resetBotStats,
   getBotEloHistory,
@@ -189,6 +191,10 @@ async function getMyBotsCached(userId) {
     // CONFLICT DO NOTHING — cheap when bots already exist.
     try { await provisionNeuralBotsForUser(userId) }
     catch (err) { console.warn('[bots] neural provisioning failed:', err.message) }
+    // Same lazy-provision for the single Oracle slot. Idempotent via
+    // the partial unique index on (owner_user_id) WHERE is_oracle = TRUE.
+    try { await provisionOracleBotForUser(userId) }
+    catch (err) { console.warn('[bots] oracle provisioning failed:', err.message) }
     const bots = await listBotsByOwner(userId)
     const payload = { bots, limit: MAX_BOTS_PER_USER, publicLimit: MAX_PUBLIC_BOTS_PER_USER }
     _mineCache.set(userId, { fetchedAt: Date.now(), payload, refreshing: null })
@@ -650,6 +656,9 @@ export function botRoutes() {
   // clone "recalculate" and neural "reset weights" affordances — gives
   // manual bots a "start over" path that doesn't require deleting +
   // re-creating. Neural / clone bots reject (they have their own resets).
+  // Oracle bots reset to ORACLE_DEFAULT_CODE (omniscient strategy + the
+  // full trash-talk library) so users who edited their copy can get
+  // fresh chatter back without losing the slot.
   router.post('/:id/reset-code', authRequired, botWriteLimiter, async (req, res) => {
     const target = await getBotById(req.params.id, { viewerUserId: req.user.id })
     if (!target || target.ownerUserId !== req.user.id) {
@@ -661,10 +670,12 @@ export function botRoutes() {
         detail: 'Use the clone recalc / neural reset for those bot types.'
       })
     }
+    // Oracle gets its own default; everything else gets the manual starter.
+    const resetCode = target.isOracle ? ORACLE_DEFAULT_CODE : defaultCode()
     const bot = await updateBot({
       botId: target.id,
       ownerUserId: req.user.id,
-      patch: { code: defaultCode(), codeEnabled: true }
+      patch: { code: resetCode, codeEnabled: true }
     })
     if (!bot) return res.status(404).json({ error: 'not_found' })
     invalidateMyBotsCache(req.user.id)

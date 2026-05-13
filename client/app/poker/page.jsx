@@ -2392,6 +2392,35 @@ export default function PokerPage() {
                               />
                             </div>
                           )}
+                          {/* ── ★ Oracle (single per-user omniscient bot) ──
+                              One-click seat for the user's Oracle bot.
+                              Reads it out of botRoster.mine and dispatches
+                              the same `add_bot` message the picker uses.
+                              Hidden when the user doesn't have one yet
+                              (they need to load /poker/bots once to
+                              provision it server-side) or when it's
+                              already at the table. */}
+                          {(!isSpectator || isArena) && authUser && (() => {
+                            const oracle = botRoster.mine.find(b => b.isOracle)
+                            if (!oracle) return null
+                            const alreadyAtTable = (gameState?.players || []).some(p => p?.botId === oracle.id)
+                            if (alreadyAtTable) return null
+                            return (
+                              <div className="px-3 py-1">
+                                <ConfirmPopoverButton
+                                  {...toolProps({
+                                    label: `★ Seat my Oracle`,
+                                    fullLabel: '★ Oracle · Full',
+                                    color: 'text-fuchsia-200',
+                                    description: 'Seats your Oracle bot — the omniscient slot that sees every opponent\'s hole cards and plays exact equity. One click. The Oracle plays smart sizing (not auto-shove) and has the full trash-talk library.',
+                                    confirmLabel: 'Seat the Oracle',
+                                    kickAndAction: 'seat the Oracle',
+                                    action: () => send('add_bot', { botId: oracle.id })
+                                  })}
+                                />
+                              </div>
+                            )
+                          })()}
                         </>
                       )
                     })()}

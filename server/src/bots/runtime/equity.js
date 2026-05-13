@@ -280,6 +280,78 @@ export function calculateRangeEquity({
   }
 }
 
+// Omniscient ("exact") equity — takes opponents' ACTUAL hole cards and
+// Monte-Carlo's only the remaining board. Used exclusively by the Oracle
+// bot, which has third-person spectator access to every seat's cards.
+//
+// Much cheaper than calculateRangeEquity since there's no per-iteration
+// hand sampling (the only randomness is the runout). Preflop = full 5 board
+// cards to deal; river = no randomness, returns exact outcome.
+export function calculateExactEquity({
+  holeCards,
+  communityCards,
+  opponentHoleCards,    // [{ cards: [{rank,suit},{rank,suit}] }, ...]  active only
+  iterations = 800
+}) {
+  if (!Array.isArray(holeCards) || holeCards.length !== 2) {
+    return { equity: 0, win: 0, tie: 0, samples: 0 }
+  }
+  const board = Array.isArray(communityCards) ? communityCards : []
+  const opps = (opponentHoleCards || []).filter(o =>
+    Array.isArray(o.cards) && o.cards.length === 2
+    && o.cards[0]?.rank && o.cards[0]?.suit
+    && o.cards[1]?.rank && o.cards[1]?.suit
+  )
+  if (opps.length === 0) return { equity: 1, win: 1, tie: 0, samples: 0 }
+
+  // Build dead-set from hero + every opponent's hole cards + board.
+  const dead = new Set()
+  for (const c of holeCards) dead.add(cardKey(c))
+  for (const o of opps) { dead.add(cardKey(o.cards[0])); dead.add(cardKey(o.cards[1])) }
+  for (const c of board) dead.add(cardKey(c))
+  const baseDeck = buildFullDeck().filter(c => !dead.has(cardKey(c)))
+
+  const missingBoardCount = Math.max(0, 5 - board.length)
+  // River has zero runout uncertainty — one iteration is sufficient.
+  const iters = missingBoardCount === 0 ? 1 : iterations
+
+  const heroCards = new Array(7)
+  heroCards[0] = holeCards[0]; heroCards[1] = holeCards[1]
+  const oppCards = new Array(7)
+  let wins = 0
+  let ties = 0
+  let played = 0
+
+  for (let it = 0; it < iters; it++) {
+    const deck = baseDeck.slice()
+    const remainingBoard = takeRandomCards(deck, missingBoardCount)
+    for (let i = 0; i < board.length; i++) heroCards[2 + i] = board[i]
+    for (let i = 0; i < remainingBoard.length; i++) heroCards[2 + board.length + i] = remainingBoard[i]
+    const heroScore = scoreHand(heroCards)
+    let beaten = false
+    let tied = 0
+    for (let i = 0; i < opps.length; i++) {
+      oppCards[0] = opps[i].cards[0]; oppCards[1] = opps[i].cards[1]
+      for (let j = 0; j < board.length; j++) oppCards[2 + j] = board[j]
+      for (let j = 0; j < remainingBoard.length; j++) oppCards[2 + board.length + j] = remainingBoard[j]
+      const oppScore = scoreHand(oppCards)
+      if (oppScore > heroScore) { beaten = true; break }
+      if (oppScore === heroScore) tied += 1
+    }
+    played += 1
+    if (beaten) continue
+    if (tied > 0) ties += 1 / (tied + 1)
+    else wins += 1
+  }
+  const samples = played || 1
+  return {
+    equity: (wins + ties) / samples,
+    win: wins / samples,
+    tie: ties / samples,
+    samples
+  }
+}
+
 // --- Postflop hand strength score ----------------------------------------
 
 // 0-1 numeric postflop strength keyed by hand-evaluator rank (0=high card,

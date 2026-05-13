@@ -66,6 +66,9 @@ export default function BotPill({
       {bot.isSuper && (
         <span className="rounded bg-amber-500/20 px-1 text-[9px] font-black uppercase tracking-wider text-amber-200">Super</span>
       )}
+      {bot.isOracle && (
+        <span className="rounded bg-fuchsia-500/30 px-1 text-[9px] font-black uppercase tracking-wider text-fuchsia-100">★ Oracle</span>
+      )}
     </button>
   )
 }

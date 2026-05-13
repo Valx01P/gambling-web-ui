@@ -93,6 +93,13 @@ export class BotPlayer {
     // decisions made under the super-bot's banner, since the ensemble
     // shares a single chip-delta and we don't want to muddy a member's
     // weight history with games it didn't "really" play.
+    // Oracle bot — the single per-user omniscient slot. When set, the
+    // ctx built for this bot's turn includes ctx.allHoleCards (every
+    // unfolded opponent's two cards) and ctx.exactEquity (Monte Carlo
+    // equity vs those KNOWN holdings rather than inferred ranges).
+    // Buildup happens inside buildContext via the same `this` reference;
+    // we just need to flip the flag.
+    this.isOracle = Boolean(bot.isOracle)
     this.isSuper = Boolean(bot.isSuper)
     this._superMembers = null
     this._superActiveIdx = 0
