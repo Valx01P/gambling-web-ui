@@ -1,6 +1,7 @@
 import { MESSAGE_TYPES, GAME_PHASES } from '../../config/constants.js'
 import { buildContext } from './signals.js'
 import { compileBot } from './codeSandbox.js'
+import { policyFor, DEFAULT_KIND } from '../neural/registry.js'
 
 // Bumped from 800/2400 → 1800/3800 so spectators can actually follow the
 // active-player ring + last-action badges before the next bot acts. Real
@@ -41,11 +42,28 @@ export class BotPlayer {
     this._lastTurnKey = null
     this._destroyed = false
 
+    // Neural bots don't compile JS — they run the policy net directly.
+    // Trajectory accumulates per-decision (features, mask, actionIdx)
+    // tuples for the hand in progress; cleared at hand start, drained at
+    // hand end into the policy update. `neuralKind` selects the variant
+    // (vanilla REINFORCE, REINFORCE+baseline, MLP, Q-learning).
+    this.isNeural = Boolean(bot.isNeural)
+    this.neuralKind = bot.neuralKind || DEFAULT_KIND
+    this.neuralPolicy = this.isNeural ? policyFor(this.neuralKind) : null
+    this.neuralState = this.isNeural
+      ? this.neuralPolicy.normalizeState(bot.neuralState)
+      : null
+    this.neuralTrajectory = []
+    this.handStartChips = startingChips
+
     // Compile the user's JS once when the bot sits down. If there's no code
     // or it fails to compile, the bot will safely fold/check on its turn
     // (no fallback rule engine — bots are code-only by product decision).
     this._compiled = null
-    if (typeof bot.code === 'string' && bot.code.trim().length > 0) {
+    if (this.isNeural) {
+      // Skip the compile path entirely. No system-message either — neural
+      // bots aren't supposed to have code.
+    } else if (typeof bot.code === 'string' && bot.code.trim().length > 0) {
       this._compiled = compileBot(bot.code)
       if (this._compiled.error) {
         room?.broadcast?.({
@@ -59,6 +77,27 @@ export class BotPlayer {
         data: { message: `Bot ${bot.name} has no code yet — it will fold/check until you add some.` }
       })
     }
+  }
+
+  // Called by PokerRoom._recordBotHandResults after a hand resolves. Drains
+  // the trajectory and hands it back so the room can run the REINFORCE
+  // update + persist. Returning the array (not running the update here)
+  // keeps the heavy work centralized and lets the room batch DB writes.
+  drainNeuralTrajectory() {
+    if (!this.isNeural) return null
+    const trajectory = this.neuralTrajectory
+    this.neuralTrajectory = []
+    return trajectory
+  }
+
+  // Reset chips tracking + clear stale trajectory at the start of every
+  // new hand. The room knows when a hand starts; it calls this so we
+  // don't accidentally carry decisions from the previous hand into the
+  // next reward.
+  onHandStart(startingChips) {
+    if (!this.isNeural) return
+    this.handStartChips = Math.max(1, Number(startingChips) || this.chips || 1)
+    this.neuralTrajectory = []
   }
 
   updateActivity() { this.lastActiveTime = Date.now() }
@@ -121,7 +160,20 @@ export class BotPlayer {
     let say = null
 
     try {
-      if (this._compiled && !this._compiled.error) {
+      if (this.isNeural && this.neuralState && this.neuralPolicy) {
+        // Build the same ctx the sandbox bots see, then dispatch through
+        // the variant's policy module. Each variant (REINFORCE, baseline,
+        // MLP, Q-learning) implements decide() with its own forward pass
+        // and action-selection rule — we just record the trajectory step
+        // and hand the command back to the game engine.
+        const ctx = buildContext(game, this)
+        const result = this.neuralPolicy.decide(this.neuralState, ctx)
+        if (result) {
+          this.neuralTrajectory.push(result.step)
+          action = result.command.action
+          amount = result.command.amount
+        }
+      } else if (this._compiled && !this._compiled.error) {
         const ctx = buildContext(game, this)
         const r = this._compiled.run(ctx)
         if (r.ok) {

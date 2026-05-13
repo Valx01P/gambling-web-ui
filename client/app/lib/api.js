@@ -76,6 +76,16 @@ export const api = {
   previewMyBot: () => apiFetch('/api/bots/from-me/preview', { auth: true }),
   buildMyBot: (tier = 1) => apiFetch('/api/bots/from-me', { method: 'POST', auth: true, body: { tier } }),
   recalculateClone: (id) => apiFetch(`/api/bots/${id}/recalculate-clone`, { method: 'POST', auth: true }),
+  // Neural bots: weights are persisted server-side after every hand a NN
+  // bot plays. There's no save path — only a hard reset back to the
+  // random initialization (loses all training progress).
+  resetNeuralBot: (id) => apiFetch(`/api/bots/${id}/neural/reset`, { method: 'POST', auth: true }),
+  // Per-hand ELO time series for the bot's edit-page chart. Auth-optional
+  // (public bots are viewable to anyone); private bots 404 for non-owners.
+  botEloHistory: (id, { limit } = {}) => {
+    const qs = limit ? `?limit=${limit}` : ''
+    return apiFetch(`/api/bots/${id}/elo-history${qs}`, { auth: true })
+  },
 
   // Uploads. `presign` is auth-optional — anonymous users get tmp/ keys that
   // the bucket lifecycle reaps after 24h; signed-in users get persistent

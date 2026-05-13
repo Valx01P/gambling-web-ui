@@ -1,9 +1,12 @@
 import { query } from '../db/pool.js'
+import { initialNeuralState, normalizeState } from './neuralPolicy.js'
+import { VARIANTS as NEURAL_VARIANTS } from './neural/registry.js'
 
 const PUBLIC_FIELDS = `
   b.id, b.owner_user_id, b.name, b.color, b.text_color, b.avatar_url, b.rules, b.phrases, b.is_public,
   b.code, b.code_enabled,
   b.is_clone, b.clone_tier, b.clone_hands_used,
+  b.is_neural, b.neural_tier, b.neural_kind, b.neural_state,
   b.elo, b.hands_played, b.hands_voluntary, b.hands_won,
   b.showdowns_played, b.showdowns_won,
   b.bluffs_attempted, b.bluffs_succeeded, b.bluff_wins, b.chips_won_total,
@@ -13,10 +16,14 @@ const PUBLIC_FIELDS = `
 // Slim shape for list endpoints. Excludes the heavy fields (rules, phrases,
 // code) which the leaderboard and "my bots" page never display. With ~5KB
 // average code size × 50 rows that's 250KB saved per leaderboard hit.
+// `neural_state` IS included here on purpose: it's small (~90 floats) and
+// the bot-list UI shows a tiny "hands trained / current LR" badge for NN
+// bots, which needs the state shape.
 const LIST_FIELDS = `
   b.id, b.owner_user_id, b.name, b.color, b.text_color, b.avatar_url, b.is_public,
   b.code_enabled,
   b.is_clone, b.clone_tier, b.clone_hands_used,
+  b.is_neural, b.neural_tier, b.neural_kind, b.neural_state,
   b.elo, b.hands_played, b.hands_voluntary, b.hands_won,
   b.showdowns_played, b.showdowns_won,
   b.bluffs_attempted, b.bluffs_succeeded, b.bluff_wins, b.chips_won_total,
@@ -42,6 +49,14 @@ function toApi(row, ownerName = null) {
     isClone: Boolean(row.is_clone),
     cloneTier: row.clone_tier ?? null,
     cloneHandsUsed: row.clone_hands_used ?? null,
+    isNeural: Boolean(row.is_neural),
+    neuralTier: row.neural_tier ?? null,
+    neuralKind: row.neural_kind ?? null,
+    // neuralState is the full model blob. The runtime needs it for
+    // inference + updates; the edit page renders the weights table from
+    // the same field. Shape depends on neuralKind — pass it through so
+    // normalizeState picks the right variant.
+    neuralState: row.is_neural ? normalizeState(row.neural_state, row.neural_kind) : null,
     stats: {
       handsPlayed: row.hands_played,
       handsVoluntary: row.hands_voluntary ?? 0,
@@ -142,20 +157,89 @@ export async function updateBot({ botId, ownerUserId, patch }) {
 }
 
 // Refuses to delete clone bots — they're permanent slots tied to the user's
-// play data. Returns { ok, reason } so the caller can render a sensible
+// play data. Same rule for neural bots: they're auto-provisioned fixed slots,
+// not user-created. Returns { ok, reason } so the caller can render a sensible
 // error rather than a generic 404.
 export async function deleteBot({ botId, ownerUserId }) {
   const { rows } = await query(
-    'SELECT is_clone FROM bots WHERE id = $1 AND owner_user_id = $2',
+    'SELECT is_clone, is_neural FROM bots WHERE id = $1 AND owner_user_id = $2',
     [botId, ownerUserId]
   )
   if (rows.length === 0) return { ok: false, reason: 'not_found' }
   if (rows[0].is_clone) return { ok: false, reason: 'clone_locked' }
+  if (rows[0].is_neural) return { ok: false, reason: 'neural_locked' }
   const { rowCount } = await query(
     'DELETE FROM bots WHERE id = $1 AND owner_user_id = $2',
     [botId, ownerUserId]
   )
   return { ok: rowCount > 0, reason: rowCount > 0 ? null : 'not_found' }
+}
+
+// Auto-provision the full neural-net squad for a user — five bots, each a
+// different learning variant. Idempotent: the unique (owner_user_id,
+// neural_tier) constraint means re-running this never duplicates, so old
+// users gain new variants on next /mine call without a one-off backfill.
+//
+// Variants come from the registry so adding a new technique only requires
+// extending VARIANTS — this function picks up the new row automatically.
+export async function provisionNeuralBotsForUser(ownerUserId) {
+  for (const v of NEURAL_VARIANTS) {
+    await query(
+      `
+      INSERT INTO bots (
+        owner_user_id, name, color, text_color,
+        rules, phrases, is_public,
+        code, code_enabled,
+        is_neural, neural_tier, neural_kind, neural_state
+      )
+      VALUES ($1, $2, $3, 'auto', '[]'::jsonb, '{}'::jsonb, FALSE,
+              '', FALSE,
+              TRUE, $4, $5, $6::jsonb)
+      ON CONFLICT (owner_user_id, neural_tier) DO NOTHING
+      `,
+      [
+        ownerUserId,
+        v.name, v.color,
+        v.tier, v.kind,
+        JSON.stringify(initialNeuralState(v.kind))
+      ]
+    )
+  }
+}
+
+// Persist a new neural state blob. Called after every hand a neural bot
+// plays. We never read-modify-write here — the caller (BotPlayer) already
+// holds the latest in-memory state; this is just a fire-and-forget save.
+export async function updateNeuralState({ botId, ownerUserId, state }) {
+  await query(
+    `UPDATE bots
+        SET neural_state = $3::jsonb,
+            updated_at = NOW()
+      WHERE id = $1 AND owner_user_id = $2 AND is_neural = TRUE`,
+    [botId, ownerUserId, JSON.stringify(state)]
+  )
+}
+
+// Hard reset: wipe weights back to fresh random init + zero the training
+// counters. Used by the "Reset weights" button on the NN edit page. The
+// fresh state is keyed to the bot's variant — MLP gets MLP weights back,
+// Q-learning gets Q-values back, etc.
+export async function resetNeuralBot({ botId, ownerUserId }) {
+  const { rows: kindRows } = await query(
+    'SELECT neural_kind FROM bots WHERE id = $1 AND owner_user_id = $2 AND is_neural = TRUE',
+    [botId, ownerUserId]
+  )
+  if (kindRows.length === 0) return null
+  const fresh = initialNeuralState(kindRows[0].neural_kind)
+  const { rows } = await query(
+    `UPDATE bots
+        SET neural_state = $3::jsonb,
+            updated_at = NOW()
+      WHERE id = $1 AND owner_user_id = $2 AND is_neural = TRUE
+      RETURNING ${PUBLIC_FIELDS.replace(/b\./g, '')}`,
+    [botId, ownerUserId, JSON.stringify(fresh)]
+  )
+  return rows[0] ? toApi(rows[0]) : null
 }
 
 // Counts only the user's manual (non-clone) bots — drives the 10-bot cap.
@@ -286,6 +370,57 @@ export async function listTopUniqueEloBots({ limit = 5 } = {}) {
      LIMIT $1
     `,
     [safeLimit]
+  )
+  return rows.map(r => toApi(r, r.owner_display_name))
+}
+
+// Per-hand ELO time-series for the bot. Returns rows in chronological
+// order with hand_no = position within the returned window. Filters out
+// rows where elo_after is NULL (pre-migration-018 hands). The default
+// limit is a thousand — enough for a long-tail trend; smaller than
+// shipping every audit row of a power-user's bot.
+export async function getBotEloHistory(botId, { limit = 1000 } = {}) {
+  const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 1000, 10), 5000)
+  // Two-step query so we can keep the most-recent N (cheap via the
+  // existing bot_id index) and then ORDER ASC for the chart. ROW_NUMBER
+  // gives the X axis without the caller needing to enumerate client-side.
+  const { rows } = await query(
+    `
+    SELECT played_at, elo_after,
+           ROW_NUMBER() OVER (ORDER BY played_at ASC) AS hand_no
+      FROM (
+        SELECT played_at, elo_after
+          FROM bot_hand_results
+         WHERE bot_id = $1 AND elo_after IS NOT NULL
+         ORDER BY played_at DESC
+         LIMIT $2
+      ) recent
+     ORDER BY played_at ASC
+    `,
+    [botId, safeLimit]
+  )
+  return rows.map(r => ({
+    handNo: Number(r.hand_no),
+    elo: r.elo_after,
+    playedAt: r.played_at
+  }))
+}
+
+// Owner's neural-bot squad in tier order (α → ε). Used by the "auto-fill
+// with my NN squad" action to seat the user's own 5 neural bots in tier
+// order so the arena lineup is consistent across sessions. Owner-only;
+// returns [] if the user hasn't been provisioned yet (caller can decide
+// whether to provision-then-retry or surface a "play once first" error).
+export async function listNeuralBotsByOwner(ownerUserId) {
+  const { rows } = await query(
+    `
+    SELECT ${PUBLIC_FIELDS}, u.display_name AS owner_display_name
+      FROM bots b
+      JOIN users u ON u.id = b.owner_user_id
+     WHERE b.owner_user_id = $1 AND b.is_neural = TRUE
+     ORDER BY b.neural_tier ASC
+    `,
+    [ownerUserId]
   )
   return rows.map(r => toApi(r, r.owner_display_name))
 }

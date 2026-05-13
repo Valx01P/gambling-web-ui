@@ -2061,6 +2061,31 @@ export default function PokerPage() {
                     </button>
                   )
                 })()}
+                {/* Seat the caller's 5 neural-net bots (α-ε) — only useful
+                    once signed in (server enforces). Mirrors the auto-fill
+                    button above but pulls from /api/bots/mine instead of
+                    the public leaderboard. */}
+                {(!isSpectator || isArena) && authUser && (() => {
+                  const seatedCount = gameState?.players?.length ?? 0
+                  const openSlots = Math.max(0, 5 - seatedCount)
+                  const label = openSlots === 0
+                    ? 'NN Squad · Full'
+                    : `Seat my NN Squad (${Math.min(openSlots, 5)})`
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (openSlots === 0) return
+                        send('poker_auto_fill_neural')
+                        setTableMenuOpen(false)
+                      }}
+                      disabled={openSlots === 0}
+                      className="block w-full px-3 py-2 text-left text-xs font-bold text-cyan-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      ★ {label}
+                    </button>
+                  )
+                })()}
                 {(!isSpectator || isArena) && (
                   <button type="button" onClick={() => openPokerPanel('bots')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                     Add Bots
@@ -2715,21 +2740,34 @@ export default function PokerPage() {
                       are empty and seats the top distinct-ELO bots from
                       the public catalog into each. Skips bots already at
                       the table (no duplicates). Disabled when no slots
-                      remain. */}
+                      remain. The NN-squad button below is auth-only and
+                      pulls the caller's own 5 neural bots instead. */}
                   {(() => {
                     const totalSeats = 5  // mirrors POKER_CONFIG.MAX_PLAYERS
                     const openSlots = Math.max(0, totalSeats - seatedBots.length)
                     return (
-                      <button
-                        type="button"
-                        onClick={() => send('poker_auto_fill_bots')}
-                        disabled={openSlots === 0}
-                        className="mb-2 w-full rounded-md border border-amber-400/60 bg-amber-500/15 px-2 py-1.5 text-[11px] font-black text-amber-100 transition-colors hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {openSlots === 0
-                          ? 'Arena full'
-                          : `★ Fill ${openSlots} empty seat${openSlots === 1 ? '' : 's'} with top bots`}
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => send('poker_auto_fill_bots')}
+                          disabled={openSlots === 0}
+                          className="mb-2 w-full rounded-md border border-amber-400/60 bg-amber-500/15 px-2 py-1.5 text-[11px] font-black text-amber-100 transition-colors hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {openSlots === 0
+                            ? 'Arena full'
+                            : `★ Fill ${openSlots} empty seat${openSlots === 1 ? '' : 's'} with top bots`}
+                        </button>
+                        {authUser && (
+                          <button
+                            type="button"
+                            onClick={() => send('poker_auto_fill_neural')}
+                            disabled={openSlots === 0}
+                            className="mb-2 w-full rounded-md border border-cyan-400/60 bg-cyan-500/15 px-2 py-1.5 text-[11px] font-black text-cyan-100 transition-colors hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {openSlots === 0 ? 'Arena full' : `★ Seat my NN squad (${Math.min(openSlots, 5)})`}
+                          </button>
+                        )}
+                      </>
                     )
                   })()}
                   {/* Multi-pick: tap a bot to push it onto the queue. Same bot

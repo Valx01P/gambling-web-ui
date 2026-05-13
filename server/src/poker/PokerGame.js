@@ -1335,6 +1335,18 @@ export class PokerGame {
       this.phase !== GAME_PHASES.WAITING &&
       this.phase !== GAME_PHASES.SHOWDOWN
     )
+    // We always expose a monotonic turn-start timestamp (even when the
+    // deadline is untimed) because BotPlayer uses it as the turn-dedup
+    // key. Without this, all turns in a bot-only arena have the same key
+    // ("phase-null"), so when action wraps back to a bot within the same
+    // phase the bot's _lastTurnKey collides and the bot freezes. The
+    // *display* of the warning ring still keys off activeTurnExpiresAt
+    // below, so the UX gate is preserved.
+    const turnStartedAt = activePlayerId &&
+      this.phase !== GAME_PHASES.WAITING &&
+      this.phase !== GAME_PHASES.SHOWDOWN
+        ? this.lastTurnChange
+        : null
 
     return {
       visiblePlayers,
@@ -1352,7 +1364,7 @@ export class PokerGame {
         runoutLocked,
         dealerIndex: visibleDealerIndex,
         activePlayerId,
-        activeTurnStartedAt: hasTimedActiveTurn ? this.lastTurnChange : null,
+        activeTurnStartedAt: turnStartedAt,
         activeTurnExpiresAt: hasTimedActiveTurn ? this.lastTurnChange + POKER_CONFIG.TURN_LIMIT_MS : null,
         activeTurnLimitMs: POKER_CONFIG.TURN_LIMIT_MS,
         activeTurnWarningMs: POKER_CONFIG.TURN_WARNING_MS

@@ -1,5 +1,10 @@
 import { GAME_PHASES, MESSAGE_TYPES, POKER_CONFIG } from "../config/constants.js"
-import { getBotById, listTopUniqueEloBots } from "../bots/botRepository.js"
+import {
+  getBotById,
+  listTopUniqueEloBots,
+  listNeuralBotsByOwner,
+  provisionNeuralBotsForUser
+} from "../bots/botRepository.js"
 import { verify as verifyJwt } from "../auth/jwt.js"
 import { sanitizeDisplayString } from "../utils/sanitize.js"
 import { findUserById, touchLastActive } from "../users/userRepository.js"
@@ -76,6 +81,9 @@ export class MessageHandler {
 
         case MESSAGE_TYPES.POKER_AUTO_FILL_BOTS:
           return this.handleAutoFillBots(player)
+
+        case MESSAGE_TYPES.POKER_AUTO_FILL_NEURAL:
+          return this.handleAutoFillNeural(player)
 
         case MESSAGE_TYPES.AUTH_HELLO:
           return this.handleAuthHello(player, data)
@@ -482,6 +490,38 @@ export class MessageHandler {
       return this.error('Could not load top bots.', player)
     }
     if (!bots.length) return this.error('No public bots available.', player)
+    const result = room.autoFillWithTopBots(player.id, bots)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    }
+    return result
+  }
+
+  // Auto-fill with the caller's own 5 NN bots in tier order (α → ε).
+  // Requires auth. Lazy-provisions in case the user hits this before
+  // ever loading /poker/bots (where /api/bots/mine normally seeds them).
+  async handleAutoFillNeural(player) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') {
+      return this.error('Not at a poker table', player)
+    }
+    const userId = player.userId
+    if (!userId) {
+      return this.error('Sign in to use your neural squad.', player)
+    }
+    const slotsLeft = Math.max(0, POKER_CONFIG.MAX_PLAYERS - room.players.size)
+    if (slotsLeft === 0) {
+      return this.error(room.isArena ? 'Arena is full.' : 'Table is full.', player)
+    }
+    let bots
+    try {
+      await provisionNeuralBotsForUser(userId)
+      bots = await listNeuralBotsByOwner(userId)
+    } catch (err) {
+      console.error('[autofill-neural] bot lookup failed:', err.message)
+      return this.error('Could not load your neural squad.', player)
+    }
+    if (!bots.length) return this.error('No neural bots provisioned yet.', player)
     const result = room.autoFillWithTopBots(player.id, bots)
     if (!result.success) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })

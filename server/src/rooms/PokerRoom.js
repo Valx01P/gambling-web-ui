@@ -10,7 +10,8 @@ import {
   CONTEST_MODE_HANDS_PER_LEVEL
 } from '../config/constants.js'
 import { BotPlayer } from '../bots/runtime/BotPlayer.js'
-import { recordHandResult } from '../bots/botRepository.js'
+import { recordHandResult, updateNeuralState } from '../bots/botRepository.js'
+import { applyReinforceUpdate } from '../bots/neuralPolicy.js'
 import {
   recordHumanHand,
   markBotUnlocked,
@@ -746,6 +747,31 @@ export class PokerRoom {
           console.error(`[bot-elo] persist failed for ${seat.bot.name}:`, err.message)
         })
       )
+
+      // Neural-net training step. Reward is chipsDelta scaled by the bot's
+      // starting stack for this hand — wins and losses are bounded to
+      // [-1, +1] inside the policy update so a cooler doesn't dominate.
+      // Trajectory comes from BotPlayer.drainNeuralTrajectory(); persisting
+      // the new state is fire-and-forget on the same parallel-writes batch
+      // as the ELO persist, so neural updates don't add wall-clock to the
+      // hand transition.
+      if (seat.isNeural && seat.neuralState && typeof seat.drainNeuralTrajectory === 'function') {
+        const trajectory = seat.drainNeuralTrajectory()
+        if (trajectory && trajectory.length > 0) {
+          const baseline = Math.max(1, seat.handStartChips || seat.pokerBuyIn || 1)
+          const rawReward = chipsDelta / baseline
+          applyReinforceUpdate(seat.neuralState, trajectory, rawReward)
+          writes.push(
+            updateNeuralState({
+              botId: seat.bot.id,
+              ownerUserId: seat.bot.ownerUserId,
+              state: seat.neuralState
+            }).catch(err => {
+              console.error(`[neural] persist failed for ${seat.bot.name}:`, err.message)
+            })
+          )
+        }
+      }
     }
 
     if (writes.length > 0) await Promise.all(writes)
@@ -1006,15 +1032,30 @@ export class PokerRoom {
     this._cleanupGuard = true
     try {
       for (const p of [...this.players.values()]) {
-        if (p.isBot && p.chips === 0) {
+        if (!(p.isBot && p.chips === 0)) continue
+        // Arena: rebuy back to the arena's configured starting stack so
+        // bot battles run indefinitely without spectators having to
+        // re-seat bots every time one busts. Mirrors the human rebuy
+        // path in PokerGame.rebuyIfNeeded — bumps pokerBuyIn so ROI math
+        // stays correct. Regular tables keep the old behavior (busted
+        // bot leaves; owner can re-add if they want).
+        if (this.isArena) {
+          const rebuyAmount = this.arenaStartingChips || POKER_CONFIG.STARTING_CHIPS
+          p.chips = rebuyAmount
+          p.pokerBuyIn = (p.pokerBuyIn || 0) + rebuyAmount
           this.broadcast({
             type: MESSAGE_TYPES.SYSTEM_MESSAGE,
-            data: { message: `${p.username} is out of chips and left the table.` }
+            data: { message: `${p.username} busted and auto-rebought for ${rebuyAmount} chips.` }
           })
-          p.emitPhrase('lose')
-          p.destroy()
-          this.removePlayer(p.id)
+          continue
         }
+        this.broadcast({
+          type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+          data: { message: `${p.username} is out of chips and left the table.` }
+        })
+        p.emitPhrase('lose')
+        p.destroy()
+        this.removePlayer(p.id)
       }
     } finally {
       this._cleanupGuard = false
@@ -1250,6 +1291,15 @@ export class PokerRoom {
 
     this.startHandTimeout = setTimeout(() => {
       this.startHandTimeout = null
+      // Snapshot each neural bot's starting chips for this hand BEFORE the
+      // engine deals — reward at hand-end is computed against this baseline
+      // so antes/blinds are part of the reward signal, not deducted from
+      // the "starting stack."
+      for (const p of this.players.values()) {
+        if (p?.isBot && p.isNeural && typeof p.onHandStart === 'function') {
+          p.onHandStart(p.chips)
+        }
+      }
       this.game.startHand()
     }, delay)
   }

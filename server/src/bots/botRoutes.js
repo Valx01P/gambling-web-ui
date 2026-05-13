@@ -39,7 +39,10 @@ import {
   countBotsByOwner,
   countNonCloneBotsByOwner,
   getCloneByTier,
-  replaceCloneCode
+  replaceCloneCode,
+  provisionNeuralBotsForUser,
+  resetNeuralBot,
+  getBotEloHistory
 } from './botRepository.js'
 
 // Hard caps per account. Manual bots are user-created and capped to keep
@@ -152,8 +155,29 @@ export function botRoutes() {
   })
 
   router.get('/mine', authRequired, async (req, res) => {
+    // Lazy-provision the two neural-net bots on first /mine fetch. The
+    // INSERT ... ON CONFLICT DO NOTHING in provisionNeuralBotsForUser
+    // makes this idempotent + cheap on the steady-state call. Doing it
+    // here (vs. on signup) means existing users get them on next visit
+    // without a separate backfill job.
+    try {
+      await provisionNeuralBotsForUser(req.user.id)
+    } catch (err) {
+      // Don't fail the list if provisioning hiccups — log and serve
+      // whatever the user already has.
+      console.warn('[bots] neural provisioning failed:', err.message)
+    }
     const bots = await listBotsByOwner(req.user.id)
     res.json({ bots, limit: MAX_BOTS_PER_USER })
+  })
+
+  // Reset a neural bot's weights back to the random init + zero its
+  // training counters. The bot is otherwise immutable from the API (no
+  // user-editable code, no rules); reset is the only "edit" you can do.
+  router.post('/:id/neural/reset', authRequired, botWriteLimiter, async (req, res) => {
+    const bot = await resetNeuralBot({ botId: req.params.id, ownerUserId: req.user.id })
+    if (!bot) return res.status(404).json({ error: 'not_found' })
+    res.json({ bot })
   })
 
   // Per-user clone shelf. Returns one entry per tier (1..5) with current
@@ -370,6 +394,22 @@ export function botRoutes() {
     res.json({ bot })
   })
 
+  // ELO time-series. Authorization piggybacks on getBotById: private bots
+  // resolve to null for non-owners, which we treat as 404. `limit` query
+  // param is clamped on the repo side (10..5000). Used by the bot edit
+  // page to render the rating chart.
+  router.get('/:id/elo-history', authOptional, async (req, res) => {
+    const bot = await getBotById(req.params.id, { viewerUserId: req.user?.id ?? null })
+    if (!bot) return res.status(404).json({ error: 'not_found' })
+    const limit = req.query.limit ? Number(req.query.limit) : undefined
+    const points = await getBotEloHistory(bot.id, { limit })
+    // Short browser cache so navigating back to the page doesn't refetch
+    // immediately, but stale-while-revalidate keeps the chart current
+    // after a fresh hand resolves.
+    res.setHeader('Cache-Control', 'private, max-age=10, stale-while-revalidate=30')
+    res.json({ points, currentElo: bot.elo })
+  })
+
   // Manual bot creation. `isPublic` is honored — defaults to true so the
   // public roster keeps growing for users who don't think about visibility,
   // but the owner can opt into a private bot at create time. The 10-bot cap
@@ -418,6 +458,15 @@ export function botRoutes() {
   router.patch('/:id', authRequired, botWriteLimiter, async (req, res) => {
     const { name, color, textColor, avatarUrl, rules, phrases, code, codeEnabled, isPublic } = req.body || {}
     try {
+      // Neural bots reject code / rules / phrases / codeEnabled patches —
+      // their behavior is the policy net, not user-supplied logic. We
+      // silently drop those fields rather than 400-ing so the existing
+      // edit page can keep PATCHing { name, color, avatarUrl, ... }
+      // without special-casing the request shape.
+      const target = await getBotById(req.params.id, { viewerUserId: req.user.id })
+      if (!target) return res.status(404).json({ error: 'not_found' })
+      const isNeural = Boolean(target.isNeural)
+
       const patch = {}
       if (name !== undefined) patch.name = validateName(name)
       if (color !== undefined) { validateColor(color); patch.color = color }
@@ -443,10 +492,12 @@ export function botRoutes() {
           }
         }
       }
-      if (rules !== undefined) { validateRules(rules); patch.rules = rules }
-      if (phrases !== undefined) { validatePhrases(phrases); patch.phrases = phrases }
-      if (code !== undefined) { validateCode(code); patch.code = code }
-      if (codeEnabled !== undefined) patch.codeEnabled = Boolean(codeEnabled)
+      if (!isNeural) {
+        if (rules !== undefined) { validateRules(rules); patch.rules = rules }
+        if (phrases !== undefined) { validatePhrases(phrases); patch.phrases = phrases }
+        if (code !== undefined) { validateCode(code); patch.code = code }
+        if (codeEnabled !== undefined) patch.codeEnabled = Boolean(codeEnabled)
+      }
       if (isPublic !== undefined) patch.isPublic = Boolean(isPublic)
 
       const bot = await updateBot({ botId: req.params.id, ownerUserId: req.user.id, patch })
@@ -466,6 +517,12 @@ export function botRoutes() {
       return res.status(400).json({
         error: 'clone_locked',
         detail: 'Clone bots are permanent slots and can\'t be deleted. Recalculate or edit them instead.'
+      })
+    }
+    if (result.reason === 'neural_locked') {
+      return res.status(400).json({
+        error: 'neural_locked',
+        detail: 'Neural bots are permanent — reset their weights instead of deleting.'
       })
     }
     return res.status(404).json({ error: 'not_found' })

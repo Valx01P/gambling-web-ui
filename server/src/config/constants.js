@@ -125,6 +125,11 @@ export const MESSAGE_TYPES = {
   // tables (seated-player-initiated). Generic name reflects the
   // broader scope; the previous POKER_ARENA_AUTO_FILL was arena-only.
   POKER_AUTO_FILL_BOTS: 'poker_auto_fill_bots',
+  // Auto-fill with the caller's own 5 neural-net bots (α through ε). Auth
+  // required — anonymous sessions have no NN squad. Different from
+  // POKER_AUTO_FILL_BOTS which seats top-ELO public bots regardless of
+  // signed-in state.
+  POKER_AUTO_FILL_NEURAL: 'poker_auto_fill_neural',
 
   // Auth handshake — client sends a JWT after connect so the server knows
   // which signed-in user this socket belongs to (needed for arena creation).

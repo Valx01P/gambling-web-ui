@@ -12,6 +12,8 @@ import { useUpload } from '../../../lib/useUpload'
 import { api } from '../../../lib/api'
 import { BOT_COLOR_PRESETS, isValidHex } from '../../../lib/botColors'
 import { STARTER_CODE } from '../../../lib/starterBotCode'
+import NeuralBrainPanel from './NeuralBrainPanel'
+import EloChart from './EloChart'
 
 // Heavy chunks deferred until the user actually engages with editing.
 // JsCodeEditor pulls in the docs reference panel + linter; Simulator pulls
@@ -93,6 +95,12 @@ export default function BotDetailPage({ params }) {
     return () => { cancelled = true }
   }, [id, authLoading])
 
+  // Neural bots have no Code tab — start on Brain. Done as an effect so the
+  // initial useState('code') default still works for the common case.
+  useEffect(() => {
+    if (bot?.isNeural && tab === 'code') setTab('brain')
+  }, [bot?.isNeural, tab])
+
   const dirty = useMemo(() => {
     if (!baselineRef.current) return false
     return (
@@ -122,15 +130,20 @@ export default function BotDetailPage({ params }) {
     try {
       if (!draftName.trim()) throw new Error('Name required')
       if (!isValidHex(draftColor)) throw new Error('Pick a valid color')
-      // Always send codeEnabled=true: bots are code-only.
-      const { bot: updated } = await api.updateBot(id, {
+      // Neural bots have no user code — sending `code`/`codeEnabled` would
+      // be silently dropped on the server, but we skip them client-side
+      // too so the request body is clean.
+      const patch = {
         name: draftName.trim(),
         color: draftColor,
         textColor: draftTextColor,
-        avatarUrl: draftAvatarUrl,
-        code: draftCode,
-        codeEnabled: true
-      })
+        avatarUrl: draftAvatarUrl
+      }
+      if (!bot?.isNeural) {
+        patch.code = draftCode
+        patch.codeEnabled = true
+      }
+      const { bot: updated } = await api.updateBot(id, patch)
       const initialCode = updated.code && updated.code.trim() ? updated.code : STARTER_CODE
       setBot(updated)
       baselineRef.current = {
@@ -152,7 +165,7 @@ export default function BotDetailPage({ params }) {
     } finally {
       setSaving(false)
     }
-  }, [draftName, draftColor, draftTextColor, draftAvatarUrl, draftCode, id])
+  }, [draftName, draftColor, draftTextColor, draftAvatarUrl, draftCode, id, bot?.isNeural])
 
   async function destroy() {
     if (!bot) return
@@ -304,6 +317,12 @@ export default function BotDetailPage({ params }) {
               <StatTile label="Showdowns" value={bot.stats.showdownsPlayed} />
             </div>
 
+            {/* ELO trajectory — refetches whenever bot.elo flips, so a hand
+                that resolves in the background bumps the chart without a
+                page reload. Empty/short series renders an inline hint
+                instead of an empty axis box. */}
+            <EloChart botId={bot.id} currentElo={bot.elo} refreshKey={bot.elo} />
+
             {/* Clone-only banner — surfaces "Recalculate from your last N hands"
                 up top so users don't have to dig into Settings to find it. */}
             {isMine && bot.isClone && (
@@ -335,10 +354,10 @@ export default function BotDetailPage({ params }) {
             )}
 
             <div className="grid w-full grid-cols-2 gap-2 bg-zinc-800/80 p-2 rounded-xl border border-zinc-600/50 shadow-md">
-              {[
-                { id: 'code',     label: 'Code' },
-                { id: 'settings', label: 'Settings' }
-              ].map(t => (
+              {(bot.isNeural
+                ? [{ id: 'brain', label: 'Brain' }, { id: 'settings', label: 'Settings' }]
+                : [{ id: 'code', label: 'Code' }, { id: 'settings', label: 'Settings' }]
+              ).map(t => (
                 <button
                   key={t.id}
                   type="button"
@@ -350,7 +369,7 @@ export default function BotDetailPage({ params }) {
               ))}
             </div>
 
-            {tab === 'code' && (
+            {tab === 'code' && !bot.isNeural && (
               <div className="w-full flex flex-col gap-4">
                 {isMine ? (
                   <>
@@ -366,6 +385,23 @@ export default function BotDetailPage({ params }) {
                   </pre>
                 )}
               </div>
+            )}
+
+            {tab === 'brain' && bot.isNeural && (
+              <NeuralBrainPanel
+                bot={bot}
+                isMine={isMine}
+                onUpdated={(updated) => {
+                  setBot(updated)
+                  baselineRef.current = {
+                    ...baselineRef.current,
+                    name: updated.name,
+                    color: updated.color,
+                    textColor: updated.textColor || 'auto',
+                    avatarUrl: updated.avatarUrl || null
+                  }
+                }}
+              />
             )}
 
             {tab === 'settings' && (
@@ -594,10 +630,10 @@ export default function BotDetailPage({ params }) {
                     </div>
                   )}
 
-                  {/* Danger zone — only renders for non-clone bots. Clones
-                      are gated server-side too, but hiding the button keeps
-                      the UI honest. */}
-                  {!bot.isClone && (
+                  {/* Danger zone — only renders for non-clone, non-neural
+                      bots. Clones and NN bots are gated server-side too, but
+                      hiding the button keeps the UI honest. */}
+                  {!bot.isClone && !bot.isNeural && (
                     <div className="rounded-xl border border-red-500/50 bg-red-500/10 p-3 shadow-sm">
                       <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-red-200">Danger zone</div>
                       <button
