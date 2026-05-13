@@ -7,16 +7,22 @@ import { BetChips, PotChips } from '../components/ChipStack'
 import { EMOTE_OPTIONS, EmoteIcon, SeatEmotes, SeatYells, getEmoteOptions } from '../components/PokerEmotes'
 import ProfileSelector, { getProfileAvatar, ProfileAvatar } from '../components/ProfileSelector'
 import HomeBackLink from '../components/HomeBackLink'
-import AccountMenu from '../components/AccountMenu'
+// AccountMenu (profile + DMs + notifications) is mounted globally via
+// AccountDock in the root layout. The table header keeps the Tools and
+// Lobby buttons but no longer renders the account/messages cluster.
 import AuthGateModal from '../components/AuthGateModal'
 import AchievementToast from '../components/AchievementToast'
 import BotAvatar from '../components/BotAvatar'
 import PlayerProfilePopover from '../components/PlayerProfilePopover'
 import BotProfilePopover from '../components/BotProfilePopover'
+import InviteToTablePopover from '../components/InviteToTablePopover'
+import FeedWindow from '../components/FeedWindow'
 import { useAuth } from '../lib/useAuth'
 import { useUpload } from '../lib/useUpload'
 import { useZoom, ZOOM_MIN, ZOOM_MAX, ZOOM_STEP } from '../lib/useZoom'
 import { api } from '../lib/api'
+import { emitNotifEvent } from '../lib/useNotifications'
+import { emitDmEvent } from '../lib/useDms'
 import {
   BANKS,
   LOAN_AMOUNT,
@@ -357,6 +363,19 @@ export default function PokerPage() {
   const emoteTimersRef = useRef(new Map())
   const yellTimersRef = useRef(new Map())
   const splitNoticeTimerRef = useRef(null)
+  // ?table=ROOM_ID query param — arrived from a DM table invite. Auto-
+  // spectate that room once the WS is up; the user can take a seat from
+  // there. Stored in state (not derived each render) because the URL is
+  // a snapshot we should honor only on initial arrival.
+  const [pendingTableId] = useState(() => {
+    if (typeof window === 'undefined') return null
+    try { return new URL(window.location.href).searchParams.get('table') }
+    catch { return null }
+  })
+  const autoJoinTried = useRef(false)
+  const [inviteOpen, setInviteOpen] = useState(false)
+  const [currentRoomId, setCurrentRoomId] = useState(null)
+  const [feedWindowOpen, setFeedWindowOpen] = useState(false)
   const [connected, setConnected] = useState(false)
   const [playerId, setPlayerId] = useState('')
   // Seat-click popover state. We anchor the popover to the nameplate's
@@ -792,6 +811,7 @@ export default function PokerPage() {
           setSessionHands([])
           setActivePokerPanel(null)
           setTableMenuOpen(false)
+          setCurrentRoomId(msg.data.roomId || null)
           setIsSpectator(msg.data.isSpectator || false)
           applyGameState(msg.data.gameState)
           setIsPrivate(msg.data.isPrivate || false)
@@ -980,6 +1000,21 @@ export default function PokerPage() {
           // 12-hand player-clone unlock. Future achievements can dispatch
           // through the same channel.
           setAchievement(msg.data || null)
+          break
+        case 'notif:new':
+        case 'notif:unread':
+          // Bridge to the NotificationsBell hook on every page that
+          // mounts AccountMenu. Pages without an open WS poll instead;
+          // here we push the same payload through a window event so a
+          // mounted hook lights up the bell in real time.
+          emitNotifEvent(msg)
+          break
+        case 'dm:new':
+        case 'dm:unread':
+        case 'dm:read':
+          // Same bridge for the DMs popup. Open chat windows + the
+          // conversation list both listen to this event.
+          emitDmEvent(msg)
           break
         case 'showdown':
           if (msg.data) {
@@ -1178,6 +1213,21 @@ export default function PokerPage() {
   function send(type, data = {}) {
     wsRef.current?.send(JSON.stringify({ type, data }))
   }
+
+  // Auto-spectate into a specific table when the page is opened via a
+  // shared link (?table=ROOM_ID) — typically a DM table invite. We wait
+  // for: WS up, playerId assigned (server welcome), not already joined,
+  // and guard against re-firing on every dependency change.
+  useEffect(() => {
+    if (!pendingTableId) return
+    if (!connected || !playerId || joined) return
+    if (autoJoinTried.current) return
+    autoJoinTried.current = true
+    // Spectate so the invitee can decide whether to take a seat — auto-
+    // seating them would be presumptuous, and arenas only allow
+    // spectator entry anyway.
+    send('join_game', { roomId: pendingTableId, mode: 'spectate' })
+  }, [connected, playerId, joined, pendingTableId])
 
   function persistUsername(nextUsername) {
     setUsername(nextUsername)
@@ -1904,9 +1954,13 @@ export default function PokerPage() {
   return (
     <div className="min-h-[100dvh] flex flex-col p-3 md:p-4 max-w-7xl mx-auto overflow-x-hidden">
 
-      {/* Top Header Row */}
-      <div className="relative flex items-center justify-between mb-3 sm:mb-4 z-50 shrink-0">
-        <div className="flex items-center gap-2 sm:gap-3">
+      {/* Top Header Row.
+          `flex-wrap` lets the right cluster drop below the left cluster
+          on narrow widths instead of colliding with the spectator chips
+          / P/L badge that used to float at top-center. `gap-y-2` keeps a
+          consistent vertical rhythm when wrapping occurs. */}
+      <div className="relative flex flex-wrap items-center justify-between gap-y-2 mb-3 sm:mb-4 z-50 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0">
           {isArena && (
             <button
               type="button"
@@ -1921,6 +1975,41 @@ export default function PokerPage() {
             <span className="text-xs sm:text-sm font-bold bg-zinc-700/80 text-white border border-zinc-500/50 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg shadow-sm">Spectating</span>
           )}
           <PhaseLabel phase={phase} />
+          {/* Spectator bankroll inline. Previously this badge floated at
+              `fixed left-1/2 top-3` so it could sit above the felt
+              regardless of header width — but on narrow viewports the
+              centered float collided with the right-side Tools/Lobby
+              buttons. Inline placement lets the natural flex layout
+              (with wrap) handle the spacing instead. */}
+          {isSpectator && (() => {
+            const chips = bankState.chips ?? 0
+            const openStake = bankState.openSideBetStake || 0
+            const buyIn = bankState.pokerBuyIn ?? 10000
+            const pl = chips + openStake - buyIn
+            const sign = pl >= 0 ? '+' : '−'
+            const plClass = pl >= 0 ? 'text-emerald-300' : 'text-red-300'
+            return (
+              <div className="rounded-lg border border-zinc-600/60 bg-zinc-900/95 px-2 py-1 sm:px-3 sm:py-1.5 shadow-sm backdrop-blur-md">
+                <div className="flex items-center gap-2 sm:gap-3 text-[11px] sm:text-xs font-bold text-zinc-100 whitespace-nowrap">
+                  <span><span className="text-[9px] uppercase tracking-wider text-zinc-500 mr-1">Chips</span>${chips.toLocaleString()}</span>
+                  <span className="text-zinc-700">·</span>
+                  <span>
+                    <span className="text-[9px] uppercase tracking-wider text-zinc-500 mr-1">P/L</span>
+                    <span className={plClass}>{sign}${Math.abs(pl).toLocaleString()}</span>
+                  </span>
+                  {openStake > 0 && (
+                    <>
+                      <span className="text-zinc-700">·</span>
+                      <span className="text-amber-200">
+                        <span className="text-[9px] uppercase tracking-wider text-zinc-500 mr-1">Open</span>
+                        ${openStake.toLocaleString()}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+            )
+          })()}
           {isPrivate && inviteCode && (
              <button onClick={copyInviteLink} title="Click to copy invite link" className="text-xs sm:text-sm font-bold text-white bg-zinc-800/80 hover:bg-zinc-700/80 transition-colors px-2 sm:px-3 py-1.5 rounded-lg border border-zinc-500/50 shadow-sm flex items-center gap-1.5 sm:gap-2 active:scale-95">
                <span className="text-zinc-400">CODE:</span>
@@ -1928,7 +2017,15 @@ export default function PokerPage() {
              </button>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        {/* `mr-12 sm:mr-14` keeps the Tools + Leave cluster clear of the
+            AccountDock anchored to the very top-right corner. Without
+            the reservation, the buttons would slide underneath the
+            fixed profile avatar on every viewport width. */}
+        <div className="flex items-center gap-2 mr-12 sm:mr-14">
+          {/* The profile / notifications / DMs cluster used to live here
+              but is now globally docked top-right (see AccountDock).
+              Only the table-scoped controls (Tools, Leave) remain in
+              this header row. */}
           <div ref={tableMenuRef} className="relative">
             <button
               type="button"
@@ -1942,215 +2039,272 @@ export default function PokerPage() {
               Tools
             </button>
             {tableMenuOpen && (
-              <div className="absolute right-0 top-full mt-2 z-[100] w-56 max-w-[calc(100vw-1.5rem)] max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
-                {/* ── Display (top) ─────────────────────────────────────── */}
-                <div className="px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Display</div>
-                <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs font-bold text-white">
-                  <span>Zoom</span>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => adjustZoom(-ZOOM_STEP)}
-                      disabled={pageZoom <= ZOOM_MIN}
-                      aria-label="Zoom out"
-                      className="h-6 w-6 rounded-md border border-zinc-600/60 bg-zinc-800 text-sm font-black text-white hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      −
+              // Explicit 2-column grid (not CSS multi-column). Each
+              // column is its own flex stack, so section headers and
+              // items in BOTH columns anchor to the same top edge —
+              // "DISPLAY" and "TABLE" sit at exactly the same y, and
+              // the columns share consistent internal rhythm in both
+              // regular tables and bot arenas. A vertical divider
+              // between the two columns reinforces the alignment.
+              // `[&_button]:py-2 [&_button]:px-3` applied to each
+              // column locks every row to the same height/padding so
+              // rows visually line up across columns even when the
+              // sections themselves contain different items.
+              <div className="absolute right-0 top-full mt-2 z-[100] w-56 md:w-[28rem] max-w-[calc(100vw-1.5rem)] max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
+                <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-zinc-800">
+                  {/* ════════ LEFT COLUMN: settings & info ════════ */}
+                  <div className="flex flex-col">
+                    {/* ── DISPLAY ─────────────────────────────────── */}
+                    <div className="px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Display</div>
+                    <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs font-bold text-white">
+                      <span>Zoom</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => adjustZoom(-ZOOM_STEP)}
+                          disabled={pageZoom <= ZOOM_MIN}
+                          aria-label="Zoom out"
+                          className="h-6 w-6 rounded-md border border-zinc-600/60 bg-zinc-800 text-sm font-black text-white hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          −
+                        </button>
+                        <span className="min-w-[44px] text-center text-xs font-black tabular-nums">{pageZoom}%</span>
+                        <button
+                          type="button"
+                          onClick={() => adjustZoom(ZOOM_STEP)}
+                          disabled={pageZoom >= ZOOM_MAX}
+                          aria-label="Zoom in"
+                          className="h-6 w-6 rounded-md border border-zinc-600/60 bg-zinc-800 text-sm font-black text-white hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* ── INFO ────────────────────────────────────── */}
+                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Info</div>
+                    <button type="button" onClick={() => openPokerPanel('help')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      How to Play
                     </button>
-                    <span className="min-w-[44px] text-center text-xs font-black tabular-nums">{pageZoom}%</span>
-                    <button
-                      type="button"
-                      onClick={() => adjustZoom(ZOOM_STEP)}
-                      disabled={pageZoom >= ZOOM_MAX}
-                      aria-label="Zoom in"
-                      className="h-6 w-6 rounded-md border border-zinc-600/60 bg-zinc-800 text-sm font-black text-white hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      +
+                    <button type="button" onClick={() => openPokerPanel('hand')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      Current Hand
+                    </button>
+                    <button type="button" onClick={() => openPokerPanel('session')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      Session History
+                    </button>
+                    <button type="button" onClick={() => openPokerPanel('daily')} className="block w-full px-3 py-2 text-left text-xs font-bold text-amber-200 hover:bg-zinc-800">
+                      Daily Challenge
+                    </button>
+                    <button type="button" onClick={() => openPokerPanel('finances')} className="block w-full px-3 py-2 text-left text-xs font-bold text-emerald-200 hover:bg-zinc-800">
+                      Finances
+                    </button>
+                    <button type="button" onClick={() => openPokerPanel('crypto')} className="block w-full px-3 py-2 text-left text-xs font-bold text-fuchsia-200 hover:bg-zinc-800">
+                      ★ Crypto Market
+                    </button>
+                    {authUser && (
+                      <button type="button" onClick={() => { setFeedWindowOpen(true); setTableMenuOpen(false) }} className="block w-full px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800">
+                        ★ Feed
+                      </button>
+                    )}
+
+                    {/* ── WIDGETS ─────────────────────────────────── */}
+                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Widgets</div>
+                    {!isSpectator && (
+                      <button type="button" onClick={toggleStatsMode} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${statsMode ? 'text-sky-200' : 'text-zinc-400'}`}>
+                        <span className={`inline-block h-2 w-2 rounded-full ${statsMode ? 'bg-sky-400 shadow-[0_0_6px_rgba(56,189,248,0.7)]' : 'bg-zinc-600'}`} />
+                        Hand Equity {statsMode ? 'On' : 'Off'}
+                      </button>
+                    )}
+                    <button type="button" onClick={toggleChatDock} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${chatDockVisible ? 'text-cyan-200' : 'text-zinc-400'}`}>
+                      <span className={`inline-block h-2 w-2 rounded-full ${chatDockVisible ? 'bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.7)]' : 'bg-zinc-600'}`} />
+                      Chat {chatDockVisible ? 'On' : 'Off'}
+                    </button>
+                    <button type="button" onClick={toggleSideBetsDock} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${sideBetsDockVisible ? 'text-amber-200' : 'text-zinc-400'}`}>
+                      <span className={`inline-block h-2 w-2 rounded-full ${sideBetsDockVisible ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.7)]' : 'bg-zinc-600'}`} />
+                      Side Bets {sideBetsDockVisible ? 'On' : 'Off'}
+                      {sideBetsState?.props?.length ? (
+                        <span className="ml-auto rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
+                          {sideBetsState.props.filter(p => p.status === 'open').length} live
+                        </span>
+                      ) : null}
+                    </button>
+                    <button type="button" onClick={() => setFinancesWidgetOpen(prev => !prev)} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${financesWidgetOpen ? 'text-emerald-200' : 'text-zinc-400'}`}>
+                      <span className={`inline-block h-2 w-2 rounded-full ${financesWidgetOpen ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]' : 'bg-zinc-600'}`} />
+                      Finances Widget {financesWidgetOpen ? 'On' : 'Off'}
                     </button>
                   </div>
+
+                  {/* ════════ RIGHT COLUMN: actions & profile ════════ */}
+                  {/* `border-t md:border-t-0` adds a horizontal rule on
+                      mobile (single-column) so the two former columns
+                      don't visually run together. On md+ the divide-x
+                      handles separation. */}
+                  <div className="flex flex-col border-t border-zinc-800 md:border-t-0">
+                    {/* ── TABLE ───────────────────────────────────── */}
+                    <div className="px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Table</div>
+                    {/* Bank is open to spectators too — they can take loans and
+                        place side bets on the runout even without a seat at the
+                        table. Soft teal accent + ★ so it reads as a featured
+                        destination, matching the auto-fill style below. */}
+                    <button type="button" onClick={() => openPokerPanel('bank')} className="block w-full px-3 py-2 text-left text-xs font-bold text-teal-200 hover:bg-zinc-800">
+                      ★ Bank Account
+                    </button>
+                    {/* Invite a friend to this table — seat-aware. Disabled
+                        when the table is full so the user can see the
+                        feature exists but is currently blocked. Available to
+                        both seated players AND spectators (anyone "at the
+                        table") since spectators can pull friends in too. The
+                        recipient is keyed by userId, so signed-in only. */}
+                    {authUser && (() => {
+                      const seatedCount = gameState?.players?.length ?? 0
+                      const openSlots = Math.max(0, 5 - seatedCount)
+                      const isFull = openSlots === 0
+                      const label = isFull
+                        ? '★ Invite friend · Table full'
+                        : `★ Invite friend (${openSlots} seat${openSlots === 1 ? '' : 's'} open)`
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isFull) return
+                            setInviteOpen(true)
+                            setTableMenuOpen(false)
+                          }}
+                          disabled={isFull}
+                          title={isFull ? 'No open seats — try again after someone leaves.' : 'Search and invite a registered user'}
+                          className="block w-full px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                        >
+                          {label}
+                        </button>
+                      )
+                    })()}
+                    {/* One-click auto-fill: seats top-ELO bots into every
+                        empty seat. Available at both regular tables (seated
+                        players) and arenas (spectators). Hidden for spectators
+                        at regular tables — they can't add bots there. The
+                        server validates eligibility either way. */}
+                    {(!isSpectator || isArena) && (() => {
+                      const seatedCount = gameState?.players?.length ?? 0
+                      const openSlots = Math.max(0, 5 - seatedCount)
+                      const idleLabel = openSlots === 0
+                        ? 'Auto-Fill Bots · Full'
+                        : `Auto-Fill ${openSlots} Empty Seat${openSlots === 1 ? '' : 's'}`
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (openSlots === 0) return
+                            if (!autoFillArmed) { setAutoFillArmed(true); return }
+                            send('poker_auto_fill_bots')
+                            setAutoFillArmed(false)
+                            setTableMenuOpen(false)
+                          }}
+                          onBlur={() => setAutoFillArmed(false)}
+                          disabled={openSlots === 0}
+                          className={`block w-full px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed ${
+                            autoFillArmed
+                              ? 'bg-amber-500/20 text-amber-100 animate-pulse'
+                              : 'text-amber-200'
+                          }`}
+                        >
+                          ★ {autoFillArmed ? `Click again to seat ${openSlots} bot${openSlots === 1 ? '' : 's'}` : idleLabel}
+                        </button>
+                      )
+                    })()}
+                    {/* Seat the caller's 5 neural-net bots (α-ε) — only useful
+                        once signed in (server enforces). Mirrors the auto-fill
+                        button above but pulls from /api/bots/mine instead of
+                        the public leaderboard. */}
+                    {(!isSpectator || isArena) && authUser && (() => {
+                      const seatedCount = gameState?.players?.length ?? 0
+                      const openSlots = Math.max(0, 5 - seatedCount)
+                      const label = openSlots === 0
+                        ? 'NN Squad · Full'
+                        : `Seat my NN Squad (${Math.min(openSlots, 5)})`
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (openSlots === 0) return
+                            send('poker_auto_fill_neural')
+                            setTableMenuOpen(false)
+                          }}
+                          disabled={openSlots === 0}
+                          className="block w-full px-3 py-2 text-left text-xs font-bold text-cyan-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          ★ {label}
+                        </button>
+                      )
+                    })()}
+                    {/* Third auto-fill option: the caller's user-coded bots
+                        only (no clones, no NN). Useful for testing your
+                        creations without picking each by hand. */}
+                    {(!isSpectator || isArena) && authUser && (() => {
+                      const seatedCount = gameState?.players?.length ?? 0
+                      const openSlots = Math.max(0, 5 - seatedCount)
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (openSlots === 0) return
+                            send('poker_auto_fill_custom')
+                            setTableMenuOpen(false)
+                          }}
+                          disabled={openSlots === 0}
+                          className="block w-full px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          ★ {openSlots === 0 ? 'Custom · Full' : `Seat my custom bots (${Math.min(openSlots, 5)})`}
+                        </button>
+                      )
+                    })()}
+                    {(!isSpectator || isArena) && (
+                      <button type="button" onClick={() => openPokerPanel('bots')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                        Add Bots
+                      </button>
+                    )}
+                    {(!isSpectator || isArena) && (
+                      <button type="button" onClick={() => openPokerPanel('blinds')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                        Change Blinds
+                      </button>
+                    )}
+                    {(!isSpectator || isArena) && (
+                      <button type="button" onClick={() => openPokerPanel('contest')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                        Contest Mode {contestMode?.enabled ? '· On' : ''}
+                      </button>
+                    )}
+                    {isArena && (
+                      <button type="button" onClick={() => openPokerPanel('arena')} className={`block w-full px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${arenaRunning ? 'text-emerald-200' : 'text-amber-200'}`}>
+                        Arena · {arenaRunning ? 'Running' : 'Paused'}
+                      </button>
+                    )}
+
+                    {/* ── PROFILE ─────────────────────────────────── */}
+                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Profile</div>
+                    <button type="button" onClick={() => openPokerPanel('skin')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      Player Skin
+                    </button>
+                    <button type="button" onClick={() => openPokerPanel('profile')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      Edit Profile
+                    </button>
+
+                    {/* ── RESET / BIG YAHU ─────────────────────────── */}
+                    {/* Headerless pinned-bottom group. Kept separated by
+                        a border-t so it doesn't blur into the Profile
+                        section above; matches the prior placement. */}
+                    {!isSpectator && (
+                      <button type="button" onClick={() => openPokerPanel('reset')} className="block w-full border-t border-zinc-800 px-3 py-2 text-left text-xs font-bold text-red-200 hover:bg-zinc-800">
+                        Reset Money
+                      </button>
+                    )}
+                    {!isSpectator && (
+                      // Big Yahu in Israel blue — the unlock awards Israel-themed
+                      // emotes (✡️ / 🇮🇱), so the call action wears the colors.
+                      <button type="button" onClick={() => openPokerPanel('big_yahu')} className="block w-full px-3 py-2 text-left text-xs font-bold text-sky-300 hover:bg-zinc-800">
+                        Call Big Yahu
+                      </button>
+                    )}
+                  </div>
                 </div>
-
-                {/* ── Guides + live data ────────────────────────────────── */}
-                <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Info</div>
-                <button type="button" onClick={() => openPokerPanel('help')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                  How to Play
-                </button>
-                <button type="button" onClick={() => openPokerPanel('hand')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                  Current Hand
-                </button>
-                <button type="button" onClick={() => openPokerPanel('session')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                  Session History
-                </button>
-                <button type="button" onClick={() => openPokerPanel('daily')} className="block w-full px-3 py-2 text-left text-xs font-bold text-amber-200 hover:bg-zinc-800">
-                  Daily Challenge
-                </button>
-                <button type="button" onClick={() => openPokerPanel('finances')} className="block w-full px-3 py-2 text-left text-xs font-bold text-emerald-200 hover:bg-zinc-800">
-                  Finances
-                </button>
-                <button type="button" onClick={() => openPokerPanel('crypto')} className="block w-full px-3 py-2 text-left text-xs font-bold text-fuchsia-200 hover:bg-zinc-800">
-                  Crypto Market
-                </button>
-
-                {/* ── Widget toggles (configs grouped together, before Table) */}
-                {/* Each toggle pairs a colored dot (saturated when on, faded
-                    when off) with text that matches the widget's accent so
-                    the menu reads as a glanceable status board. */}
-                <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Widgets</div>
-                {!isSpectator && (
-                  <button type="button" onClick={toggleStatsMode} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${statsMode ? 'text-sky-200' : 'text-zinc-400'}`}>
-                    <span className={`inline-block h-2 w-2 rounded-full ${statsMode ? 'bg-sky-400 shadow-[0_0_6px_rgba(56,189,248,0.7)]' : 'bg-zinc-600'}`} />
-                    Table Stats {statsMode ? 'On' : 'Off'}
-                  </button>
-                )}
-                <button type="button" onClick={toggleChatDock} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${chatDockVisible ? 'text-cyan-200' : 'text-zinc-400'}`}>
-                  <span className={`inline-block h-2 w-2 rounded-full ${chatDockVisible ? 'bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.7)]' : 'bg-zinc-600'}`} />
-                  Chat {chatDockVisible ? 'On' : 'Off'}
-                </button>
-                <button type="button" onClick={toggleSideBetsDock} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${sideBetsDockVisible ? 'text-amber-200' : 'text-zinc-400'}`}>
-                  <span className={`inline-block h-2 w-2 rounded-full ${sideBetsDockVisible ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.7)]' : 'bg-zinc-600'}`} />
-                  Side Bets {sideBetsDockVisible ? 'On' : 'Off'}
-                  {sideBetsState?.props?.length ? (
-                    <span className="ml-auto rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
-                      {sideBetsState.props.filter(p => p.status === 'open').length} live
-                    </span>
-                  ) : null}
-                </button>
-                <button type="button" onClick={() => setFinancesWidgetOpen(prev => !prev)} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${financesWidgetOpen ? 'text-emerald-200' : 'text-zinc-400'}`}>
-                  <span className={`inline-block h-2 w-2 rounded-full ${financesWidgetOpen ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]' : 'bg-zinc-600'}`} />
-                  Finances Widget {financesWidgetOpen ? 'On' : 'Off'}
-                </button>
-
-                {/* ── Table actions ─────────────────────────────────────── */}
-                <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Table</div>
-                {/* Bank is open to spectators too — they can take loans and
-                    place side bets on the runout even without a seat at the
-                    table. Soft teal accent + ★ so it reads as a featured
-                    destination, matching the auto-fill style below. */}
-                <button type="button" onClick={() => openPokerPanel('bank')} className="block w-full px-3 py-2 text-left text-xs font-bold text-teal-200 hover:bg-zinc-800">
-                  ★ Bank Account
-                </button>
-                {/* One-click auto-fill: seats top-ELO bots into every
-                    empty seat. Available at both regular tables (seated
-                    players) and arenas (spectators). Hidden for spectators
-                    at regular tables — they can't add bots there. The
-                    server validates eligibility either way. */}
-                {(!isSpectator || isArena) && (() => {
-                  const seatedCount = gameState?.players?.length ?? 0
-                  const openSlots = Math.max(0, 5 - seatedCount)
-                  const idleLabel = openSlots === 0
-                    ? 'Auto-Fill Bots · Full'
-                    : `Auto-Fill ${openSlots} Empty Seat${openSlots === 1 ? '' : 's'}`
-                  return (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (openSlots === 0) return
-                        if (!autoFillArmed) { setAutoFillArmed(true); return }
-                        send('poker_auto_fill_bots')
-                        setAutoFillArmed(false)
-                        setTableMenuOpen(false)
-                      }}
-                      onBlur={() => setAutoFillArmed(false)}
-                      disabled={openSlots === 0}
-                      className={`block w-full px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed ${
-                        autoFillArmed
-                          ? 'bg-amber-500/20 text-amber-100 animate-pulse'
-                          : 'text-amber-200'
-                      }`}
-                    >
-                      ★ {autoFillArmed ? `Click again to seat ${openSlots} bot${openSlots === 1 ? '' : 's'}` : idleLabel}
-                    </button>
-                  )
-                })()}
-                {/* Seat the caller's 5 neural-net bots (α-ε) — only useful
-                    once signed in (server enforces). Mirrors the auto-fill
-                    button above but pulls from /api/bots/mine instead of
-                    the public leaderboard. */}
-                {(!isSpectator || isArena) && authUser && (() => {
-                  const seatedCount = gameState?.players?.length ?? 0
-                  const openSlots = Math.max(0, 5 - seatedCount)
-                  const label = openSlots === 0
-                    ? 'NN Squad · Full'
-                    : `Seat my NN Squad (${Math.min(openSlots, 5)})`
-                  return (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (openSlots === 0) return
-                        send('poker_auto_fill_neural')
-                        setTableMenuOpen(false)
-                      }}
-                      disabled={openSlots === 0}
-                      className="block w-full px-3 py-2 text-left text-xs font-bold text-cyan-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      ★ {label}
-                    </button>
-                  )
-                })()}
-                {/* Third auto-fill option: the caller's user-coded bots
-                    only (no clones, no NN). Useful for testing your
-                    creations without picking each by hand. */}
-                {(!isSpectator || isArena) && authUser && (() => {
-                  const seatedCount = gameState?.players?.length ?? 0
-                  const openSlots = Math.max(0, 5 - seatedCount)
-                  return (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (openSlots === 0) return
-                        send('poker_auto_fill_custom')
-                        setTableMenuOpen(false)
-                      }}
-                      disabled={openSlots === 0}
-                      className="block w-full px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      ★ {openSlots === 0 ? 'Custom · Full' : `Seat my custom bots (${Math.min(openSlots, 5)})`}
-                    </button>
-                  )
-                })()}
-                {(!isSpectator || isArena) && (
-                  <button type="button" onClick={() => openPokerPanel('bots')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                    Add Bots
-                  </button>
-                )}
-                {(!isSpectator || isArena) && (
-                  <button type="button" onClick={() => openPokerPanel('blinds')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                    Change Blinds
-                  </button>
-                )}
-                {(!isSpectator || isArena) && (
-                  <button type="button" onClick={() => openPokerPanel('contest')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                    Contest Mode {contestMode?.enabled ? '· On' : ''}
-                  </button>
-                )}
-                {isArena && (
-                  <button type="button" onClick={() => openPokerPanel('arena')} className={`block w-full px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${arenaRunning ? 'text-emerald-200' : 'text-amber-200'}`}>
-                    Arena · {arenaRunning ? 'Running' : 'Paused'}
-                  </button>
-                )}
-
-                {/* ── Profile / cosmetic ────────────────────────────────── */}
-                <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Profile</div>
-                <button type="button" onClick={() => openPokerPanel('skin')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                  Player Skin
-                </button>
-                <button type="button" onClick={() => openPokerPanel('profile')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                  Edit Profile
-                </button>
-
-                {/* ── Reset / Big Yahu kept at the very bottom by request ─ */}
-                {!isSpectator && (
-                  <button type="button" onClick={() => openPokerPanel('reset')} className="block w-full border-t border-zinc-800 px-3 py-2 text-left text-xs font-bold text-red-200 hover:bg-zinc-800">
-                    Reset Money
-                  </button>
-                )}
-                {!isSpectator && (
-                  // Big Yahu in Israel blue — the unlock awards Israel-themed
-                  // emotes (✡️ / 🇮🇱), so the call action wears the colors.
-                  <button type="button" onClick={() => openPokerPanel('big_yahu')} className="block w-full px-3 py-2 text-left text-xs font-bold text-sky-300 hover:bg-zinc-800">
-                    Call Big Yahu
-                  </button>
-                )}
               </div>
             )}
           </div>
@@ -3479,43 +3633,10 @@ export default function PokerPage() {
         </div>
       </div>
 
-      {/* Spectator bankroll badge — only renders in spectator mode. Shows
-          current chips + session P/L so the user can see what they have
-          to gamble with on side bets and where they stand vs the starting
-          stack. Floats top-center so it's visible at every layout but
-          doesn't fight the Tools / Lobby buttons on the right. */}
-      {isSpectator && (() => {
-        const chips = bankState.chips ?? 0
-        const openStake = bankState.openSideBetStake || 0
-        // P/L mirrors the server's getProfit(): realized chips + unsold
-        // side-bet stake − initial buy-in. Falls back to STARTING_CHIPS
-        // (10,000) if pokerBuyIn hasn't reached the client yet.
-        const buyIn = bankState.pokerBuyIn ?? 10000
-        const pl = chips + openStake - buyIn
-        const sign = pl >= 0 ? '+' : '−'
-        const plClass = pl >= 0 ? 'text-emerald-300' : 'text-red-300'
-        return (
-          <div className="pointer-events-none fixed left-1/2 top-3 z-30 -translate-x-1/2 rounded-xl border border-zinc-600/60 bg-zinc-900/95 px-3 py-1.5 shadow-2xl backdrop-blur-md sm:top-4">
-            <div className="flex items-center gap-3 text-[11px] font-bold text-zinc-100">
-              <span><span className="text-[9px] uppercase tracking-wider text-zinc-500 mr-1">Chips</span>${chips.toLocaleString()}</span>
-              <span className="text-zinc-700">·</span>
-              <span>
-                <span className="text-[9px] uppercase tracking-wider text-zinc-500 mr-1">P/L</span>
-                <span className={plClass}>{sign}${Math.abs(pl).toLocaleString()}</span>
-              </span>
-              {openStake > 0 && (
-                <>
-                  <span className="text-zinc-700">·</span>
-                  <span className="text-amber-200">
-                    <span className="text-[9px] uppercase tracking-wider text-zinc-500 mr-1">Open</span>
-                    ${openStake.toLocaleString()}
-                  </span>
-                </>
-              )}
-            </div>
-          </div>
-        )
-      })()}
+      {/* The spectator bankroll badge now lives inline in the top header
+          row (next to the Arena/Spectating/Phase pills). See the Top
+          Header Row above — that placement prevents the centered float
+          from overlapping the Tools/Lobby cluster on narrow widths. */}
 
       {isSpectator && (
         <SpectatorPanel
@@ -3566,6 +3687,24 @@ export default function PokerPage() {
         anchorSeatId={popoverSeatId}
         onClose={() => { setPopoverSeat(null); setPopoverSeatId(null) }}
         viewerUserId={authUser?.id ?? null}
+      />
+
+      {/* "Invite to table" popover — search users by username, send a
+          DM with kind=table_invite. Rendered at the page level so the
+          z-index stack stays predictable above the table chrome. */}
+      <InviteToTablePopover
+        open={inviteOpen}
+        onClose={() => setInviteOpen(false)}
+        roomId={currentRoomId}
+        fromDisplayName={authUser?.displayName || username}
+      />
+
+      {/* Floating feed window — opened from the Tools menu. Movable,
+          resizable, persisted position/size. Reuses PostCard + PostComposer
+          so the in-table view matches /feed exactly. */}
+      <FeedWindow
+        open={feedWindowOpen}
+        onClose={() => setFeedWindowOpen(false)}
       />
 
       {/* Run-it-twice flow: vote modal (server starts when both humans are

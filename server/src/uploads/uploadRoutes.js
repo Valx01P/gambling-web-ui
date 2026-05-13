@@ -66,8 +66,14 @@ export function uploadRoutes() {
     }
     const { kind, contentType, size } = req.body || {}
 
-    if (kind !== 'pfp') {
-      return res.status(400).json({ error: 'unsupported_kind', detail: 'kind must be "pfp"' })
+    // Allowed kinds: 'pfp' (profile/bot avatar history) or 'post' (feed
+    // image attachment). 'post' is signed-in-only — anonymous posters
+    // don't have a feed surface so a tmp key would never be claimed.
+    if (kind !== 'pfp' && kind !== 'post') {
+      return res.status(400).json({ error: 'unsupported_kind', detail: 'kind must be "pfp" or "post"' })
+    }
+    if (kind === 'post' && !req.user) {
+      return res.status(401).json({ error: 'auth_required', detail: 'Sign in to attach images to posts.' })
     }
     if (typeof contentType !== 'string' || !ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
       return res.status(400).json({ error: 'unsupported_content_type' })
@@ -83,8 +89,9 @@ export function uploadRoutes() {
 
     const ext = extensionForContentType(contentType)
     const objectId = randomUUID()
+    const folder = kind === 'post' ? 'post' : 'pfp'
     const key = req.user
-      ? `users/${req.user.id}/pfp/${objectId}.${ext}`
+      ? `users/${req.user.id}/${folder}/${objectId}.${ext}`
       : `tmp/anon/${objectId}.${ext}`
 
     try {

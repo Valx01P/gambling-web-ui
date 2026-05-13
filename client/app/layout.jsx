@@ -1,4 +1,5 @@
 import localFont from "next/font/local"
+import AccountDock from "./components/AccountDock"
 import FuzzyBackground from "./components/FuzzyBackground"
 import ZoomLayer from "./components/ZoomLayer"
 import "./globals.css"
@@ -96,6 +97,12 @@ export default function RootLayout({ children }) {
         <a href="#main-content" className="skip-link">Skip to main content</a>
         <FuzzyBackground />
         <ZoomLayer>{children}</ZoomLayer>
+        {/* Global account dock — profile / DMs / notifications stacked
+            top-right and fixed-positioned. Mounted once here so every
+            route gets the same dock in the same spot without each page
+            needing to wire it up. Sits outside ZoomLayer so the icons
+            stay a constant size regardless of the user's page zoom. */}
+        <AccountDock />
       </body>
     </html>
   )

@@ -8,19 +8,50 @@ work on this repo — it'll save you 3-4 rounds of grep.
 
 ## Quick orientation
 
-- Frontend: `client/` — Next.js 16, React 19, Tailwind 4. The big file is
-  `client/app/poker/page.jsx` (~3500 lines: WS, state, game render, action
-  bar, panels). Everything else is component-scoped.
+- Frontend: `client/` — Next.js 16, React 19, Tailwind 4. The two big
+  files are `client/app/poker/page.jsx` (~4000 lines: WS, state, game
+  render, action bar, panels) and `client/app/poker/bots/[id]/page.jsx`
+  (bot editor + recalc flows). Everything else is component-scoped.
 - Backend: `server/` — Node 22 with native `--env-file-if-exists` (no
-  dotenv). Express + `ws` share one listener. Postgres via `pg`.
-- Auth: Google Identity Services → server-issued JWT in httpOnly cookie.
-  `useAuth` (client) + `apiRouter` middleware (server). See STACK.md.
+  dotenv). Express + `ws` share one listener. Postgres via `pg`. The
+  fat file on this side is `server/src/rooms/PokerRoom.js` (~2000 lines:
+  the game-state machine) and `server/src/network/MessageHandler.js`
+  (~840 lines: WS routing + per-message handlers).
+- REST surface is mounted in `server/src/api/index.js` — auth, bots,
+  uploads, users (me + public), dailies, notifications, dms, feed.
+- Auth: dual-mode — Google Identity Services *and* native email/password
+  (migration 022; `server/src/auth/{email,password,verificationRepository}.js`).
+  Both paths issue the same JWT in an httpOnly cookie. `useAuth` (client)
+  + `apiRouter` middleware (server). See STACK.md.
 - Bot sandbox: `client/app/lib/botCodeRunner.js` (browser) and
   `server/src/bots/` (authoritative). Sandbox is not a security boundary —
-  it's user-runs-user-code.
+  it's user-runs-user-code. Three bot kinds coexist: user-scripted JS,
+  **neural** (`server/src/bots/neural/` — mlp, qlearning, reinforce,
+  reinforce-baseline; weights persisted) and **super** (`server/src/bots/super/`
+  + migrations 026-027 — rule/transition driven, edited via `SuperBotForm`).
 - AWS uploads: private S3 + CloudFront with OAC. Resource IDs are in
   `STACK.md` and the env files. Server issues presigned PUT URLs; client
   uploads direct to S3.
+
+## Subsystems (where to grep)
+
+Beyond core poker + bots, the server hosts several self-contained features.
+Each lives in its own dir with `<feature>Repository.js` + `<feature>Routes.js`
+(or engine) — when a request touches one of these, start there:
+
+- `server/src/dms/` — direct messages (migration 024).
+- `server/src/feed/` — social posts/comments (migration 025).
+- `server/src/notifications/` — bell + dispatcher (migration 023).
+- `server/src/users/followsRepository.js` — follow graph (migration 011).
+- `server/src/sidebets/` — in-hand prop bets (oddsCalc, propCatalog, engine).
+- `server/src/peerLoans/` — player-to-player loans.
+- `server/src/dailies/` + `server/src/achievements/` — daily challenges,
+  unlocks, skin progression (migrations 014, 020, 021).
+- `server/src/crypto/` — meme-coin sim used in the markets UI.
+
+Client mirrors: `client/app/feed/`, `client/app/users/`, plus components
+like `DmsPopup`, `NotificationsBell`, `FeedWindow`, `PostCard`,
+`PostComposer`, `SideBetsPanel`, `PeerLoanPanel`.
 
 ## Commands
 
@@ -62,7 +93,10 @@ The client has no test runner today.
 
 - **WebSocket lifecycle** in `poker/page.jsx` — there's no reconnect
   today; don't accidentally introduce dep churn on the `new WebSocket(WS_URL)`
-  effect (grep for it — the file is ~3000 lines and line numbers drift).
+  effect (grep for it — the file is ~4000 lines and line numbers drift).
+- **Migration ordering**: `server/src/db/migrations/` is numeric and
+  idempotent. New migrations get the next free `0NN_*.sql` slot — never
+  renumber existing ones; `npm run migrate` tracks applied versions.
 - **Bot save / recalc flows** in `poker/bots/[id]/page.jsx` — there's a
   known stale-load race; if you guard one path, guard the other.
 - **CORS / env**: `server/.env.production` must not include `localhost`

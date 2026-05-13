@@ -73,6 +73,30 @@ export function useAuth() {
     return data.user
   }, [])
 
+  // Native-auth flows share the same "JWT + user → set session" plumbing
+  // as the Google path. Each returns the user so the caller can pop the
+  // modal closed only after successful login.
+  const signInWithPassword = useCallback(async ({ email, password }) => {
+    const data = await api.authLogin({ email, password })
+    setSession({ token: data.token, user: data.user })
+    setUser(data.user)
+    return data.user
+  }, [])
+
+  const completeVerifyCode = useCallback(async ({ email, code }) => {
+    const data = await api.authVerify({ email, code })
+    setSession({ token: data.token, user: data.user })
+    setUser(data.user)
+    return data.user
+  }, [])
+
+  const completePasswordReset = useCallback(async ({ email, code, newPassword }) => {
+    const data = await api.authReset({ email, code, newPassword })
+    setSession({ token: data.token, user: data.user })
+    setUser(data.user)
+    return data.user
+  }, [])
+
   // Forces an /auth/me re-fetch, bypassing the TTL cache. Use after the
   // user mutates their own profile (PATCH /auth/me) so the cached User
   // reflects the new displayName / avatarUrl across every consumer.
@@ -84,5 +108,10 @@ export function useAuth() {
     return next
   }, [])
 
-  return { user, loading, signInWithGoogle, signOut, refreshUser }
+  return {
+    user, loading,
+    signInWithGoogle, signInWithPassword,
+    completeVerifyCode, completePasswordReset,
+    signOut, refreshUser
+  }
 }

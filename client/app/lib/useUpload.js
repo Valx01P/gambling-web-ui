@@ -22,7 +22,7 @@ export function useUpload() {
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState(null)
 
-  const upload = useCallback(async (blob, { saveToHistory = false } = {}) => {
+  const upload = useCallback(async (blob, { saveToHistory = false, kind = 'pfp' } = {}) => {
     setError(null)
     setBusy(true)
     setProgress(0)
@@ -33,8 +33,10 @@ export function useUpload() {
       const contentType = blob.type || 'application/octet-stream'
       const size = blob.size
 
-      // Step 1: presign.
-      const presign = await api.presignUpload({ kind: 'pfp', contentType, size })
+      // Step 1: presign. `kind` lets callers route the upload to a
+      // different S3 folder (`pfp` vs `post`) without changing the rest
+      // of the flow.
+      const presign = await api.presignUpload({ kind, contentType, size })
 
       // Step 2: PUT directly to S3 using fetch. We dropped XMLHttpRequest
       // (and the upload-progress UI it powered) because XHR's onerror is

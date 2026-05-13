@@ -7,16 +7,19 @@
 
 import { query } from '../db/pool.js'
 
+// Returns true if this was a NEW follow (DB row inserted), false if the
+// user was already following (no-op). Callers use this to gate notif
+// emission — re-following shouldn't spam the target with duplicates.
 export async function followUser(followerId, followingId) {
   if (!followerId || !followingId) return false
   if (followerId === followingId) return false
-  await query(
+  const { rowCount } = await query(
     `INSERT INTO user_follows (follower_id, following_id)
      VALUES ($1, $2)
      ON CONFLICT DO NOTHING`,
     [followerId, followingId]
   )
-  return true
+  return rowCount > 0
 }
 
 export async function unfollowUser(followerId, followingId) {

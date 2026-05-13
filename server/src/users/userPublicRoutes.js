@@ -11,8 +11,10 @@
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
 import { asyncRouter as Router } from '../api/asyncRouter.js'
 import { authRequired, authOptional } from '../auth/middleware.js'
-import { findUserById } from './userRepository.js'
+import { findUserById, findUserByUsername } from './userRepository.js'
 import { listPublicBotsByOwner } from '../bots/botRepository.js'
+import { dispatchNotification } from '../notifications/dispatcher.js'
+import { KINDS as NOTIF } from '../notifications/notificationsRepository.js'
 import {
   followUser,
   unfollowUser,
@@ -50,6 +52,17 @@ function isUuid(s) {
   return typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
 }
 
+// Resolve a route param that may be either a UUID or a username (the
+// public handle). Returns the full users row or null. Lets the same
+// /users/:handle/* URL space work for either form — @-mention links use
+// usernames, seat popovers use UUIDs.
+async function resolveHandle(handle) {
+  if (typeof handle !== 'string' || handle.length === 0) return null
+  if (isUuid(handle)) return findUserById(handle)
+  // Usernames are stored lowercased; tolerate any case on the wire.
+  return findUserByUsername(handle.toLowerCase())
+}
+
 export function userPublicRoutes() {
   const router = Router()
 
@@ -57,15 +70,16 @@ export function userPublicRoutes() {
   // The seat-click popover's data source. Auth-optional — anonymous
   // viewers see the same public stats but `isFollowedByMe` is false.
   router.get('/:userId/public', authOptional, publicReadLimiter, async (req, res) => {
-    const target = req.params.userId
-    if (!isUuid(target)) return res.status(400).json({ error: 'invalid_user_id' })
+    // `:userId` is the historical name; this route now accepts a UUID
+    // OR a username handle so @-mention links work via /users/{username}.
+    const user = await resolveHandle(req.params.userId)
+    if (!user) return res.status(404).json({ error: 'user_not_found' })
+    const target = user.id
 
-    const [user, counts, viewerFollows] = await Promise.all([
-      findUserById(target),
+    const [counts, viewerFollows] = await Promise.all([
       countFollowsForUser(target),
       req.user?.id ? isFollowing(req.user.id, target) : Promise.resolve(false)
     ])
-    if (!user) return res.status(404).json({ error: 'user_not_found' })
 
     const lastActiveMs = user.last_active_at ? new Date(user.last_active_at).getTime() : null
     const status = deriveStatus(target, lastActiveMs)
@@ -74,6 +88,7 @@ export function userPublicRoutes() {
     res.json({
       user: {
         id: user.id,
+        username: user.username || null,
         displayName: user.display_name,
         avatarUrl: user.avatar_url,
         description: user.description ?? null,
@@ -102,15 +117,50 @@ export function userPublicRoutes() {
     })
   })
 
+  // GET /api/users/search?q=PREFIX
+  // Type-ahead user lookup for the @-mention picker and the DM
+  // "new conversation" search box. Matches against username (the
+  // stable handle) and display_name (more discoverable). Returns up
+  // to 10 results so the dropdown stays scannable.
+  router.get('/search', authRequired, publicReadLimiter, async (req, res) => {
+    const raw = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+    if (raw.length < 2) return res.json({ users: [] })
+    if (raw.length > 32) return res.status(400).json({ error: 'query_too_long' })
+    const q = raw.toLowerCase()
+    const { rows } = await import('../db/pool.js').then(m => m.query(
+      `SELECT id, username, display_name, avatar_url
+         FROM users
+        WHERE LOWER(COALESCE(username, '')) LIKE $1
+           OR LOWER(display_name) LIKE $1
+        ORDER BY
+          -- Exact-prefix matches on username rank higher.
+          (LOWER(username) = $2) DESC,
+          (LOWER(username) LIKE $2 || '%') DESC,
+          username NULLS LAST,
+          display_name
+        LIMIT 10`,
+      [`%${q}%`, q]
+    ))
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({
+      users: rows.map(r => ({
+        id: r.id,
+        username: r.username,
+        displayName: r.display_name,
+        avatarUrl: r.avatar_url
+      }))
+    })
+  })
+
   // GET /api/users/:userId/public-bots
   // Public bots owned by the user — surfaced on the profile page so a
   // visitor can sit one of their bots at a table without bouncing to
   // the leaderboard and scrolling. Private bots (clones, neural) are
   // never returned regardless of who's asking.
   router.get('/:userId/public-bots', authOptional, publicReadLimiter, async (req, res) => {
-    const target = req.params.userId
-    if (!isUuid(target)) return res.status(400).json({ error: 'invalid_user_id' })
-    const bots = await listPublicBotsByOwner(target)
+    const user = await resolveHandle(req.params.userId)
+    if (!user) return res.json({ bots: [] })
+    const bots = await listPublicBotsByOwner(user.id)
     res.setHeader('Cache-Control', 'public, max-age=15, stale-while-revalidate=60')
     res.json({ bots })
   })
@@ -123,7 +173,17 @@ export function userPublicRoutes() {
     if (target === req.user.id) return res.status(400).json({ error: 'cannot_follow_self' })
     const targetUser = await findUserById(target)
     if (!targetUser) return res.status(404).json({ error: 'user_not_found' })
-    await followUser(req.user.id, target)
+    const wasNew = await followUser(req.user.id, target)
+    // Notify the followee — but only on the actual new follow, not on
+    // an idempotent re-follow (would spam them if a client retries).
+    if (wasNew) {
+      dispatchNotification({
+        userId: target,
+        kind: NOTIF.FOLLOW,
+        senderUserId: req.user.id,
+        payload: {}
+      }).catch(err => console.warn('[follow-notif] failed:', err.message))
+    }
     res.status(204).end()
   })
 

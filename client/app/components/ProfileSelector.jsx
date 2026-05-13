@@ -317,7 +317,7 @@ export default function ProfileSelector({ value = DEFAULT_AVATAR.id, onChange, o
             onChange={(e) => setUrlInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); loadFromUrl(urlInput) } }}
             disabled={urlBusy}
-            className="min-w-0 flex-1 rounded-md border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-white outline-none focus:border-amber-400/60 disabled:opacity-50"
+            className="min-w-0 flex-1 rounded-md border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-white outline-none disabled:opacity-50"
           />
           <button
             type="button"

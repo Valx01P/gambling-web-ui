@@ -10,8 +10,9 @@ import {
   CONTEST_MODE_HANDS_PER_LEVEL
 } from '../config/constants.js'
 import { BotPlayer } from '../bots/runtime/BotPlayer.js'
-import { recordHandResult, updateNeuralState } from '../bots/botRepository.js'
+import { recordHandResult, updateNeuralState, updateSuperState, getBotById } from '../bots/botRepository.js'
 import { applyReinforceUpdate } from '../bots/neuralPolicy.js'
+import { applyHandResult as applySuperHandResult } from '../bots/super/transitions.js'
 import {
   recordHumanHand,
   recordAnonHand,
@@ -782,6 +783,28 @@ export class PokerRoom {
           )
         }
       }
+
+      // Super bots: bandit / markov state update. Mirrors the neural
+      // path. `participation` is the ordered list of member ids that
+      // acted this hand; applySuperHandResult bumps each member's stats
+      // + the transition matrix where appropriate.
+      if (seat.isSuper && seat.superState && typeof seat.drainSuperTrajectory === 'function') {
+        const participation = seat.drainSuperTrajectory()
+        if (participation && participation.length > 0) {
+          const baseline = Math.max(1, seat.handStartChips || seat.pokerBuyIn || 1)
+          const rawReward = chipsDelta / baseline
+          applySuperHandResult(seat.superState, participation, rawReward)
+          writes.push(
+            updateSuperState({
+              botId: seat.bot.id,
+              ownerUserId: seat.bot.ownerUserId,
+              state: seat.superState
+            }).catch(err => {
+              console.error(`[super] persist failed for ${seat.bot.name}:`, err.message)
+            })
+          )
+        }
+      }
     }
 
     if (writes.length > 0) await Promise.all(writes)
@@ -1317,7 +1340,7 @@ export class PokerRoom {
       // so antes/blinds are part of the reward signal, not deducted from
       // the "starting stack."
       for (const p of this.players.values()) {
-        if (p?.isBot && p.isNeural && typeof p.onHandStart === 'function') {
+        if (p?.isBot && (p.isNeural || p.isSuper) && typeof p.onHandStart === 'function') {
           p.onHandStart(p.chips)
         }
       }
@@ -1394,7 +1417,7 @@ export class PokerRoom {
   // in one pass and we broadcast ONCE at the end. Skips bots already at
   // the table (by botId) so re-running the command tops up empty seats
   // instead of adding duplicates.
-  autoFillWithTopBots(callerId, bots) {
+  async autoFillWithTopBots(callerId, bots) {
     // Caller eligibility:
     //   • Arena → must be a spectator (mirrors addBotForArenaSpectator).
     //   • Regular table → must be a seated player (mirrors addBotForPlayer
@@ -1416,6 +1439,19 @@ export class PokerRoom {
 
     if (!Array.isArray(bots) || bots.length === 0) {
       return { success: false, error: 'No bots available.' }
+    }
+
+    // Super bots in the list came from a list query that didn't hydrate
+    // their members. Hydrate them in parallel before seating — without
+    // members the BotPlayer dispatcher has nothing to delegate to and
+    // the super bot would just fold/check forever.
+    const needsHydration = bots.filter(b => b?.isSuper && !b.members)
+    if (needsHydration.length > 0) {
+      const hydrated = await Promise.all(needsHydration.map(b =>
+        getBotById(b.id, { viewerUserId: null }).catch(() => null)
+      ))
+      const byId = new Map(hydrated.filter(Boolean).map(b => [b.id, b]))
+      bots = bots.map(b => (b?.isSuper && byId.has(b.id)) ? byId.get(b.id) : b)
     }
 
     const seatedBotIds = new Set(

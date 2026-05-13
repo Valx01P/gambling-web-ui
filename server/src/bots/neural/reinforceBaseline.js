@@ -12,7 +12,8 @@
 import {
   NUM_FEATURES, NUM_ACTIONS, REWARD_CLIP, REWARD_HISTORY_LIMIT,
   clamp, extractFeatures, legalActionMask, actionToCommand,
-  softmaxMasked, sampleFromProbs, pushReward, makeMatrix
+  softmaxMasked, sampleFromProbs, pushReward, makeMatrix,
+  actionQuality, shapedReward
 } from './shared.js'
 
 export const kind = 'reinforce_baseline'
@@ -85,9 +86,18 @@ export function decide(state, ctx) {
 export function update(state, trajectory, rawReward) {
   if (!trajectory || trajectory.length === 0) return state
   const reward = clamp(rawReward, -REWARD_CLIP, REWARD_CLIP)
-  const advantage = reward - state.baseline
   const lr = currentLearningRate(state.handsTrained)
+  // Per-step shaped reward applied AFTER the baseline subtraction so the
+  // baseline still cancels variance from the chip-swing magnitude, while
+  // the shaping factor adds quality-aware signal on top.
   for (const step of trajectory) {
+    const quality = actionQuality(step.actionIdx, step.features)
+    const stepReward = shapedReward(quality, reward)
+    const advantage = stepReward - state.baseline
+    if (advantage === 0) {
+      state.actionCounts[step.actionIdx] = (state.actionCounts[step.actionIdx] || 0) + 1
+      continue
+    }
     const logits = forwardLogits(state.weights, step.features)
     const probs = softmaxMasked(logits, step.mask)
     for (let a = 0; a < NUM_ACTIONS; a++) {
@@ -101,6 +111,8 @@ export function update(state, trajectory, rawReward) {
   }
   // Update baseline AFTER the gradient — using the pre-update baseline for
   // this hand's update matches the standard REINFORCE-with-baseline derivation.
+  // Baseline tracks the unshaped reward so it stays stable across the new
+  // shaping factor.
   state.baseline = (1 - BASELINE_BETA) * state.baseline + BASELINE_BETA * reward
   state.handsTrained = (state.handsTrained || 0) + 1
   pushReward(state, reward)

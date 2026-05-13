@@ -421,4 +421,17 @@ export class PlayerManager {
   getConnectedPlayers() {
     return [...this.players.values()].filter(p => p.isConnected)
   }
+
+  // Every WS connection a given userId has open right now. A user may
+  // have multiple (laptop + phone, two tabs) so we return an array.
+  // Used by notification + DM push paths so a fresh message lights up
+  // every open client in real time.
+  getPlayersByUserId(userId) {
+    if (!userId) return []
+    const out = []
+    for (const p of this.players.values()) {
+      if (p.userId === userId && p.isConnected) out.push(p)
+    }
+    return out
+  }
 }

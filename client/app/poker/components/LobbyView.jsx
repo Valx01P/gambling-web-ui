@@ -2,7 +2,9 @@
 
 import Link from 'next/link'
 import HomeBackLink from '../../components/HomeBackLink'
-import AccountMenu from '../../components/AccountMenu'
+// AccountMenu (profile + DMs + notifications) is mounted globally via
+// AccountDock in the root layout, so the lobby's local nav only owns
+// the back link and the Bots link.
 import AuthGateModal from '../../components/AuthGateModal'
 import ProfileSelector, { ProfileAvatar } from '../../components/ProfileSelector'
 
@@ -53,8 +55,20 @@ export default function LobbyView({
   // they should wait, not retry.
   const findTableLabel = joinBusy ? 'Uploading…' : 'Find Table'
   return (
-    <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4">
-      <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
+    // `justify-center` used to be applied here, but it pushed the
+    // content's top edge above the viewport whenever the stacked content
+    // (Connected pill + tabs + cards + ProfileSelector carousel + room
+    // CTAs) was taller than the viewport — which is most laptops. The
+    // result was the carousel and PLAY-AS-YOU cards bleeding through the
+    // top nav. Switching to top-anchored layout with `pt-16 sm:pt-20`
+    // for nav clearance + `my-auto` on the inner stack keeps the content
+    // visually centered when there's headroom and lets the page scroll
+    // when there isn't.
+    <div className="min-h-[100dvh] flex flex-col items-center px-4 pt-16 pb-8 sm:pt-20">
+      {/* Lobby-local nav sits to the LEFT of the AccountDock's profile
+          avatar (which is fixed at right-3/right-4). right-14/16 reserves
+          the dock's column so the two clusters never overlap. */}
+      <div className="absolute right-14 top-3 z-10 flex items-center gap-2 sm:right-16 sm:top-4">
         <HomeBackLink />
         <Link
           href="/poker/bots"
@@ -62,10 +76,15 @@ export default function LobbyView({
         >
           Bots
         </Link>
-        <AccountMenu />
       </div>
 
-      <div className="flex flex-col items-center gap-6 w-full max-w-[620px]">
+      {/* `my-auto` centers the content stack within the available
+          vertical space when the viewport has headroom, but yields
+          gracefully (no negative margin) when the stack exceeds the
+          viewport — the page just scrolls naturally then. `gap-5` is a
+          touch tighter than the old `gap-6` to claw back vertical space
+          on shorter screens. */}
+      <div className="flex flex-col items-center gap-5 w-full max-w-[620px] my-auto">
         <div className={`text-sm sm:text-base px-6 py-2.5 rounded-full font-bold shadow-sm ${connected ? 'bg-emerald-800/80 text-emerald-100 border border-emerald-600/50' : 'bg-red-800/80 text-red-100 border border-red-600/50'}`}>
           {connected ? '● Connected' : '○ Connecting...'}
         </div>
@@ -142,13 +161,20 @@ export default function LobbyView({
         )}
 
         {joinMode !== 'spectate' && !playingAsSelf && (
-          <input
-            className="w-full bg-zinc-800/90 border border-zinc-500/50 rounded-xl px-5 py-4 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-lg"
-            placeholder="Username (optional)"
-            value={username}
-            onChange={e => persistUsername(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && connected && joinMode === 'general' && !joinBusy && tryJoin('general')}
-          />
+          // Card-wrapped input matching the visual treatment of the
+          // "Have a code? Join one" / "Create a private room" cards
+          // below — the bordered panel + heading make it read as a
+          // labelled action instead of a stray text field.
+          <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/90 p-4 shadow-lg">
+            <div className="mb-2 text-sm font-black text-white">Your name</div>
+            <input
+              className="w-full bg-zinc-900/90 border border-zinc-500/50 rounded-lg px-4 py-3 text-base text-white placeholder-zinc-400 outline-none focus:border-zinc-300 text-center shadow-sm"
+              placeholder="Username (optional)"
+              value={username}
+              onChange={e => persistUsername(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && connected && joinMode === 'general' && !joinBusy && tryJoin('general')}
+            />
+          </div>
         )}
 
         {joinMode !== 'spectate' && playingAsSelf && (

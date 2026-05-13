@@ -5,6 +5,7 @@ import { RoomManager } from '../rooms/RoomManager.js'
 import { MessageHandler } from './MessageHandler.js'
 import { MESSAGE_TYPES } from '../config/constants.js'
 import { untrack as untrackPresence } from '../users/presence.js'
+import { configureDispatcher } from '../notifications/dispatcher.js'
 
 // Per-IP connection cap. Caps how many concurrent WS clients one source can
 // hold open. Set generously (8) so a household behind one NAT or a power
@@ -47,6 +48,10 @@ export class WebSocketServer {
       maxPayload: MAX_MESSAGE_BYTES * 4
     })
     this.playerManager = new PlayerManager()
+    // Hand the playerManager to the notifications/DMs push dispatcher so
+    // feature code can fire live updates without owning a back-channel
+    // to the WS server. Module-level singleton on purpose.
+    configureDispatcher(this.playerManager)
     this.roomManager = new RoomManager({
       onTurnTimeout: (room, playerId) => this._handleTurnTimeout(room, playerId)
     })

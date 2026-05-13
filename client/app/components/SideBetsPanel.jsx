@@ -316,7 +316,7 @@ const PropCard = memo(function PropCard({ prop, myPositions, myStack, volume, on
               min={10}
               max={myStack || 0}
               step={10}
-              className="w-20 rounded-md border border-zinc-600/60 bg-zinc-800 px-2 py-1 text-sm font-bold text-white outline-none focus:border-amber-400/60"
+              className="w-20 rounded-md border border-zinc-600/60 bg-zinc-800 px-2 py-1 text-sm font-bold text-white outline-none"
             />
             <input
               type="range"

@@ -31,6 +31,7 @@ const cloneBuildLimiter = rateLimit({
 })
 import {
   createBot,
+  createSuperBot,
   updateBot,
   deleteBot,
   getBotById,
@@ -38,7 +39,9 @@ import {
   listPublicBots,
   countBotsByOwner,
   countNonCloneBotsByOwner,
+  countSuperBotsByOwner,
   countPublicBotsByOwner,
+  validateSuperMembers,
   getCloneByTier,
   replaceCloneCode,
   provisionNeuralBotsForUser,
@@ -56,9 +59,12 @@ export const MAX_MANUAL_BOTS_PER_USER = 10
 // cap because that's the cap clients actually need to gate their UI on.
 export const MAX_BOTS_PER_USER = MAX_MANUAL_BOTS_PER_USER
 // How many of your bots can be public at once. Half of the theoretical
-// maximum (10 manual + 5 clone + 5 neural = 20) so users have to curate
-// which ones they share. Enforced at create + isPublic-flip time.
+// maximum (10 manual + 5 clone + 5 neural + 2 super = 22) so users have
+// to curate which ones they share. Enforced at create + isPublic-flip time.
 export const MAX_PUBLIC_BOTS_PER_USER = 10
+// Super bots are off-quota from the manual cap — users always have two
+// ensemble slots available regardless of how many manual bots they've made.
+export const MAX_SUPER_BOTS_PER_USER = 2
 import {
   validateRules,
   validatePhrases,
@@ -83,6 +89,7 @@ import {
 } from '../users/botFromUser.js'
 import { findUserById } from '../users/userRepository.js'
 import { query as dbQuery } from '../db/pool.js'
+import { MODES as SUPER_MODES } from './super/transitions.js'
 
 function handleValidationError(err, res) {
   if (err && err.code === 'invalid_rules') {
@@ -569,8 +576,73 @@ export function botRoutes() {
     }
   })
 
+  // POST /api/bots/super — create a "super bot" that round-robins between
+  // 3-5 member bots. Members must be visible to the caller (own or
+  // public) and cannot themselves be super (no nesting). The 2-per-user
+  // slot count is enforced here.
+  router.post('/super', authRequired, botWriteLimiter, async (req, res) => {
+    const { name, color, textColor, isPublic, memberIds, mode } = req.body || {}
+    try {
+      const cleanName = validateName(name ?? '')
+      const cleanColor = color ?? '#a855f7'
+      validateColor(cleanColor)
+      validateTextColor(textColor)
+
+      const existing = await countSuperBotsByOwner(req.user.id)
+      if (existing >= MAX_SUPER_BOTS_PER_USER) {
+        return res.status(400).json({
+          error: 'super_limit_reached',
+          detail: `You can have at most ${MAX_SUPER_BOTS_PER_USER} super bots. Delete one to make room.`,
+          limit: MAX_SUPER_BOTS_PER_USER
+        })
+      }
+      const wantPublic = isPublic === true
+      if (wantPublic) {
+        const publicCount = await countPublicBotsByOwner(req.user.id)
+        if (publicCount >= MAX_PUBLIC_BOTS_PER_USER) {
+          return res.status(400).json({
+            error: 'public_limit_reached',
+            detail: `You're already sharing ${MAX_PUBLIC_BOTS_PER_USER} bots publicly. Hide one first.`,
+            limit: MAX_PUBLIC_BOTS_PER_USER
+          })
+        }
+      }
+      const validation = await validateSuperMembers(memberIds, req.user.id)
+      if (!validation.ok) {
+        const details = {
+          member_count: 'Pick 3 to 5 member bots.',
+          duplicate_members: 'A bot can only appear once in the lineup.',
+          member_not_found: 'One of the picked bots no longer exists.',
+          member_not_visible: 'One of the picked bots isn\'t shared with you.',
+          no_nested_super: 'Super bots can\'t use other super bots as members.',
+          invalid_members: 'Invalid member list.'
+        }
+        return res.status(400).json({ error: validation.error, detail: details[validation.error] })
+      }
+
+      const cleanMode = SUPER_MODES.includes(mode) ? mode : 'thompson'
+      const bot = await createSuperBot({
+        ownerUserId: req.user.id,
+        name: cleanName,
+        color: cleanColor,
+        textColor: textColor ?? 'auto',
+        isPublic: wantPublic,
+        superMemberIds: memberIds,
+        mode: cleanMode
+      })
+      invalidateMyBotsCache(req.user.id)
+      // Re-fetch to hydrate the members array for the response.
+      const hydrated = await getBotById(bot.id, { viewerUserId: req.user.id })
+      res.status(201).json({ bot: hydrated || bot })
+    } catch (err) {
+      try { return handleValidationError(err, res) } catch {}
+      console.error('[bots] super create failed:', err)
+      res.status(500).json({ error: 'internal_error' })
+    }
+  })
+
   router.patch('/:id', authRequired, botWriteLimiter, async (req, res) => {
-    const { name, color, textColor, avatarUrl, rules, phrases, code, codeEnabled, isPublic } = req.body || {}
+    const { name, color, textColor, avatarUrl, rules, phrases, code, codeEnabled, isPublic, memberIds } = req.body || {}
     try {
       // Neural bots reject code / rules / phrases / codeEnabled patches —
       // their behavior is the policy net, not user-supplied logic. We
@@ -606,11 +678,38 @@ export function botRoutes() {
           }
         }
       }
-      if (!isNeural) {
+      if (!isNeural && !target.isSuper) {
         if (rules !== undefined) { validateRules(rules); patch.rules = rules }
         if (phrases !== undefined) { validatePhrases(phrases); patch.phrases = phrases }
         if (code !== undefined) { validateCode(code); patch.code = code }
         if (codeEnabled !== undefined) patch.codeEnabled = Boolean(codeEnabled)
+      }
+      // Super bots only — let the owner change the transition mode.
+      // Mode flips preserve accumulated bandit stats: a thompson run
+      // can be flipped to markov mid-evolution and the new chain has
+      // the same win/loss history to draw from.
+      if (target.isSuper && typeof req.body?.mode === 'string') {
+        if (!SUPER_MODES.includes(req.body.mode)) {
+          return res.status(400).json({ error: 'invalid_mode', detail: `mode must be one of ${SUPER_MODES.join(', ')}` })
+        }
+        const nextState = { ...(target.superState || {}), mode: req.body.mode }
+        patch.superState = nextState
+      }
+      // Super bots only — let the owner re-pick the lineup.
+      if (target.isSuper && memberIds !== undefined) {
+        const validation = await validateSuperMembers(memberIds, req.user.id)
+        if (!validation.ok) {
+          const details = {
+            member_count: 'Pick 3 to 5 member bots.',
+            duplicate_members: 'A bot can only appear once in the lineup.',
+            member_not_found: 'One of the picked bots no longer exists.',
+            member_not_visible: 'One of the picked bots isn\'t shared with you.',
+            no_nested_super: 'Super bots can\'t use other super bots as members.',
+            invalid_members: 'Invalid member list.'
+          }
+          return res.status(400).json({ error: validation.error, detail: details[validation.error] })
+        }
+        patch.superMemberIds = memberIds
       }
       if (isPublic !== undefined) {
         const next = Boolean(isPublic)

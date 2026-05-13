@@ -183,7 +183,11 @@ body {
    element's own border-radius for the outline, so a `rounded-full`
    avatar gets a circular outline. Forcing a 4px radius globally would
    draw a rounded-square outline behind a circular button. */
-:where(button, a, [role="button"], [role="link"], input, select, textarea, summary):focus-visible {
+/* Text inputs (input / textarea / select) deliberately excluded — the
+   caret and value-typing already signal focus and an amber ring on
+   every search box / composer felt loud + unprofessional. The ring
+   still applies to buttons + links for keyboard a11y. */
+:where(button, a, [role="button"], [role="link"], summary):focus-visible {
   outline: 2px solid #fcd34d;
   outline-offset: 2px;
 }

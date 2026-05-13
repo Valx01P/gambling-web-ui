@@ -15,7 +15,8 @@
 import {
   NUM_FEATURES, NUM_ACTIONS, REWARD_CLIP, REWARD_HISTORY_LIMIT,
   clamp, extractFeatures, legalActionMask, actionToCommand,
-  pushReward, makeMatrix
+  pushReward, makeMatrix,
+  actionQuality, shapedReward
 } from './shared.js'
 
 export const kind = 'qlearning'
@@ -106,18 +107,21 @@ export function decide(state, ctx) {
   }
 }
 
-// TD update toward the terminal-episode return. Target is just `reward`
-// (no bootstrapping because the hand ends). Update each chosen action's
-// Q-row by gradient descent on (target - Q)^2: dW = (target - Q) * x.
+// TD update toward the terminal-episode return. Target is the SHAPED
+// per-step reward, not just the raw chip-swing — same shaping the
+// policy-gradient variants use. That way Q(s, bad_action) stays low
+// even when the bad action happened to win the hand.
 export function update(state, trajectory, rawReward) {
   if (!trajectory || trajectory.length === 0) return state
   const reward = clamp(rawReward, -REWARD_CLIP, REWARD_CLIP)
   const lr = currentLearningRate(state.handsTrained)
   for (const step of trajectory) {
+    const quality = actionQuality(step.actionIdx, step.features)
+    const stepReward = shapedReward(quality, reward)
     let q = 0
     const row = state.q[step.actionIdx]
     for (let f = 0; f < NUM_FEATURES; f++) q += row[f] * step.features[f]
-    const tdError = reward - q
+    const tdError = stepReward - q
     for (let f = 0; f < NUM_FEATURES; f++) row[f] += lr * tdError * step.features[f]
     state.actionCounts[step.actionIdx] = (state.actionCounts[step.actionIdx] || 0) + 1
   }

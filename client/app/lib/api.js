@@ -64,10 +64,84 @@ export const api = {
   me: () => apiFetch('/api/auth/me', { auth: true }),
   updateMe: (patch) => apiFetch('/api/auth/me', { method: 'PATCH', auth: true, body: patch }),
 
+  // Native auth — email/password with a 6-digit code verification step.
+  // Lives alongside Google OAuth; a user can have either or both.
+  authSignup: ({ email, password, username }) =>
+    apiFetch('/api/auth/signup', { method: 'POST', body: { email, password, username } }),
+  authVerify: ({ email, code }) =>
+    apiFetch('/api/auth/verify', { method: 'POST', body: { email, code } }),
+  authLogin: ({ email, password }) =>
+    apiFetch('/api/auth/login', { method: 'POST', body: { email, password } }),
+  authResendCode: ({ email, purpose }) =>
+    apiFetch('/api/auth/resend-code', { method: 'POST', body: { email, purpose } }),
+  authForgot: ({ email }) =>
+    apiFetch('/api/auth/forgot', { method: 'POST', body: { email } }),
+  authReset: ({ email, code, newPassword }) =>
+    apiFetch('/api/auth/reset', { method: 'POST', body: { email, code, newPassword } }),
+  authChangePassword: ({ currentPassword, newPassword }) =>
+    apiFetch('/api/auth/change-password', { method: 'POST', auth: true, body: { currentPassword, newPassword } }),
+
+  // --- Notifications ---
+  // Recent inbox + unread count in one shot. Cursor-paginated via beforeId.
+  listNotifications: ({ limit, beforeId } = {}) => {
+    const qs = new URLSearchParams()
+    if (limit) qs.set('limit', String(limit))
+    if (beforeId) qs.set('beforeId', beforeId)
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return apiFetch(`/api/notifications${suffix}`, { auth: true })
+  },
+  notificationsUnreadCount: () =>
+    apiFetch('/api/notifications/unread-count', { auth: true }),
+  markNotificationRead: (id) =>
+    apiFetch(`/api/notifications/${id}/read`, { method: 'POST', auth: true }),
+  markAllNotificationsRead: () =>
+    apiFetch('/api/notifications/read-all', { method: 'POST', auth: true }),
+
+  // --- Direct messages ---
+  // Conversation list (with unread count) for the DMs popup.
+  listDms: () => apiFetch('/api/dms', { auth: true }),
+  dmsUnreadCount: () => apiFetch('/api/dms/unread-count', { auth: true }),
+  listMessages: (userId, { limit, beforeId } = {}) => {
+    const qs = new URLSearchParams()
+    if (limit) qs.set('limit', String(limit))
+    if (beforeId) qs.set('beforeId', beforeId)
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return apiFetch(`/api/dms/${userId}${suffix}`, { auth: true })
+  },
+  sendMessage: (userId, { body, kind, metadata } = {}) =>
+    apiFetch(`/api/dms/${userId}`, { method: 'POST', auth: true, body: { body, kind, metadata } }),
+  markConversationRead: (userId) =>
+    apiFetch(`/api/dms/${userId}/read`, { method: 'POST', auth: true }),
+
+  // Type-ahead user search by username/display name.
+  searchUsers: (q) => apiFetch(`/api/users/search?q=${encodeURIComponent(q)}`, { auth: true }),
+
+  // --- Social feed ---
+  listFeed: ({ beforeId, limit, authorId } = {}) => {
+    const qs = new URLSearchParams()
+    if (beforeId) qs.set('beforeId', beforeId)
+    if (limit) qs.set('limit', String(limit))
+    if (authorId) qs.set('authorId', authorId)
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return apiFetch(`/api/feed${suffix}`, { auth: true })
+  },
+  getPost: (id) => apiFetch(`/api/feed/${id}`, { auth: true }),
+  createPost: ({ body, imageUrl, tableId } = {}) =>
+    apiFetch('/api/feed', { method: 'POST', auth: true, body: { body, imageUrl, tableId } }),
+  deletePost: (id) => apiFetch(`/api/feed/${id}`, { method: 'DELETE', auth: true }),
+  likePost: (id) => apiFetch(`/api/feed/${id}/like`, { method: 'POST', auth: true }),
+  unlikePost: (id) => apiFetch(`/api/feed/${id}/like`, { method: 'DELETE', auth: true }),
+  addComment: (postId, { body, parentCommentId } = {}) =>
+    apiFetch(`/api/feed/${postId}/comments`, { method: 'POST', auth: true, body: { body, parentCommentId } }),
+  deleteComment: (id) => apiFetch(`/api/feed/comments/${id}`, { method: 'DELETE', auth: true }),
+
   listMyBots: () => apiFetch('/api/bots/mine', { auth: true }),
   listPublicBots: () => apiFetch('/api/bots/public'),
   getBot: (id) => apiFetch(`/api/bots/${id}`, { auth: true }),
   createBot: (data) => apiFetch('/api/bots', { method: 'POST', auth: true, body: data }),
+  // Super bot — an ensemble that rotates between 3-5 member bots.
+  createSuperBot: ({ name, color, textColor, isPublic, memberIds } = {}) =>
+    apiFetch('/api/bots/super', { method: 'POST', auth: true, body: { name, color, textColor, isPublic, memberIds } }),
   updateBot: (id, patch) => apiFetch(`/api/bots/${id}`, { method: 'PATCH', auth: true, body: patch }),
   deleteBot: (id) => apiFetch(`/api/bots/${id}`, { method: 'DELETE', auth: true }),
   // Player-clone bot — 5 tiers (12/25/50/75/100 hands). Preview returns

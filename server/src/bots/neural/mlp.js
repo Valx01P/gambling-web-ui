@@ -9,7 +9,8 @@
 import {
   NUM_FEATURES, NUM_ACTIONS, REWARD_CLIP, REWARD_HISTORY_LIMIT,
   clamp, extractFeatures, legalActionMask, actionToCommand,
-  softmaxMasked, sampleFromProbs, pushReward, makeMatrix
+  softmaxMasked, sampleFromProbs, pushReward, makeMatrix,
+  actionQuality, shapedReward
 } from './shared.js'
 
 export const kind = 'mlp'
@@ -108,12 +109,18 @@ export function update(state, trajectory, rawReward) {
   const lr = currentLearningRate(state.handsTrained)
 
   for (const step of trajectory) {
+    const quality = actionQuality(step.actionIdx, step.features)
+    const stepReward = shapedReward(quality, reward)
+    if (stepReward === 0) {
+      state.actionCounts[step.actionIdx] = (state.actionCounts[step.actionIdx] || 0) + 1
+      continue
+    }
     const { z1, h, logits } = forward(state, step.features)
     const probs = softmaxMasked(logits, step.mask)
-    // dL/dlogit_a (for REINFORCE w/ log-likelihood) = reward * (indicator - p_a)
+    // dL/dlogit_a (for REINFORCE w/ log-likelihood) = stepReward * (indicator - p_a)
     const gLogits = new Array(NUM_ACTIONS)
     for (let a = 0; a < NUM_ACTIONS; a++) {
-      gLogits[a] = reward * ((a === step.actionIdx ? 1 : 0) - probs[a])
+      gLogits[a] = stepReward * ((a === step.actionIdx ? 1 : 0) - probs[a])
     }
     // dL/dW2[a][j] = gLogits[a] * h[j]; dL/db2[a] = gLogits[a]
     for (let a = 0; a < NUM_ACTIONS; a++) {

@@ -1,21 +1,94 @@
 import { query } from '../db/pool.js'
 
+// Upsert by google_sub OR by email — if a native-auth user already
+// exists with the same email, we link the Google identity onto their
+// row instead of creating a duplicate account. Mirrors the "log in
+// with Google after signing up natively" path the user asked for.
 export async function upsertGoogleUser({ sub, email, name, picture }) {
+  // First try to link onto an existing native account by email.
+  const linked = await query(
+    `UPDATE users
+        SET google_sub = COALESCE(google_sub, $1),
+            -- Don't overwrite a user-chosen display_name; only fill in
+            -- if the existing one was blank (defensive — display_name is
+            -- NOT NULL today but might be empty for legacy rows).
+            display_name = COALESCE(NULLIF(display_name, ''), $3),
+            avatar_url = COALESCE(avatar_url, $4),
+            updated_at = NOW()
+      WHERE LOWER(email) = LOWER($2)
+        AND (google_sub IS NULL OR google_sub = $1)
+      RETURNING id, google_sub, email, display_name, avatar_url, created_at,
+                elo, hands_played, hands_won, username, email_verified_at`,
+    [sub, email, name, picture]
+  )
+  if (linked.rows[0]) return linked.rows[0]
+  // Otherwise insert/update by google_sub.
   const { rows } = await query(
     `
-    INSERT INTO users (google_sub, email, display_name, avatar_url)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO users (google_sub, email, display_name, avatar_url, email_verified_at)
+    VALUES ($1, $2, $3, $4, NOW())
     ON CONFLICT (google_sub) DO UPDATE SET
       email = EXCLUDED.email,
       display_name = EXCLUDED.display_name,
       avatar_url = EXCLUDED.avatar_url,
       updated_at = NOW()
     RETURNING id, google_sub, email, display_name, avatar_url, created_at,
-              elo, hands_played, hands_won
+              elo, hands_played, hands_won, username, email_verified_at
     `,
     [sub, email, name, picture]
   )
   return rows[0]
+}
+
+// Native-auth signup. Returns the new row; caller is responsible for
+// issuing the 6-digit verification code and emailing it.
+export async function createNativeUser({ email, passwordHash, username, displayName }) {
+  const { rows } = await query(
+    `INSERT INTO users (email, password_hash, username, display_name)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, email, display_name, username, email_verified_at`,
+    [email, passwordHash, username, displayName || username]
+  )
+  return rows[0]
+}
+
+export async function findUserByEmail(email) {
+  if (!email) return null
+  const { rows } = await query(
+    `SELECT id, google_sub, email, password_hash, display_name, username,
+            avatar_url, email_verified_at, elo, hands_played, hands_won
+       FROM users
+      WHERE LOWER(email) = LOWER($1)
+      LIMIT 1`,
+    [email]
+  )
+  return rows[0] || null
+}
+
+export async function findUserByUsername(username) {
+  if (!username) return null
+  const { rows } = await query(
+    `SELECT id, email, display_name, username, avatar_url
+       FROM users
+      WHERE LOWER(username) = LOWER($1)
+      LIMIT 1`,
+    [username]
+  )
+  return rows[0] || null
+}
+
+export async function markEmailVerified(userId) {
+  await query(
+    `UPDATE users SET email_verified_at = COALESCE(email_verified_at, NOW()) WHERE id = $1`,
+    [userId]
+  )
+}
+
+export async function setPasswordHash(userId, passwordHash) {
+  await query(
+    `UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1`,
+    [userId, passwordHash]
+  )
 }
 
 export async function findUserById(id) {

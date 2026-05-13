@@ -812,7 +812,7 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
                     onChange={e => setUsername(e.target.value)}
                     maxLength={32}
                     placeholder="What other players see at the table"
-                    className="w-full rounded-md border border-zinc-700 bg-zinc-950/50 px-3 py-2 text-sm font-bold text-white outline-none focus:border-zinc-400"
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-950/50 px-3 py-2 text-sm font-bold text-white outline-none"
                   />
                 </label>
 
@@ -832,7 +832,7 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
                     onChange={e => setDescription(e.target.value.slice(0, DESCRIPTION_MAX))}
                     rows={3}
                     placeholder="A line or two about your poker style, your bots, anything"
-                    className="w-full resize-none rounded-md border border-zinc-700 bg-zinc-950/50 px-3 py-2 text-sm font-bold text-white outline-none focus:border-zinc-400"
+                    className="w-full resize-none rounded-md border border-zinc-700 bg-zinc-950/50 px-3 py-2 text-sm font-bold text-white outline-none"
                   />
                 </label>
 

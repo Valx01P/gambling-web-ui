@@ -1,5 +1,7 @@
 import Link from 'next/link'
-import AccountMenu from './components/AccountMenu'
+// AccountMenu (profile + DMs + notifications) is now mounted globally
+// via AccountDock in the root layout, so individual routes don't import
+// or position it themselves.
 
 // Inline suit SVGs — kept here so the landing page is a single self-contained
 // file. Tiny and tree-shakable, no asset request.
@@ -83,14 +85,25 @@ export default function Home() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(SITE_JSONLD) }}
       />
-      <header className="absolute right-3 top-3 z-10 flex items-center gap-2 sm:right-4 sm:top-4">
+      {/* Route-local nav sits on the RIGHT, immediately to the LEFT of
+          the AccountDock's profile avatar (anchored at right-3/right-4).
+          `right-14 sm:right-16` reserves room for the dock's 36px-wide
+          avatar plus its right padding so the two clusters never overlap.
+          The nav row only spans the avatar's row height, so DMs/Notifs
+          below the avatar in the dock still get a clean vertical strip. */}
+      <header className="absolute right-14 top-3 z-10 flex items-center gap-2 sm:right-16 sm:top-4">
         <Link
           href="/poker/bots"
           className="rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 sm:px-3 sm:text-sm"
         >
           Bots
         </Link>
-        <AccountMenu />
+        <Link
+          href="/feed"
+          className="rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 sm:px-3 sm:text-sm"
+        >
+          Feed
+        </Link>
       </header>
 
       <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col items-center justify-center px-4 text-center">

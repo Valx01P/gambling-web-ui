@@ -494,7 +494,7 @@ export class MessageHandler {
       return this.error('Could not load top bots.', player)
     }
     if (!bots.length) return this.error('No public bots available.', player)
-    const result = room.autoFillWithTopBots(player.id, bots)
+    const result = await room.autoFillWithTopBots(player.id, bots)
     if (!result.success) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
     }
@@ -524,7 +524,7 @@ export class MessageHandler {
       return this.error('Could not load your bots.', player)
     }
     if (!bots.length) return this.error('You have no custom bots to seat.', player)
-    const result = room.autoFillWithTopBots(player.id, bots)
+    const result = await room.autoFillWithTopBots(player.id, bots)
     if (!result.success) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
     }
@@ -556,7 +556,7 @@ export class MessageHandler {
       return this.error('Could not load your neural squad.', player)
     }
     if (!bots.length) return this.error('No neural bots provisioned yet.', player)
-    const result = room.autoFillWithTopBots(player.id, bots)
+    const result = await room.autoFillWithTopBots(player.id, bots)
     if (!result.success) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
     }

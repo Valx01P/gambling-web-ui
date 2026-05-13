@@ -1,12 +1,14 @@
 import { query } from '../db/pool.js'
 import { initialNeuralState, normalizeState } from './neuralPolicy.js'
 import { VARIANTS as NEURAL_VARIANTS } from './neural/registry.js'
+import { initialSuperState, MODES as SUPER_MODES } from './super/transitions.js'
 
 const PUBLIC_FIELDS = `
   b.id, b.owner_user_id, b.name, b.color, b.text_color, b.avatar_url, b.rules, b.phrases, b.is_public,
   b.code, b.code_enabled,
   b.is_clone, b.clone_tier, b.clone_hands_used,
   b.is_neural, b.neural_tier, b.neural_kind, b.neural_state,
+  b.is_super, b.super_member_ids, b.super_state,
   b.elo, b.hands_played, b.hands_voluntary, b.hands_won,
   b.showdowns_played, b.showdowns_won,
   b.bluffs_attempted, b.bluffs_succeeded, b.bluff_wins, b.chips_won_total,
@@ -24,6 +26,7 @@ const LIST_FIELDS = `
   b.code_enabled,
   b.is_clone, b.clone_tier, b.clone_hands_used,
   b.is_neural, b.neural_tier, b.neural_kind, b.neural_state,
+  b.is_super, b.super_member_ids, b.super_state,
   b.elo, b.hands_played, b.hands_voluntary, b.hands_won,
   b.showdowns_played, b.showdowns_won,
   b.bluffs_attempted, b.bluffs_succeeded, b.bluff_wins, b.chips_won_total,
@@ -57,6 +60,14 @@ function toApi(row, ownerName = null) {
     // the same field. Shape depends on neuralKind — pass it through so
     // normalizeState picks the right variant.
     neuralState: row.is_neural ? normalizeState(row.neural_state, row.neural_kind) : null,
+    // Super-bot metadata. `superMemberIds` is the ordered list of member
+    // bot UUIDs; populated only when isSuper. The full member records
+    // are hydrated in `getBotById` for runtime dispatch + the edit page.
+    isSuper: Boolean(row.is_super),
+    superMemberIds: Array.isArray(row.super_member_ids) ? row.super_member_ids.slice() : null,
+    // Bandit state for super bots. The runtime hydrates this through
+    // normalizeSuperState; the edit page reads it raw for the stats UI.
+    superState: row.is_super ? (row.super_state || null) : null,
     stats: {
       handsPlayed: row.hands_played,
       handsVoluntary: row.hands_voluntary ?? 0,
@@ -75,6 +86,40 @@ function toApi(row, ownerName = null) {
   if ('phrases' in row) out.phrases = row.phrases
   if ('code' in row) out.code = row.code || ''
   return out
+}
+
+export async function createSuperBot({
+  ownerUserId,
+  name, color, textColor,
+  isPublic = false,
+  superMemberIds,
+  mode = 'thompson'
+}) {
+  // Seed a fresh bandit state — one stats row per member, zeroed. Mode
+  // defaults to thompson (the modern, explore-aware default) but
+  // callers can pass any of uniform/weighted/thompson/markov.
+  const initialState = initialSuperState({ mode, memberIds: superMemberIds })
+  const { rows } = await query(
+    `
+    INSERT INTO bots (
+      owner_user_id, name, color, text_color,
+      rules, phrases, is_public,
+      code, code_enabled,
+      is_super, super_member_ids, super_state
+    )
+    VALUES ($1, $2, $3, $4, '[]'::jsonb, '{}'::jsonb, $5,
+            '', FALSE,
+            TRUE, $6::uuid[], $7::jsonb)
+    RETURNING ${PUBLIC_FIELDS.replace(/b\./g, '')}
+    `,
+    [
+      ownerUserId, name, color, textColor || 'auto',
+      Boolean(isPublic),
+      superMemberIds,
+      JSON.stringify(initialState)
+    ]
+  )
+  return toApi(rows[0])
 }
 
 export async function createBot({
@@ -136,6 +181,18 @@ export async function updateBot({ botId, ownerUserId, patch }) {
   if (patch.phrases !== undefined) {
     fields.push(`phrases = $${idx++}::jsonb`)
     values.push(JSON.stringify(patch.phrases))
+  }
+  if (patch.superMemberIds !== undefined) {
+    fields.push(`super_member_ids = $${idx++}::uuid[]`)
+    values.push(patch.superMemberIds)
+  }
+  if (patch.superState !== undefined) {
+    // Used by the mode-toggle UI: caller hands us the in-memory state
+    // (with mode updated), we persist it whole. Bandit stats are
+    // preserved across mode flips so a user can experiment without
+    // burning their accumulated counts.
+    fields.push(`super_state = $${idx++}::jsonb`)
+    values.push(JSON.stringify(patch.superState))
   }
 
   if (fields.length === 0) {
@@ -207,6 +264,20 @@ export async function provisionNeuralBotsForUser(ownerUserId) {
   }
 }
 
+// Persist the super bot's bandit state after each hand it plays. The
+// caller (PokerRoom) owns the in-memory state through the BotPlayer
+// instance; this just writes it back. Fire-and-forget — failures are
+// logged but don't block the next hand.
+export async function updateSuperState({ botId, ownerUserId, state }) {
+  await query(
+    `UPDATE bots
+        SET super_state = $3::jsonb,
+            updated_at = NOW()
+      WHERE id = $1 AND owner_user_id = $2 AND is_super = TRUE`,
+    [botId, ownerUserId, JSON.stringify(state)]
+  )
+}
+
 // Persist a new neural state blob. Called after every hand a neural bot
 // plays. We never read-modify-write here — the caller (BotPlayer) already
 // holds the latest in-memory state; this is just a fire-and-forget save.
@@ -242,16 +313,75 @@ export async function resetNeuralBot({ botId, ownerUserId }) {
   return rows[0] ? toApi(rows[0]) : null
 }
 
-// Counts only the user's manual bots — neither clones nor neural slots,
-// since those are auto-provisioned and shouldn't burn against the 10-bot
-// manual cap. The name stays "NonClone" for backward compat with call
-// sites; the predicate is the source of truth.
+// Counts only the user's manual bots — excludes clones, neural slots,
+// AND super bots (each is on its own quota). The name stays "NonClone"
+// for backward compat with call sites; the predicate is the source of
+// truth.
 export async function countNonCloneBotsByOwner(ownerUserId) {
   const { rows } = await query(
-    'SELECT COUNT(*)::int AS count FROM bots WHERE owner_user_id = $1 AND is_clone = FALSE AND is_neural = FALSE',
+    `SELECT COUNT(*)::int AS count FROM bots
+       WHERE owner_user_id = $1 AND is_clone = FALSE
+         AND is_neural = FALSE AND is_super = FALSE`,
     [ownerUserId]
   )
   return rows[0]?.count || 0
+}
+
+// Super bots have their own 2-per-user slot count. Off-quota from the
+// 10 manual bots so users always have room to assemble two ensembles.
+export async function countSuperBotsByOwner(ownerUserId) {
+  const { rows } = await query(
+    'SELECT COUNT(*)::int AS count FROM bots WHERE owner_user_id = $1 AND is_super = TRUE',
+    [ownerUserId]
+  )
+  return rows[0]?.count || 0
+}
+
+// Validate a proposed list of member-bot UUIDs against the rules:
+//   - 3..5 entries, all unique
+//   - every member must be visible to the owner (own or public)
+//   - members cannot themselves be super bots (no recursion)
+// Returns { ok, error?, members? }. On success, `members` is the
+// fetched member rows in the same order as the input.
+export async function validateSuperMembers(memberIds, ownerUserId) {
+  if (!Array.isArray(memberIds)) return { ok: false, error: 'invalid_members' }
+  const ids = memberIds.filter(id => typeof id === 'string')
+  if (ids.length < 3 || ids.length > 5) return { ok: false, error: 'member_count' }
+  if (new Set(ids).size !== ids.length) return { ok: false, error: 'duplicate_members' }
+  const { rows } = await query(
+    `SELECT id, is_super, is_public, owner_user_id
+       FROM bots WHERE id = ANY($1::uuid[])`,
+    [ids]
+  )
+  if (rows.length !== ids.length) return { ok: false, error: 'member_not_found' }
+  for (const r of rows) {
+    if (r.is_super) return { ok: false, error: 'no_nested_super' }
+    if (!r.is_public && r.owner_user_id !== ownerUserId) {
+      return { ok: false, error: 'member_not_visible' }
+    }
+  }
+  // Re-order to match the input order so the dispatch position is
+  // stable. The DB doesn't guarantee result order for ANY().
+  const byId = new Map(rows.map(r => [r.id, r]))
+  return { ok: true, members: ids.map(id => byId.get(id)) }
+}
+
+// Bulk-load the full API shape for a list of member bot UUIDs. Used
+// inside getBotById to hydrate `members` for super bots so the runtime
+// can dispatch without a second roundtrip. Preserves input order.
+export async function getMembersByIds(memberIds) {
+  if (!Array.isArray(memberIds) || memberIds.length === 0) return []
+  const { rows } = await query(
+    `
+    SELECT ${PUBLIC_FIELDS}, u.display_name AS owner_display_name
+      FROM bots b
+      JOIN users u ON u.id = b.owner_user_id
+     WHERE b.id = ANY($1::uuid[])
+    `,
+    [memberIds]
+  )
+  const byId = new Map(rows.map(r => [r.id, r]))
+  return memberIds.map(id => byId.get(id)).filter(Boolean).map(r => toApi(r, r.owner_display_name))
 }
 
 export async function getCloneByTier(ownerUserId, cloneTier) {
@@ -300,7 +430,14 @@ export async function getBotById(botId, { viewerUserId = null } = {}) {
   const row = rows[0]
   if (!row) return null
   if (!row.is_public && row.owner_user_id !== viewerUserId) return null
-  return toApi(row, row.owner_display_name)
+  const bot = toApi(row, row.owner_display_name)
+  // Super bots carry their member records inline so the runtime can
+  // dispatch decisions without a second fetch + the edit page can show
+  // the lineup. Hydration is a single bulk query — cheap.
+  if (bot.isSuper && bot.superMemberIds?.length) {
+    bot.members = await getMembersByIds(bot.superMemberIds)
+  }
+  return bot
 }
 
 export async function countBotsByOwner(ownerUserId) {

@@ -7,6 +7,9 @@ import { useZoom } from '../lib/useZoom'
 import { colorForKey, getInitials } from '../lib/initials'
 import { ProfileAvatar } from './ProfileSelector'
 import ProfileModal from './ProfileModal'
+// DMs + Notifications used to mount inline here as siblings of the
+// profile avatar. They now live alongside the avatar inside the global
+// AccountDock instead, so this component just owns the profile button.
 
 const SCRIPT_SRC = 'https://accounts.google.com/gsi/client'
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
@@ -133,12 +136,13 @@ export default function AccountMenu() {
 
   const color = colorForKey(user.id || user.email)
   return (
-    // Wrapper is explicitly h-9 so it lines up flush with the sibling
-    // back-link (also h-9). Without an explicit height the wrapper
-    // auto-sized to its child but the flex parent still treated it as
-    // a block-level item which could subtly mis-baseline against the
-    // back-link in some browsers.
-    <div ref={wrapperRef} className="relative inline-flex h-9 items-center">
+    <>
+      {/* Wrapper is explicitly h-9 so it lines up flush with the sibling
+          back-link (also h-9). Without an explicit height the wrapper
+          auto-sized to its child but the flex parent still treated it as
+          a block-level item which could subtly mis-baseline against the
+          back-link in some browsers. */}
+      <div ref={wrapperRef} className="relative inline-flex h-9 items-center">
       <button
         type="button"
         onClick={() => setOpen(prev => !prev)}
@@ -216,5 +220,6 @@ export default function AccountMenu() {
       )}
       <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
     </div>
+    </>
   )
 }

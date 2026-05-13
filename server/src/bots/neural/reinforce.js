@@ -4,7 +4,8 @@
 import {
   NUM_FEATURES, NUM_ACTIONS, REWARD_CLIP, REWARD_HISTORY_LIMIT,
   clamp, extractFeatures, legalActionMask, actionToCommand,
-  softmaxMasked, sampleFromProbs, pushReward, makeMatrix
+  softmaxMasked, sampleFromProbs, pushReward, makeMatrix,
+  actionQuality, shapedReward
 } from './shared.js'
 
 export const kind = 'reinforce'
@@ -75,13 +76,22 @@ export function update(state, trajectory, rawReward) {
   if (!trajectory || trajectory.length === 0) return state
   const reward = clamp(rawReward, -REWARD_CLIP, REWARD_CLIP)
   const lr = currentLearningRate(state.handsTrained)
+  // Per-step shaped reward (see shared.js) — amplifies bad-action-lost,
+  // dampens lucky-bad-action-won. Lets the policy actually learn from
+  // hands where outcome and decision quality disagreed.
   for (const step of trajectory) {
+    const quality = actionQuality(step.actionIdx, step.features)
+    const stepReward = shapedReward(quality, reward)
+    if (stepReward === 0) {
+      state.actionCounts[step.actionIdx] = (state.actionCounts[step.actionIdx] || 0) + 1
+      continue
+    }
     const logits = forwardLogits(state.weights, step.features)
     const probs = softmaxMasked(logits, step.mask)
     for (let a = 0; a < NUM_ACTIONS; a++) {
       const advantage = (a === step.actionIdx ? 1 : 0) - probs[a]
       if (advantage === 0) continue
-      const scale = lr * reward * advantage
+      const scale = lr * stepReward * advantage
       const row = state.weights[a]
       for (let f = 0; f < NUM_FEATURES; f++) row[f] += scale * step.features[f]
     }

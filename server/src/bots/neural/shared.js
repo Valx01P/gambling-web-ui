@@ -98,7 +98,10 @@ export function actionToCommand(actionIdx, ctx) {
       ? { action: 'all_in', amount: 0 }
       : { action: 'call', amount: 0 }
     case 'raise_min': {
-      const target = Math.min(maxRaise, Math.max(minRaise, minRaise))
+      // raise_min is, by name, the minimum legal raise — clamp once to
+      // [minRaise, maxRaise]. If clamping pushes it to all-in, the
+      // engine prefers that shape over an over-raise.
+      const target = Math.min(maxRaise, minRaise)
       return target >= maxRaise
         ? { action: 'all_in', amount: 0 }
         : { action: 'raise', amount: target }
@@ -164,4 +167,115 @@ export function makeMatrix(rows, cols, scale = 0.1) {
     m.push(row)
   }
   return m
+}
+
+// ---------------------------------------------------------------------------
+// Action quality + shaped reward
+// ---------------------------------------------------------------------------
+//
+// The vanilla REINFORCE setup we shipped first used a single per-hand reward
+// (chips_delta / starting_stack). That signal is loud when stacks blow up
+// but says nothing about *decision quality* — a bot can shove 7-2 offsuit,
+// win once, and have that reinforced just as strongly as a +EV all-in. After
+// enough hands the policy still drifts toward random play.
+//
+// To fix: at each decision we compute an action-quality score (-1.5 .. +1)
+// from the ctx-derived features we already capture in the trajectory. Then
+// per-step we shape the reward via a 2×2 matrix on (was-action-good?, did-we-win?):
+//
+//   good action + won   → full positive reward       (earned it)
+//   good action + lost  → damped negative reward     (bad luck, not bad call)
+//   bad action  + won   → small positive reward      (lucky, don't reinforce)
+//   bad action  + lost  → amplified negative reward  (deserved + biggest signal)
+//
+// Net effect: the gradient pulls hardest on the moves we most want the bot
+// to stop doing, and pulls softly on the moves that were correct even if
+// the hand ended badly.
+
+// Feature indices — kept in step with FEATURE_NAMES above. Hard-coded here
+// because the gradient code runs per-step per-hand and the constant lookup
+// is hot.
+const F_PREFLOP    = 1
+const F_EQUITY     = 5
+const F_POT_ODDS   = 6
+const F_FACING_BET = 11
+
+// Score an action against the features that were live at decision time.
+// Returns a number in [-1.5, +1]. Positive = "the spot supported this play",
+// negative = "the spot argued against it".
+export function actionQuality(actionIdx, features) {
+  const equity   = features[F_EQUITY]
+  const potOdds  = features[F_POT_ODDS]
+  const facing   = features[F_FACING_BET]
+
+  switch (actionIdx) {
+    case 0: {  // fold
+      if (!facing) return -0.6  // folding into a free check is just wrong
+      // Pot-odds-justified fold: equity is below the breakeven, so passing
+      // is +EV. Worse the equity vs pot odds, better the fold.
+      const margin = equity - potOdds
+      if (margin < -0.10) return +0.8   // textbook fold (weak hand vs cheap call)
+      if (margin <  0.05) return +0.2   // marginal fold, fine
+      if (margin <  0.20) return -0.6   // bad fold — should be calling
+      return -1.2                       // terrible fold — clear value left on the table (AK preflop, etc.)
+    }
+    case 1: {  // check
+      if (facing) return -1.0           // can't check facing a bet; if the engine remapped, still wrong intent
+      return +0.3                       // free flop / control, slightly positive default
+    }
+    case 2: {  // call
+      const margin = equity - potOdds
+      if (margin > 0.20) return +0.6
+      if (margin > 0.05) return +0.3
+      if (margin > -0.05) return 0
+      if (margin > -0.20) return -0.6
+      return -1.2                       // calling huge with junk
+    }
+    case 3:                              // raise_min
+    case 4: {                            // raise_pot
+      if (equity > 0.65) return +0.8
+      if (equity > 0.50) return +0.4
+      if (equity > 0.35) return  0
+      if (equity > 0.20) return -0.6
+      return -1.2
+    }
+    case 5: {  // raise_allin
+      // The most lopsided action — getting this wrong is the single most
+      // expensive mistake a bot can make, and conversely the highest-EV
+      // shove of a real monster is gold. Amplify both ends.
+      if (equity > 0.70) return +1.0
+      if (equity > 0.55) return +0.5
+      if (equity > 0.40) return  0      // coinflip-style shove — neutral
+      if (equity > 0.25) return -0.9
+      return -1.5                       // jamming with absolute trash (72o, 94o)
+    }
+    default: return 0
+  }
+}
+
+// Combine action quality with hand outcome to produce a per-step reward.
+// `rawReward` is the terminal chips_delta/starting_stack, clipped to ±1.
+// Returns the reward to use for THIS step's gradient — not the whole hand.
+export function shapedReward(quality, rawReward) {
+  if (!Number.isFinite(rawReward) || rawReward === 0) {
+    // Reward-neutral hand (rare — break-even). Tiny pull toward good
+    // play purely from the quality signal so the bot still gets a
+    // shaping signal on chop pots and folded-around hands.
+    return quality > 0.5 ? 0.05 : quality < -0.5 ? -0.05 : 0
+  }
+
+  if (rawReward > 0) {
+    // We won. Did we deserve it?
+    if (quality < -0.5) return rawReward * 0.20   // jammed 72o, hit a 2-outer — barely reward
+    if (quality < 0)    return rawReward * 0.55
+    if (quality > 0.5)  return rawReward * 1.10   // earned win — extra credit
+    return rawReward
+  }
+
+  // We lost. Was it a bad spot or just bad luck?
+  if (quality < -0.8) return rawReward * 1.80     // jammed trash and lost — biggest teaching signal
+  if (quality < -0.3) return rawReward * 1.35     // notably bad action that lost
+  if (quality >  0.5) return rawReward * 0.45     // played it correctly, hand didn't hold
+  if (quality >  0)   return rawReward * 0.80
+  return rawReward
 }

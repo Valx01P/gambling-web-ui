@@ -11,6 +11,7 @@ import BotAvatar from '../../components/BotAvatar'
 import { useAuth } from '../../lib/useAuth'
 import { api } from '../../lib/api'
 import { BOT_COLOR_PRESETS, isValidHex } from '../../lib/botColors'
+import SuperBotForm from './SuperBotForm'
 
 // Persist collapse/expand state per-section across reloads. The key is
 // scoped under a single namespace so all of the page's sections share one
@@ -317,6 +318,75 @@ function PlayerCloneShelf({ user, onCreated, autoBuildTier = null, onVisibilityE
   )
 }
 
+// Super-bot shelf — meta-bots that round-robin between 3-5 member
+// bots. Cap of 2 per user. Source list comes from the page-level
+// myBots fetch (filtered to isSuper).
+function PlayerSuperShelf({ superBots, availableBots, onCreated, onUpdated, onVisibilityError, onDeleted, validationError, setValidationError }) {
+  const SUPER_LIMIT = 2
+  const [showCreate, setShowCreate] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [createError, setCreateError] = useState(null)
+
+  async function submit(form) {
+    setBusy(true); setCreateError(null)
+    try {
+      const { bot } = await api.createSuperBot(form)
+      onCreated?.(bot)
+      setShowCreate(false)
+    } catch (err) {
+      setCreateError(err.detail || err.message || 'Couldn\'t create super bot')
+    } finally { setBusy(false) }
+  }
+
+  const atLimit = superBots.length >= SUPER_LIMIT
+
+  return (
+    <CollapsibleSection
+      collapseKey="super"
+      title={`Super bots (${superBots.length}/${SUPER_LIMIT})`}
+      subtitle="Ensembles that rotate between 3-5 member bots — every random 1-3 turns the next decision is delegated to a different member."
+      accent="zinc"
+      headerRight={
+        <button
+          type="button"
+          onClick={() => {
+            if (atLimit) {
+              setValidationError?.(`You can have at most ${SUPER_LIMIT} super bots. Delete one to make room.`)
+              return
+            }
+            setShowCreate(v => !v)
+            setCreateError(null)
+          }}
+          className="rounded-md border border-violet-400/50 bg-violet-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-violet-600"
+        >
+          {showCreate ? 'Cancel' : '+ New super bot'}
+        </button>
+      }
+    >
+      {showCreate && !atLimit && (
+        <div className="mb-3">
+          <SuperBotForm
+            mode="create"
+            availableBots={availableBots}
+            busy={busy}
+            error={createError}
+            onSubmit={submit}
+            onCancel={() => setShowCreate(false)}
+          />
+        </div>
+      )}
+      <BotList
+        bots={superBots}
+        mine
+        emptyText="No super bots yet. Combine 3-5 of your bots into one ensemble."
+        onDeleted={onDeleted}
+        onUpdated={onUpdated}
+        onVisibilityError={onVisibilityError}
+      />
+    </CollapsibleSection>
+  )
+}
+
 // Five auto-provisioned neural-net bots, one per variant. They live in
 // their own collapsible section so the manual bots count + UI doesn't
 // have to fight five permanent rows. Source list comes from the page's
@@ -530,7 +600,11 @@ function BotRow({ bot, mine, onDeleted, onUpdated, onVisibilityError }) {
                   so list rows are scannable. The label for NN bots reflects
                   the underlying learning algorithm so users can tell their
                   REINFORCE bots apart from the MLP / Q-learning ones. */}
-              {bot.isNeural ? (
+              {bot.isSuper ? (
+                <span className="rounded border border-violet-400/40 bg-violet-500/10 px-1 py-px text-[9px] font-black uppercase tracking-widest text-violet-200">
+                  SUPER · {bot.superMemberIds?.length || 0}
+                </span>
+              ) : bot.isNeural ? (
                 <span className="rounded border border-cyan-400/40 bg-cyan-500/10 px-1 py-px text-[9px] font-black uppercase tracking-widest text-cyan-200">
                   {bot.neuralKind === 'mlp' ? 'MLP'
                     : bot.neuralKind === 'qlearning' ? 'Q-LEARN'
@@ -729,18 +803,17 @@ function BotsPageInner() {
 
   return (
     <div className="min-h-[100dvh] flex flex-col items-center px-4 pt-4 pb-12">
-      <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
+      {/* Local back-link sits just to the LEFT of the AccountDock
+          (right-3/right-4 fixed). right-14/16 reserves the dock's
+          column. */}
+      <div className="absolute right-14 top-3 z-10 flex items-center gap-2 sm:right-16 sm:top-4">
         <Link
           href="/poker"
-          // h-9 matches the sibling avatar button's height so they share
-          // a centerline exactly. Removed py-1.5; the explicit height
-          // owns the vertical sizing and items-center centers the content.
           className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
         >
           <span aria-hidden="true" className="text-base leading-none sm:text-lg">&lt;</span>
           <span className="hidden sm:inline">Lobby</span>
         </Link>
-        <AccountMenu />
       </div>
 
       <div className="mt-12 flex flex-col items-center gap-6 w-full max-w-[620px]">
@@ -805,7 +878,7 @@ function BotsPageInner() {
           // Manual bots = neither clone nor neural. The limit only counts
           // these — clones live in their own shelf and neural bots are
           // permanent slots that the user didn't create by hand.
-          const manualBots = myBots.filter(b => !b.isClone && !b.isNeural)
+          const manualBots = myBots.filter(b => !b.isClone && !b.isNeural && !b.isSuper)
           const publicCount = myBots.filter(b => b.isPublic).length
           // Common visibility-update handler: replace the bot in-place
           // across both lists (public roster also caches manual+public).
@@ -859,6 +932,18 @@ function BotsPageInner() {
             </CollapsibleSection>
           )
         })()}
+
+        {user && tab === 'mine' && (
+          <PlayerSuperShelf
+            superBots={myBots.filter(b => b.isSuper)}
+            availableBots={myBots.filter(b => !b.isSuper)}
+            onCreated={(bot) => setMyBots(prev => [bot, ...prev])}
+            onUpdated={(updated) => setMyBots(prev => prev.map(x => x.id === updated.id ? updated : x))}
+            onDeleted={(id) => setMyBots(prev => prev.filter(x => x.id !== id))}
+            onVisibilityError={(msg) => setValidationError(msg)}
+            setValidationError={setValidationError}
+          />
+        )}
 
         {user && tab === 'mine' && (
           <PlayerNeuralShelf

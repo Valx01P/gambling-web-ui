@@ -4,7 +4,8 @@ import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import HomeBackLink from '../../../components/HomeBackLink'
-import AccountMenu from '../../../components/AccountMenu'
+// AccountMenu (profile + DMs + notifications) is mounted globally via
+// AccountDock in the root layout. This page only owns the back link.
 import ConfirmPopoverButton from '../../../components/ConfirmPopoverButton'
 import BotAvatar from '../../../components/BotAvatar'
 import { useAuth } from '../../../lib/useAuth'
@@ -15,6 +16,7 @@ import { STARTER_CODE } from '../../../lib/starterBotCode'
 import NeuralBrainPanel from './NeuralBrainPanel'
 import EloChart from './EloChart'
 import HeadToHeadPanel from './HeadToHeadPanel'
+import SuperLineupTab from './SuperLineupTab'
 
 // Heavy chunks deferred until the user actually engages with editing.
 // JsCodeEditor pulls in the docs reference panel + linter; Simulator pulls
@@ -100,7 +102,8 @@ export default function BotDetailPage({ params }) {
   // initial useState('code') default still works for the common case.
   useEffect(() => {
     if (bot?.isNeural && tab === 'code') setTab('brain')
-  }, [bot?.isNeural, tab])
+    if (bot?.isSuper && tab === 'code') setTab('lineup')
+  }, [bot?.isNeural, bot?.isSuper, tab])
 
   const dirty = useMemo(() => {
     if (!baselineRef.current) return false
@@ -140,7 +143,7 @@ export default function BotDetailPage({ params }) {
         textColor: draftTextColor,
         avatarUrl: draftAvatarUrl
       }
-      if (!bot?.isNeural) {
+      if (!bot?.isNeural && !bot?.isSuper) {
         patch.code = draftCode
         patch.codeEnabled = true
       }
@@ -255,19 +258,16 @@ export default function BotDetailPage({ params }) {
 
   return (
     <div className="min-h-[100dvh] flex flex-col items-center px-4 pt-4 pb-12">
-      <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
+      {/* Local back-link sits just to the LEFT of the AccountDock's
+          profile avatar (fixed at right-3/right-4). */}
+      <div className="absolute right-14 top-3 z-10 flex items-center gap-2 sm:right-16 sm:top-4">
         <Link
           href="/poker/bots"
-          // Explicit h-9 locks the box to 36px so it shares an exact
-          // height with the sibling AccountMenu avatar button. The
-          // parent `flex items-center` then aligns them pixel-perfect
-          // instead of fudging two slightly-different heights.
           className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
         >
           <span aria-hidden="true" className="text-base leading-none sm:text-lg">&lt;</span>
           <span className="hidden sm:inline">Bots</span>
         </Link>
-        <AccountMenu />
       </div>
 
       <div className="mt-12 flex w-full max-w-4xl flex-col items-center gap-4">
@@ -388,7 +388,9 @@ export default function BotDetailPage({ params }) {
             <div className="grid w-full grid-cols-2 gap-2 bg-zinc-800/80 p-2 rounded-xl border border-zinc-600/50 shadow-md">
               {(bot.isNeural
                 ? [{ id: 'brain', label: 'Brain' }, { id: 'settings', label: 'Settings' }]
-                : [{ id: 'code', label: 'Code' }, { id: 'settings', label: 'Settings' }]
+                : bot.isSuper
+                  ? [{ id: 'lineup', label: 'Lineup' }, { id: 'settings', label: 'Settings' }]
+                  : [{ id: 'code', label: 'Code' }, { id: 'settings', label: 'Settings' }]
               ).map(t => (
                 <button
                   key={t.id}
@@ -433,6 +435,14 @@ export default function BotDetailPage({ params }) {
                     avatarUrl: updated.avatarUrl || null
                   }
                 }}
+              />
+            )}
+
+            {tab === 'lineup' && bot.isSuper && (
+              <SuperLineupTab
+                bot={bot}
+                isMine={isMine}
+                onUpdated={setBot}
               />
             )}
 
@@ -666,7 +676,7 @@ export default function BotDetailPage({ params }) {
                       "Recalculate" affordance clones have and "Reset weights"
                       neural bots have, so all three permanent-or-revertable
                       bot types offer the same start-over option. */}
-                  {!bot.isClone && !bot.isNeural && (
+                  {!bot.isClone && !bot.isNeural && !bot.isSuper && (
                     <div className="rounded-xl border border-zinc-600/50 bg-zinc-800/95 p-3 shadow-sm">
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">

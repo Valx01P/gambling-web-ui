@@ -5,6 +5,9 @@ import { uploadRoutes } from '../uploads/uploadRoutes.js'
 import { userHistoryRoutes } from '../users/userHistoryRoutes.js'
 import { userPublicRoutes } from '../users/userPublicRoutes.js'
 import { dailiesRoutes } from '../dailies/routes.js'
+import { notificationsRoutes } from '../notifications/notificationsRoutes.js'
+import { dmsRoutes } from '../dms/dmsRoutes.js'
+import { feedRoutes } from '../feed/feedRoutes.js'
 
 export function apiRouter() {
   const router = Router()
@@ -19,5 +22,8 @@ export function apiRouter() {
   // (The skin route is technically a /me endpoint but lives here to keep
   //  the daily/skin progression in one place.)
   router.use('/dailies', dailiesRoutes())
+  router.use('/notifications', notificationsRoutes())
+  router.use('/dms', dmsRoutes())
+  router.use('/feed', feedRoutes())
   return router
 }

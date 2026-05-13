@@ -125,13 +125,13 @@ const PeerLoanPanel = memo(function PeerLoanPanel({
                   type="number" min={100}
                   value={amount} onChange={e => setAmount(e.target.value)}
                   placeholder="Counter $"
-                  className="min-w-0 flex-1 rounded-md border border-zinc-600 bg-zinc-800 px-1.5 py-0.5 text-[10px] text-white outline-none focus:border-amber-400/60"
+                  className="min-w-0 flex-1 rounded-md border border-zinc-600 bg-zinc-800 px-1.5 py-0.5 text-[10px] text-white outline-none"
                 />
                 <input
                   type="number" min={0} max={10} step={0.1}
                   value={rate} onChange={e => setRate(e.target.value)}
                   placeholder="%"
-                  className="w-12 rounded-md border border-zinc-600 bg-zinc-800 px-1.5 py-0.5 text-[10px] text-white outline-none focus:border-amber-400/60"
+                  className="w-12 rounded-md border border-zinc-600 bg-zinc-800 px-1.5 py-0.5 text-[10px] text-white outline-none"
                 />
                 <button
                   type="button"
@@ -169,13 +169,13 @@ const PeerLoanPanel = memo(function PeerLoanPanel({
             type="number" min={100}
             value={amount} onChange={e => setAmount(e.target.value)}
             placeholder="Amount"
-            className="min-w-0 flex-1 rounded-md border border-zinc-600 bg-zinc-800 px-1.5 py-1 text-[11px] text-white outline-none focus:border-amber-400/60"
+            className="min-w-0 flex-1 rounded-md border border-zinc-600 bg-zinc-800 px-1.5 py-1 text-[11px] text-white outline-none"
           />
           <input
             type="number" min={0} max={10} step={0.1}
             value={rate} onChange={e => setRate(e.target.value)}
             placeholder="% / turn"
-            className="w-16 rounded-md border border-zinc-600 bg-zinc-800 px-1.5 py-1 text-[11px] text-white outline-none focus:border-amber-400/60"
+            className="w-16 rounded-md border border-zinc-600 bg-zinc-800 px-1.5 py-1 text-[11px] text-white outline-none"
           />
         </div>
         <button

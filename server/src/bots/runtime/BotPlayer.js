@@ -2,6 +2,7 @@ import { MESSAGE_TYPES, GAME_PHASES } from '../../config/constants.js'
 import { buildContext } from './signals.js'
 import { compileBot } from './codeSandbox.js'
 import { policyFor, DEFAULT_KIND } from '../neural/registry.js'
+import { normalizeSuperState, pickNextMember } from '../super/transitions.js'
 
 // Bumped from 800/2400 → 1800/3800 so spectators can actually follow the
 // active-player ring + last-action badges before the next bot acts. Real
@@ -75,13 +76,39 @@ export class BotPlayer {
     this.neuralTrajectory = []
     this.handStartChips = startingChips
 
+    // Super bots are ensembles — they hold 3-5 sub-deciders (one per
+    // member bot) and rotate between them every random 1-3 turns. The
+    // members themselves are read-only: NN members don't learn from
+    // decisions made under the super-bot's banner, since the ensemble
+    // shares a single chip-delta and we don't want to muddy a member's
+    // weight history with games it didn't "really" play.
+    this.isSuper = Boolean(bot.isSuper)
+    this._superMembers = null
+    this._superActiveIdx = 0
+    this._superTurnsLeft = 0
+    this.superState = null
+    this._superMemberIds = null
+    this._superTrajectory = []
+    if (this.isSuper && Array.isArray(bot.members)) {
+      this._superMembers = bot.members.map(m => buildMemberDecider(m))
+      this._superMemberIds = bot.members.map(m => m.id)
+      // Hydrate the persisted bandit state so the chain picks up where
+      // it left off across server restarts / re-sits. Members removed
+      // from the lineup keep their stats; new members get zero rows
+      // via normalizeSuperState.
+      this.superState = normalizeSuperState(bot.superState, this._superMemberIds)
+      // Initial pick + turn budget. Algorithm-aware: Thompson / Markov
+      // / weighted via the hydrated state; uniform falls back to random.
+      this._rerollSuperActive()
+    }
+
     // Compile the user's JS once when the bot sits down. If there's no code
     // or it fails to compile, the bot will safely fold/check on its turn
     // (no fallback rule engine — bots are code-only by product decision).
     this._compiled = null
-    if (this.isNeural) {
-      // Skip the compile path entirely. No system-message either — neural
-      // bots aren't supposed to have code.
+    if (this.isNeural || this.isSuper) {
+      // Neural + super bots skip the compile path entirely — neither has
+      // its own JS. (Super-bot decisions come from member deciders.)
     } else if (typeof bot.code === 'string' && bot.code.trim().length > 0) {
       this._compiled = compileBot(bot.code)
       if (this._compiled.error) {
@@ -98,6 +125,36 @@ export class BotPlayer {
     }
   }
 
+  _rerollSuperActive() {
+    if (!this._superMembers || this._superMembers.length === 0) return
+    const currentId = this._superActiveIdx != null && this._superMemberIds
+      ? this._superMemberIds[this._superActiveIdx]
+      : null
+    const nextIdx = pickNextMember(this.superState, this._superMemberIds || [], currentId)
+    this._superActiveIdx = nextIdx >= 0 ? nextIdx : 0
+    // 1-3 turns inclusive, chosen at random — the user spec. We keep
+    // the dwell-time stochastic so the bandit doesn't lock onto a
+    // single member after a few lucky early hands.
+    this._superTurnsLeft = 1 + Math.floor(Math.random() * 3)
+  }
+
+  // PokerRoom calls this at hand-end to drain the participation log
+  // (which members acted this hand, in order) so the bandit can update.
+  // Returning the array + clearing keeps the heavy persist step
+  // centralized in the room — same pattern as drainNeuralTrajectory.
+  drainSuperTrajectory() {
+    if (!this.isSuper) return null
+    const trajectory = this._superTrajectory
+    this._superTrajectory = []
+    return trajectory
+  }
+
+  // Reset per-hand state. Mirrors onHandStart for neural bots.
+  onSuperHandStart() {
+    if (!this.isSuper) return
+    this._superTrajectory = []
+  }
+
   // Called by PokerRoom._recordBotHandResults after a hand resolves. Drains
   // the trajectory and hands it back so the room can run the REINFORCE
   // update + persist. Returning the array (not running the update here)
@@ -112,11 +169,13 @@ export class BotPlayer {
   // Reset chips tracking + clear stale trajectory at the start of every
   // new hand. The room knows when a hand starts; it calls this so we
   // don't accidentally carry decisions from the previous hand into the
-  // next reward.
+  // next reward. Both neural + super bots use handStartChips as the
+  // baseline for the per-hand reward; super bots also reset their
+  // member-participation log here.
   onHandStart(startingChips) {
-    if (!this.isNeural) return
     this.handStartChips = Math.max(1, Number(startingChips) || this.chips || 1)
-    this.neuralTrajectory = []
+    if (this.isNeural) this.neuralTrajectory = []
+    if (this.isSuper) this._superTrajectory = []
   }
 
   updateActivity() { this.lastActiveTime = Date.now() }
@@ -179,7 +238,20 @@ export class BotPlayer {
     let say = null
 
     try {
-      if (this.isNeural && this.neuralState && this.neuralPolicy) {
+      if (this.isSuper && this._superMembers && this._superMembers.length > 0) {
+        // Super bot dispatch: route to the currently-active member and
+        // count down. When the turn budget hits zero, re-roll the
+        // bandit (Thompson / weighted / markov / uniform). Record the
+        // active member's id on the trajectory so the hand-end update
+        // can credit / debit each participating member's stats.
+        const ctx = buildContext(game, this)
+        const member = this._superMembers[this._superActiveIdx]
+        const cmd = decideForMember(member, ctx)
+        if (cmd) { action = cmd.action; amount = cmd.amount }
+        if (member?.memberId) this._superTrajectory.push(member.memberId)
+        this._superTurnsLeft--
+        if (this._superTurnsLeft <= 0) this._rerollSuperActive()
+      } else if (this.isNeural && this.neuralState && this.neuralPolicy) {
         // Build the same ctx the sandbox bots see, then dispatch through
         // the variant's policy module. Each variant (REINFORCE, baseline,
         // MLP, Q-learning) implements decide() with its own forward pass
@@ -248,6 +320,12 @@ export class BotPlayer {
       this._compiled.dispose()
       this._compiled = null
     }
+    // Tear down member compiles for super bots. NN members hold no
+    // resources beyond the in-memory state which the GC collects.
+    if (this._superMembers) {
+      for (const m of this._superMembers) m.dispose?.()
+      this._superMembers = null
+    }
   }
 
   toJSON() {
@@ -278,5 +356,66 @@ export class BotPlayer {
       botCloneTier: this.botCloneTier,
       botIsPublic: this.botIsPublic
     }
+  }
+}
+
+// Build a read-only "decider" object from a member bot record. The
+// decider holds whatever state is needed to produce a decision later
+// (compiled JS for rule/clone bots; neural state + policy module for NN
+// bots). Returns an object with { kind, decide(ctx) -> {action, amount} }.
+//
+// Read-only by design: NN members don't learn from decisions taken
+// inside a super-bot session because the super-bot owns the chip
+// outcome, and propagating a single reward up to multiple members
+// (potentially owned by different users) would muddy each member's
+// independent weight trajectory.
+export function buildMemberDecider(memberBot) {
+  if (!memberBot || !memberBot.id) {
+    return { kind: 'noop', decide: () => null }
+  }
+  if (memberBot.isNeural) {
+    const policy = policyFor(memberBot.neuralKind || DEFAULT_KIND)
+    const state = policy.normalizeState(memberBot.neuralState)
+    return {
+      kind: 'neural',
+      memberId: memberBot.id,
+      name: memberBot.name,
+      decide: (ctx) => {
+        const r = policy.decide(state, ctx)
+        return r ? r.command : null
+      }
+    }
+  }
+  // Rule / clone members — compile their JS once, dispatch on each call.
+  let compiled = null
+  if (typeof memberBot.code === 'string' && memberBot.code.trim().length > 0) {
+    compiled = compileBot(memberBot.code)
+  }
+  return {
+    kind: 'sandbox',
+    memberId: memberBot.id,
+    name: memberBot.name,
+    decide: (ctx) => {
+      if (!compiled || compiled.error) return null
+      try {
+        const r = compiled.run(ctx)
+        if (r?.ok) return { action: r.action, amount: r.amount }
+      } catch (err) {
+        // Surface so a misbehaving member doesn't go silently null —
+        // owners debugging a custom-bot member need this trail.
+        console.warn(`[super] member ${memberBot.name} sandbox threw:`, err.message)
+      }
+      return null
+    },
+    dispose: () => { try { compiled?.dispose?.() } catch {} }
+  }
+}
+
+function decideForMember(member, ctx) {
+  if (!member) return null
+  try { return member.decide(ctx) }
+  catch (err) {
+    console.warn('[super] member decide threw:', err.message)
+    return null
   }
 }
