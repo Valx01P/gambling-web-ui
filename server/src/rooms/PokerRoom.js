@@ -25,7 +25,8 @@ import {
   eloDelta,
   isBluffWin,
   STARTING_RATING,
-  RATING_FLOOR
+  RATING_FLOOR,
+  computeRatingUpdatesForTable
 } from '../bots/runtime/eloEngine.js'
 import { preflopHandScore } from '../bots/runtime/equity.js'
 import { sanitizeDisplayString } from '../utils/sanitize.js'
@@ -658,11 +659,16 @@ export class PokerRoom {
     // table = 4 sequential transactions even on a fast DB.
     const writes = []
 
+    // PASS 1: gather per-bot outcomes for every seated bot. We need
+    // every bot's outcome BEFORE we can call computeRatingUpdatesForTable,
+    // because that helper normalizes the scores across the whole table
+    // to keep ELO zero-sum (no closed-pool drift). The old code computed
+    // each delta in isolation and the score's asymmetric bonuses caused
+    // every bot to slowly inflate together.
+    const botRows = []
     for (const seat of allSeats) {
       if (!seat.isBot || !seat.bot?.id) continue
 
-      // Outcome basics from the recorded hand summary.
-      const opponentRatings = allSeats.filter(s => s.id !== seat.id).map(ratingFor)
       const won = winnerIds.has(seat.id)
       const chipsDelta = handSummary.profitsByPlayer?.[seat.id] ?? 0
       const seatActions = handSummary.actionsByPlayer?.[seat.id] ?? []
@@ -675,65 +681,79 @@ export class PokerRoom {
         !this.game.foldedPlayers.has(seat.id) &&
         !this.game.removedPlayers.has(seat.id)
 
-      // The hole cards are still on game.playerHands at this point — the
-      // post-showdown 15s reset hasn't fired yet. Used for bluff-win detection
-      // and stored on the audit row for offline recompute.
       const holeCards = (this.game.playerHands.get(seat.id) || []).map(c => ({ ...c }))
       const preflopScore = holeCards.length === 2
         ? preflopHandScore(holeCards[0], holeCards[1])
         : null
       const bluffWin = isBluffWin({ won, wentToShowdown, voluntarilyIn, postflopRaises, holeCards })
 
-      // Lifetime style/variety stats. Driven from the running counters on
-      // bots; we add this hand's contribution before computing the rate so
-      // a bot earns the bonus immediately.
       const stats = seat.bot.stats || {}
       const liveHandsPlayed = (stats.handsPlayed || 0) + 1
       const liveHandsVoluntary = (stats.handsVoluntary || 0) + (voluntarilyIn ? 1 : 0)
       const liveBluffWins = (stats.bluffWins || 0) + (bluffWin ? 1 : 0)
-      const liveFoldOutWins = liveBluffWins + ((stats.handsWon || 0) - (stats.showdownsWon || 0)) // approx
+      const liveFoldOutWins = liveBluffWins + ((stats.handsWon || 0) - (stats.showdownsWon || 0))
       const vpipRate = liveHandsPlayed > 0 ? liveHandsVoluntary / liveHandsPlayed : 0
       const bluffSuccessRate = liveFoldOutWins > 0 ? liveBluffWins / liveFoldOutWins : 0
 
-      const score = performanceScore({
-        won,
-        chipsDelta,
-        bigBlind,
-        foldedPreflop,
-        voluntarilyIn,
-        wentToShowdown,
-        bluffWin,
-        postflopRaises,
-        vpipRate,
-        bluffSuccessRate
-      })
-      const change = eloDelta({
-        rating: seat.bot.elo ?? HUMAN_DEFAULT_RATING,
-        opponentRatings,
-        score,
-        handsPlayed: liveHandsPlayed
-      })
+      // Drain the per-action quality log captured during this hand.
+      // Every bot type (rule / clone / neural / super) populates this,
+      // so the skill-based score works uniformly.
+      const actionQualities = typeof seat.drainActionQualityLog === 'function'
+        ? seat.drainActionQualityLog()
+        : []
 
-      // Update in-memory rating immediately so subsequent hands at this same
-      // table compute against the bot's new strength. Floor at the engine's
-      // RATING_FLOOR so we don't drop below the new minimum.
+      botRows.push({
+        seat,
+        won, chipsDelta, foldedPreflop, voluntarilyIn, wentToShowdown,
+        postflopRaises, bluffWin, preflopScore,
+        liveHandsPlayed, liveHandsVoluntary, liveBluffWins,
+        outcome: {
+          actionQualities,
+          won, chipsDelta, bigBlind, foldedPreflop, voluntarilyIn,
+          wentToShowdown, bluffWin
+        }
+      })
+    }
+
+    if (botRows.length === 0) return
+
+    // PASS 2: batch ELO update. Pool consists of every bot AT the table
+    // (humans are excluded since their ratings live in a separate table
+    // and aren't bot-vs-bot competitive). For mixed tables this means
+    // bot-vs-bot ELO redistributes among the bots; the small bias from
+    // not seeing humans' ratings here is the same bias the old code had.
+    const ratingUpdates = computeRatingUpdatesForTable(botRows.map(r => ({
+      rating: r.seat.bot.elo ?? HUMAN_DEFAULT_RATING,
+      handsPlayed: r.liveHandsPlayed,
+      outcome: r.outcome
+    })))
+
+    for (let i = 0; i < botRows.length; i++) {
+      const r = botRows[i]
+      const update = ratingUpdates[i]
+      const seat = r.seat
+      const change = update.delta
+      const score = update.normalizedScore
+
+      // Update in-memory rating + stats immediately so subsequent hands
+      // at this same table compute against the bot's new strength.
       if (typeof seat.bot.elo === 'number') {
-        seat.bot.elo = Math.max(RATING_FLOOR, seat.bot.elo + change)
+        seat.bot.elo = update.nextRating
+      } else {
+        seat.bot.elo = update.nextRating
       }
-      // Also keep the in-memory stats in sync — next hand's vpipRate /
-      // bluffSuccessRate read from here.
       seat.bot.stats = {
-        ...stats,
-        handsPlayed: liveHandsPlayed,
-        handsVoluntary: liveHandsVoluntary,
-        handsWon: (stats.handsWon || 0) + (won ? 1 : 0),
-        showdownsPlayed: (stats.showdownsPlayed || 0) + (wentToShowdown ? 1 : 0),
-        showdownsWon: (stats.showdownsWon || 0) + (wentToShowdown && won ? 1 : 0),
-        bluffWins: liveBluffWins
+        ...(seat.bot.stats || {}),
+        handsPlayed: r.liveHandsPlayed,
+        handsVoluntary: r.liveHandsVoluntary,
+        handsWon: ((seat.bot.stats || {}).handsWon || 0) + (r.won ? 1 : 0),
+        showdownsPlayed: ((seat.bot.stats || {}).showdownsPlayed || 0) + (r.wentToShowdown ? 1 : 0),
+        showdownsWon: ((seat.bot.stats || {}).showdownsWon || 0) + (r.wentToShowdown && r.won ? 1 : 0),
+        bluffWins: r.liveBluffWins
       }
-      // Mirror the same numbers onto the BotPlayer's seat-facing fields so
-      // the next broadcastGameState carries fresh values to the click-the-
-      // seat popover. Without this the popover would stay frozen at the
+      // Mirror onto BotPlayer's seat-facing fields so the next
+      // broadcastGameState carries fresh values to the click-the-seat
+      // popover. Without this the popover would stay frozen at the
       // sit-down snapshot.
       seat.botElo = seat.bot.elo
       seat.botHandsPlayed = seat.bot.stats.handsPlayed
@@ -745,14 +765,14 @@ export class PokerRoom {
         recordHandResult({
           botId: seat.bot.id,
           tableId: this.roomId,
-          chipsDelta,
-          wentToShowdown,
-          won,
-          foldedPreflop,
-          voluntarilyIn,
+          chipsDelta: r.chipsDelta,
+          wentToShowdown: r.wentToShowdown,
+          won: r.won,
+          foldedPreflop: r.foldedPreflop,
+          voluntarilyIn: r.voluntarilyIn,
           eloChange: change,
-          bluffWin,
-          preflopScore,
+          bluffWin: r.bluffWin,
+          preflopScore: r.preflopScore,
           performanceScore: score
         }).catch(err => {
           console.error(`[bot-elo] persist failed for ${seat.bot.name}:`, err.message)
@@ -770,7 +790,7 @@ export class PokerRoom {
         const trajectory = seat.drainNeuralTrajectory()
         if (trajectory && trajectory.length > 0) {
           const baseline = Math.max(1, seat.handStartChips || seat.pokerBuyIn || 1)
-          const rawReward = chipsDelta / baseline
+          const rawReward = r.chipsDelta / baseline
           applyReinforceUpdate(seat.neuralState, trajectory, rawReward)
           writes.push(
             updateNeuralState({
@@ -792,7 +812,7 @@ export class PokerRoom {
         const participation = seat.drainSuperTrajectory()
         if (participation && participation.length > 0) {
           const baseline = Math.max(1, seat.handStartChips || seat.pokerBuyIn || 1)
-          const rawReward = chipsDelta / baseline
+          const rawReward = r.chipsDelta / baseline
           applySuperHandResult(seat.superState, participation, rawReward)
           writes.push(
             updateSuperState({

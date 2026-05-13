@@ -19,13 +19,17 @@ import { GAME_PHASES } from '../../config/constants.js'
 import { buildContext } from '../runtime/signals.js'
 import { compileBot } from '../runtime/codeSandbox.js'
 import { policyFor, DEFAULT_KIND } from '../neural/registry.js'
+import {
+  extractFeatures, actionQuality, engineActionToActionIdx
+} from '../neural/shared.js'
 import { applyReinforceUpdate } from '../neuralPolicy.js'
 import {
   performanceScore,
   eloDelta,
   isBluffWin,
   STARTING_RATING,
-  RATING_FLOOR
+  RATING_FLOOR,
+  computeRatingUpdatesForTable
 } from '../runtime/eloEngine.js'
 import { preflopHandScore } from '../runtime/equity.js'
 
@@ -57,6 +61,9 @@ class SimSeat {
       ? this.neuralPolicy.normalizeState(bot.neuralState)
       : null
     this.neuralTrajectory = []
+    // Per-action quality log captured for ALL bot types so the new
+    // skill-based ELO can grade decisions, not just outcomes.
+    this.actionQualityLog = []
 
     // Compile JS code for rule bots once. Errors fall back to safe
     // fold/check at decision time — matches the live BotPlayer policy.
@@ -286,6 +293,16 @@ export class SimulationRunner {
     if (action === 'call' && toCall <= 0) action = 'check'
     if (action === 'call' && toCall >= seat.chips) action = 'all_in'
 
+    // Grade THIS decision for the per-hand action-quality log. Same
+    // capture point used by BotPlayer; lets the skill-based ELO score
+    // work identically in live play and headless sims.
+    try {
+      const ctxNow = buildContext(this.game, seat)
+      const features = extractFeatures(ctxNow)
+      const idx = engineActionToActionIdx(action, amount, ctxNow)
+      seat.actionQualityLog.push(actionQuality(idx, features))
+    } catch {}
+
     const result = this.game.handleAction(seat.id, action, amount)
     if (!result?.success) {
       // Fall back to the safest legal action; protects the loop from
@@ -366,11 +383,13 @@ export class SimulationRunner {
       seats: []
     }
 
+    // PASS 1: gather per-seat outcomes (same shape as PokerRoom's
+    // two-pass setup). We need every seat's outcome BEFORE we can call
+    // computeRatingUpdatesForTable, because that helper normalizes
+    // scores across the whole table to keep ELO zero-sum (no closed-
+    // pool drift across long runs).
+    const rows = []
     for (const seat of allSeats) {
-      const opponentRatings = allSeats
-        .filter(s => s.id !== seat.id)
-        .map(s => s.bot.elo ?? STARTING_RATING)
-
       const won = winnerIds.has(seat.id)
       const chipsDelta = handSummary.profitsByPlayer?.[seat.id] ?? 0
       const seatActions = handSummary.actionsByPlayer?.[seat.id] ?? []
@@ -383,8 +402,6 @@ export class SimulationRunner {
         && !this.game.foldedPlayers.has(seat.id)
         && !this.game.removedPlayers.has(seat.id)
 
-      // Hole cards are still in playerHands at showdown — the post-
-      // showdown reset (still queued in `_deferred`) hasn't fired yet.
       const holeCards = (this.game.playerHands.get(seat.id) || []).map(c => ({ ...c }))
       const preflopScoreVal = holeCards.length === 2
         ? preflopHandScore(holeCards[0], holeCards[1])
@@ -401,32 +418,44 @@ export class SimulationRunner {
       const vpipRate = liveHandsPlayed > 0 ? liveHandsVoluntary / liveHandsPlayed : 0
       const bluffSuccessRate = liveFoldOutWins > 0 ? liveBluffWins / liveFoldOutWins : 0
 
-      const score = performanceScore({
-        won, chipsDelta, bigBlind, foldedPreflop, voluntarilyIn,
-        wentToShowdown, bluffWin, postflopRaises, vpipRate, bluffSuccessRate
-      })
-      const change = eloDelta({
-        rating: seat.bot.elo ?? STARTING_RATING,
-        opponentRatings,
-        score,
-        handsPlayed: liveHandsPlayed
-      })
+      // Drain per-action quality scores accumulated during this hand
+      // — feeds the new skill-based performanceScore.
+      const actionQualities = seat.actionQualityLog || []
+      seat.actionQualityLog = []
 
-      // Update ratings in-memory so subsequent hands compute against the
-      // bot's new strength — mirrors live behavior.
-      if (typeof seat.bot.elo === 'number') {
-        seat.bot.elo = Math.max(RATING_FLOOR, seat.bot.elo + change)
-      } else {
-        seat.bot.elo = Math.max(RATING_FLOOR, STARTING_RATING + change)
-      }
+      rows.push({
+        seat,
+        won, chipsDelta, foldedPreflop, voluntarilyIn, wentToShowdown,
+        postflopRaises, bluffWin, preflopScoreVal,
+        liveHandsPlayed, liveHandsVoluntary, liveBluffWins,
+        outcome: {
+          actionQualities,
+          won, chipsDelta, bigBlind, foldedPreflop, voluntarilyIn,
+          wentToShowdown, bluffWin
+        }
+      })
+    }
+
+    // PASS 2: batch ELO update — scores normalized across the table.
+    const ratingUpdates = computeRatingUpdatesForTable(rows.map(r => ({
+      rating: r.seat.bot.elo ?? STARTING_RATING,
+      handsPlayed: r.liveHandsPlayed,
+      outcome: r.outcome
+    })))
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i]
+      const update = ratingUpdates[i]
+      const seat = r.seat
+      seat.bot.elo = update.nextRating
       seat.bot.stats = {
-        ...stats,
-        handsPlayed: liveHandsPlayed,
-        handsVoluntary: liveHandsVoluntary,
-        handsWon: (stats.handsWon || 0) + (won ? 1 : 0),
-        showdownsPlayed: (stats.showdownsPlayed || 0) + (wentToShowdown ? 1 : 0),
-        showdownsWon: (stats.showdownsWon || 0) + (wentToShowdown && won ? 1 : 0),
-        bluffWins: liveBluffWins
+        ...(seat.bot.stats || {}),
+        handsPlayed: r.liveHandsPlayed,
+        handsVoluntary: r.liveHandsVoluntary,
+        handsWon: ((seat.bot.stats || {}).handsWon || 0) + (r.won ? 1 : 0),
+        showdownsPlayed: ((seat.bot.stats || {}).showdownsPlayed || 0) + (r.wentToShowdown ? 1 : 0),
+        showdownsWon: ((seat.bot.stats || {}).showdownsWon || 0) + (r.wentToShowdown && r.won ? 1 : 0),
+        bluffWins: r.liveBluffWins
       }
 
       // Apply the neural training step using the same reward normalization
@@ -437,7 +466,7 @@ export class SimulationRunner {
         seat.neuralTrajectory = []
         if (trajectory.length > 0) {
           const baseline = Math.max(1, seat.handStartChips || seat.pokerBuyIn || 1)
-          const rawReward = chipsDelta / baseline
+          const rawReward = r.chipsDelta / baseline
           applyReinforceUpdate(seat.neuralState, trajectory, rawReward, seat.neuralKind)
         }
       }
@@ -445,15 +474,15 @@ export class SimulationRunner {
       handReport.seats.push({
         seatId: seat.id,
         botId: seat.bot.id,
-        chipsDelta,
-        won,
-        wentToShowdown,
-        foldedPreflop,
-        voluntarilyIn,
-        bluffWin,
-        preflopScore: preflopScoreVal,
-        performanceScore: score,
-        eloChange: change,
+        chipsDelta: r.chipsDelta,
+        won: r.won,
+        wentToShowdown: r.wentToShowdown,
+        foldedPreflop: r.foldedPreflop,
+        voluntarilyIn: r.voluntarilyIn,
+        bluffWin: r.bluffWin,
+        preflopScore: r.preflopScoreVal,
+        performanceScore: update.normalizedScore,
+        eloChange: update.delta,
         eloAfter: seat.bot.elo
       })
     }
@@ -484,6 +513,9 @@ export class SimulationRunner {
         seat.chips = this.startingChips
         seat.pokerBuyIn = this.startingChips
         seat.handStartChips = this.startingChips
+        // Clear last hand's action-quality scores so the next hand
+        // grades only its own decisions.
+        seat.actionQualityLog = []
       }
       const ok = this._playOneHand()
       if (!ok) break

@@ -3,6 +3,7 @@ import {
   getBotById,
   listTopUniqueEloBots,
   listNeuralBotsByOwner,
+  listDeepMlpBotsByOwner,
   listManualBotsByOwner,
   provisionNeuralBotsForUser
 } from "../bots/botRepository.js"
@@ -88,6 +89,12 @@ export class MessageHandler {
 
         case MESSAGE_TYPES.POKER_AUTO_FILL_CUSTOM:
           return this.handleAutoFillCustom(player)
+
+        case MESSAGE_TYPES.POKER_AUTO_FILL_MLP:
+          return this.handleAutoFillMlp(player)
+
+        case MESSAGE_TYPES.POKER_KICK_ALL_BOTS:
+          return this.handleKickAllBots(player)
 
         case MESSAGE_TYPES.AUTH_HELLO:
           return this.handleAuthHello(player, data)
@@ -561,6 +568,68 @@ export class MessageHandler {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
     }
     return result
+  }
+
+  // Auto-fill with the caller's 5 deep-MLP bots (tiers 6-10: Neuron
+  // ζ → κ). Same flow as handleAutoFillNeural but the bot list is
+  // narrowed to the deep-MLP variants — the baseline α-ε lineup is
+  // *not* included, since the user explicitly wanted these as a
+  // separate squad.
+  async handleAutoFillMlp(player) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') {
+      return this.error('Not at a poker table', player)
+    }
+    const userId = player.userId
+    if (!userId) {
+      return this.error('Sign in to use your MLP squad.', player)
+    }
+    const slotsLeft = Math.max(0, POKER_CONFIG.MAX_PLAYERS - room.players.size)
+    if (slotsLeft === 0) {
+      return this.error(room.isArena ? 'Arena is full.' : 'Table is full.', player)
+    }
+    let bots
+    try {
+      // Lazy-provision: a brand-new account hitting the MLP squad
+      // before ever loading /poker/bots wouldn't have these rows yet.
+      await provisionNeuralBotsForUser(userId)
+      bots = await listDeepMlpBotsByOwner(userId)
+    } catch (err) {
+      console.error('[autofill-mlp] bot lookup failed:', err.message)
+      return this.error('Could not load your MLP squad.', player)
+    }
+    if (!bots.length) return this.error('No deep-MLP bots provisioned yet.', player)
+    const result = await room.autoFillWithTopBots(player.id, bots)
+    if (!result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    }
+    return result
+  }
+
+  // Remove every bot currently seated in the caller's room. Same
+  // eligibility rules as REMOVE_BOT (must be seated at a regular
+  // table, or a spectator at an arena). Quiet no-op if there are no
+  // bots — still returns success so the client can chain the next
+  // auto-fill message.
+  handleKickAllBots(player) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') {
+      return this.error('Not at a poker table', player)
+    }
+    // Snapshot seated bot ids first; removeBotForPlayer mutates the
+    // players Map mid-iteration which would skip seats otherwise.
+    const botIds = [...room.players.values()]
+      .filter(p => p && p.isBot && p.id)
+      .map(p => p.id)
+    for (const botId of botIds) {
+      try {
+        if (room.isArena) room.removeBotForArenaSpectator(player.id, botId)
+        else room.removeBotForPlayer(player.id, botId)
+      } catch (err) {
+        console.error('[kick-all-bots] remove failed:', err.message)
+      }
+    }
+    return { success: true, removed: botIds.length }
   }
 
   handleToggleContestMode(player, data) {

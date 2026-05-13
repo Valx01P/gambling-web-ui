@@ -19,19 +19,25 @@ test('kFactor: provisional > settled > established', () => {
   assert.ok(kFactor(50) > kFactor(500))
 })
 
-test('performanceScore: voluntary win at showdown beats blind-fold', () => {
+test('performanceScore: well-played showdown win beats sat-out hand', () => {
+  // New (skill-first) scoring: a great-quality showdown win still
+  // outscores a hand the bot folded preflop without acting. The exact
+  // magnitude is much smaller than the old multiplier-based math
+  // (~0.92 vs ~0.50) because we no longer multiply by 1.10 variety;
+  // we just want win > sat-out, which still holds.
   const win = performanceScore({
+    actionQualities: [+0.6, +0.6, +0.6],  // consistent strong play
     won: true, voluntarilyIn: true, wentToShowdown: true,
-    chipsDelta: 200, bigBlind: 10, vpipRate: 0.30
+    chipsDelta: 200, bigBlind: 10
   })
   const fold = performanceScore({
+    actionQualities: [],
     foldedPreflop: true, voluntarilyIn: false,
-    chipsDelta: -5, bigBlind: 10, vpipRate: 0.30
+    chipsDelta: -5, bigBlind: 10
   })
-  assert.ok(win > fold, `win ${win} should beat blind-fold ${fold}`)
-  // With healthy VPIP and a non-trivial chip delta, a showdown win should
-  // come out near or above 1.0 (we cap the return at 1.05).
-  assert.ok(win >= 1.0, `showdown-win score should be ≥ 1.0 with healthy VPIP: ${win}`)
+  assert.ok(win > fold, `win ${win} should beat sat-out fold ${fold}`)
+  // Well-played hands sit comfortably above 0.5 (the neutral anchor).
+  assert.ok(win > 0.7, `well-played showdown win should score > 0.7: ${win}`)
 })
 
 test('performanceScore: voluntary loss is worse than blind-fold', () => {
@@ -58,17 +64,23 @@ test('performanceScore: bluff win adds bonus on top of fold-out win', () => {
   assert.ok(bluff > plain, `bluff win ${bluff} should beat plain fold-out ${plain}`)
 })
 
-test('performanceScore: variety multiplier rewards looser play', () => {
-  // Same outcome, different VPIP rates.
-  const nit = performanceScore({
+test('performanceScore: better decision quality outscores worse', () => {
+  // Replaces the old variety-multiplier test. Same outcome (won at
+  // showdown with the same chip swing); the only difference is mean
+  // action quality. Skill-first scoring should put the higher-quality
+  // hand above the marginal one.
+  const goodPlay = performanceScore({
+    actionQualities: [+0.6, +0.8, +0.6],  // textbook line throughout
     won: true, voluntarilyIn: true, wentToShowdown: true,
-    chipsDelta: 200, bigBlind: 10, vpipRate: 0.05
+    chipsDelta: 200, bigBlind: 10
   })
-  const balanced = performanceScore({
+  const sloppyWin = performanceScore({
+    actionQualities: [-0.5, -0.3, -0.5],   // got there but the line was bad
     won: true, voluntarilyIn: true, wentToShowdown: true,
-    chipsDelta: 200, bigBlind: 10, vpipRate: 0.30
+    chipsDelta: 200, bigBlind: 10
   })
-  assert.ok(balanced > nit, `balanced VPIP ${balanced} should outscore nit ${nit}`)
+  assert.ok(goodPlay > sloppyWin,
+    `good play (${goodPlay}) should outscore sloppy win (${sloppyWin})`)
 })
 
 test('eloDelta: equal ratings score=0.5 → ~0 change', () => {

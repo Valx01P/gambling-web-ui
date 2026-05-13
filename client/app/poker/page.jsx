@@ -17,6 +17,9 @@ import PlayerProfilePopover from '../components/PlayerProfilePopover'
 import BotProfilePopover from '../components/BotProfilePopover'
 import InviteToTablePopover from '../components/InviteToTablePopover'
 import FeedWindow from '../components/FeedWindow'
+import BotPill from './components/BotPill'
+import ConfirmPopoverButton from '../components/ConfirmPopoverButton'
+import { bucketByCategory, subgroupsFromBuckets } from './lib/botCategories'
 import { useAuth } from '../lib/useAuth'
 import { useUpload } from '../lib/useUpload'
 import { useZoom, ZOOM_MIN, ZOOM_MAX, ZOOM_STEP } from '../lib/useZoom'
@@ -376,6 +379,10 @@ export default function PokerPage() {
   const [inviteOpen, setInviteOpen] = useState(false)
   const [currentRoomId, setCurrentRoomId] = useState(null)
   const [feedWindowOpen, setFeedWindowOpen] = useState(false)
+  // Tracks whether the feed window was opened from the Tools menu so
+  // the title bar's back arrow knows to reopen Tools instead of just
+  // closing. Reset whenever the window closes.
+  const [feedOpenedFromTools, setFeedOpenedFromTools] = useState(false)
   const [connected, setConnected] = useState(false)
   const [playerId, setPlayerId] = useState('')
   // Seat-click popover state. We anchor the popover to the nameplate's
@@ -475,6 +482,14 @@ export default function PokerPage() {
   // controls that hit the same hook — both surfaces stay in lockstep.
   const { zoom: pageZoom, adjust: adjustZoom, reset: resetZoom } = useZoom()
   const [myBotsExpanded, setMyBotsExpanded] = useState(false)
+  // Multi-select state for the Add Bots tool. A Set of botIds the user
+  // has checked; committed in one go via the "Add N" button.
+  // Cleared whenever the panel closes so reopening starts fresh.
+  const [addBotSelection, setAddBotSelection] = useState(() => new Set())
+  // Per-category collapse state inside the Add Bots checklist.
+  const [addBotCategoryCollapsed, setAddBotCategoryCollapsed] = useState({
+    public: false  // public collapsed by default to keep "your bots" visible
+  })
   // Chat dock visibility — defaults to true (visible). Persisted to
   // localStorage so the user's choice survives reloads.
   const [chatDockVisible, setChatDockVisible] = useState(true)
@@ -1779,15 +1794,68 @@ export default function PokerPage() {
     send('add_bot', { botId })
   }
 
+  // ── Add Bots multi-select helpers ─────────────────────────────────
+  function addBotToggle(botId) {
+    setAddBotSelection(prev => {
+      const next = new Set(prev)
+      if (next.has(botId)) next.delete(botId)
+      else next.add(botId)
+      return next
+    })
+  }
+  function addBotToggleMany(ids, mode /* 'select' | 'deselect' */) {
+    setAddBotSelection(prev => {
+      const next = new Set(prev)
+      for (const id of ids) {
+        if (mode === 'select') next.add(id)
+        else next.delete(id)
+      }
+      return next
+    })
+  }
+  function addBotClearSelection() {
+    setAddBotSelection(new Set())
+  }
+  function addBotCommitSelection() {
+    for (const id of addBotSelection) send('add_bot', { botId: id })
+    setAddBotSelection(new Set())
+  }
+  function toggleAddBotCategory(key) {
+    setAddBotCategoryCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+  // Reset selection when the Add Bots panel closes so reopening starts
+  // clean (otherwise stale picks would survive across panel toggles).
+  useEffect(() => {
+    if (activePokerPanel !== 'bots' && addBotSelection.size > 0) {
+      setAddBotSelection(new Set())
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePokerPanel])
+
   // Maximum bots the arena pick queue holds before "Add" is required. The
   // table itself caps at 5 seated, so 5 is the natural ceiling.
-  const MAX_ARENA_PICK = 5
-
-  function arenaQueueAdd(botId) {
-    setArenaPickQueue(prev => prev.length >= MAX_ARENA_PICK ? prev : [...prev, botId])
+  // Multi-select for the Bot Arena lineup picker. Same pattern as the
+  // Add Bots tool: a Set of botIds the user has highlighted, committed
+  // in one batch via "Add N selected". The pill picker toggles entries
+  // in/out — duplicates aren't supported (the engine would seat a
+  // BotPlayer per send, but seeing the same name twice is rare enough
+  // to skip).
+  function arenaQueueToggle(botId) {
+    setArenaPickQueue(prev =>
+      prev.includes(botId)
+        ? prev.filter(x => x !== botId)
+        : [...prev, botId]
+    )
   }
-  function arenaQueueRemoveAt(idx) {
-    setArenaPickQueue(prev => prev.filter((_, i) => i !== idx))
+  function arenaQueueToggleMany(ids, mode) {
+    setArenaPickQueue(prev => {
+      const set = new Set(prev)
+      for (const id of ids) {
+        if (mode === 'select') set.add(id)
+        else set.delete(id)
+      }
+      return Array.from(set)
+    })
   }
   function arenaQueueClear() { setArenaPickQueue([]) }
   function arenaQueueFlush() {
@@ -2102,8 +2170,16 @@ export default function PokerPage() {
                       ★ Crypto Market
                     </button>
                     {authUser && (
-                      <button type="button" onClick={() => { setFeedWindowOpen(true); setTableMenuOpen(false) }} className="block w-full px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800">
-                        ★ Feed
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFeedWindowOpen(true)
+                          setFeedOpenedFromTools(true)
+                          setTableMenuOpen(false)
+                        }}
+                        className="block w-full px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800"
+                      >
+                        ★ Social Media
                       </button>
                     )}
 
@@ -2149,112 +2225,165 @@ export default function PokerPage() {
                     <button type="button" onClick={() => openPokerPanel('bank')} className="block w-full px-3 py-2 text-left text-xs font-bold text-teal-200 hover:bg-zinc-800">
                       ★ Bank Account
                     </button>
-                    {/* Invite a friend to this table — seat-aware. Disabled
-                        when the table is full so the user can see the
-                        feature exists but is currently blocked. Available to
-                        both seated players AND spectators (anyone "at the
-                        table") since spectators can pull friends in too. The
-                        recipient is keyed by userId, so signed-in only. */}
-                    {authUser && (() => {
+                    {/* All five seat-claim tools (Invite Friend + four
+                        ★ auto-fills) share the same three-state pattern:
+                          1. Open seats available → seat normally.
+                          2. Full + bots present → popup offers to KICK
+                             every bot first, then perform the action.
+                          3. Full + only humans seated → button stays
+                             disabled with a "real players, wait for a
+                             seat" label.
+                        The branching lives in fullActionState so each
+                        tool's button is a one-liner config. */}
+                    {(!isSpectator || isArena || true) && (() => {
+                      // Compute once per render — every button below
+                      // reads from this. seatedBots / hasBots are used
+                      // to decide between "kick-and-seat" (bots present)
+                      // and "table of humans, disabled" (no bots).
                       const seatedCount = gameState?.players?.length ?? 0
                       const openSlots = Math.max(0, 5 - seatedCount)
                       const isFull = openSlots === 0
-                      const label = isFull
-                        ? '★ Invite friend · Table full'
-                        : `★ Invite friend (${openSlots} seat${openSlots === 1 ? '' : 's'} open)`
-                      return (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (isFull) return
-                            setInviteOpen(true)
+                      const seatedBots = (gameState?.players || []).filter(p => p && p.isBot)
+                      const hasBots = seatedBots.length > 0
+                      const fullWithBots = isFull && hasBots
+                      const fullNoKick = isFull && !hasBots
+                      const kickCount = seatedBots.length
+
+                      // Builds the ConfirmPopoverButton props for one
+                      // seat-claim tool. Three states:
+                      //   1. Open seats → normal description + action
+                      //   2. Full + bots → just-kick popup. The
+                      //      confirm only kicks the bots (no chained
+                      //      auto-fill) and KEEPS the Tools menu open
+                      //      so the user can pick whichever ★ they
+                      //      want next now that seats are empty.
+                      //   3. Full + all humans → button disabled, no
+                      //      popup.
+                      function toolProps({
+                        label, fullLabel, color, action, description, confirmLabel
+                      }) {
+                        const triggerLabel = !isFull
+                          ? label
+                          : fullWithBots
+                            ? fullLabel
+                            : `${fullLabel} · all real players`
+                        const desc = !isFull
+                          ? description
+                          : fullWithBots
+                            ? `Table is full. Kick the ${kickCount} bot${kickCount === 1 ? '' : 's'} to free up seats?`
+                            : ''
+                        const confirm = !isFull
+                          ? confirmLabel
+                          : fullWithBots
+                            ? `Kick ${kickCount} bot${kickCount === 1 ? '' : 's'}`
+                            : ''
+                        return {
+                          triggerLabel,
+                          triggerClassName: `block w-full text-left text-xs font-bold ${color} hover:bg-zinc-800 px-0 py-1 disabled:opacity-40 disabled:cursor-not-allowed`,
+                          description: desc,
+                          confirmLabel: confirm,
+                          align: 'left',
+                          disabled: fullNoKick,
+                          onConfirm: () => {
+                            if (fullNoKick) return
+                            if (fullWithBots) {
+                              // Two-step flow: this confirm only kicks
+                              // the bots. The Tools menu stays open so
+                              // the user can immediately click the
+                              // same (or a different) ★ tool now that
+                              // there are empty seats.
+                              send('poker_kick_all_bots')
+                              return
+                            }
+                            action()
                             setTableMenuOpen(false)
-                          }}
-                          disabled={isFull}
-                          title={isFull ? 'No open seats — try again after someone leaves.' : 'Search and invite a registered user'}
-                          className="block w-full px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                        >
-                          {label}
-                        </button>
-                      )
-                    })()}
-                    {/* One-click auto-fill: seats top-ELO bots into every
-                        empty seat. Available at both regular tables (seated
-                        players) and arenas (spectators). Hidden for spectators
-                        at regular tables — they can't add bots there. The
-                        server validates eligibility either way. */}
-                    {(!isSpectator || isArena) && (() => {
-                      const seatedCount = gameState?.players?.length ?? 0
-                      const openSlots = Math.max(0, 5 - seatedCount)
-                      const idleLabel = openSlots === 0
-                        ? 'Auto-Fill Bots · Full'
-                        : `Auto-Fill ${openSlots} Empty Seat${openSlots === 1 ? '' : 's'}`
+                          }
+                        }
+                      }
+
                       return (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (openSlots === 0) return
-                            if (!autoFillArmed) { setAutoFillArmed(true); return }
-                            send('poker_auto_fill_bots')
-                            setAutoFillArmed(false)
-                            setTableMenuOpen(false)
-                          }}
-                          onBlur={() => setAutoFillArmed(false)}
-                          disabled={openSlots === 0}
-                          className={`block w-full px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed ${
-                            autoFillArmed
-                              ? 'bg-amber-500/20 text-amber-100 animate-pulse'
-                              : 'text-amber-200'
-                          }`}
-                        >
-                          ★ {autoFillArmed ? `Click again to seat ${openSlots} bot${openSlots === 1 ? '' : 's'}` : idleLabel}
-                        </button>
-                      )
-                    })()}
-                    {/* Seat the caller's 5 neural-net bots (α-ε) — only useful
-                        once signed in (server enforces). Mirrors the auto-fill
-                        button above but pulls from /api/bots/mine instead of
-                        the public leaderboard. */}
-                    {(!isSpectator || isArena) && authUser && (() => {
-                      const seatedCount = gameState?.players?.length ?? 0
-                      const openSlots = Math.max(0, 5 - seatedCount)
-                      const label = openSlots === 0
-                        ? 'NN Squad · Full'
-                        : `Seat my NN Squad (${Math.min(openSlots, 5)})`
-                      return (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (openSlots === 0) return
-                            send('poker_auto_fill_neural')
-                            setTableMenuOpen(false)
-                          }}
-                          disabled={openSlots === 0}
-                          className="block w-full px-3 py-2 text-left text-xs font-bold text-cyan-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          ★ {label}
-                        </button>
-                      )
-                    })()}
-                    {/* Third auto-fill option: the caller's user-coded bots
-                        only (no clones, no NN). Useful for testing your
-                        creations without picking each by hand. */}
-                    {(!isSpectator || isArena) && authUser && (() => {
-                      const seatedCount = gameState?.players?.length ?? 0
-                      const openSlots = Math.max(0, 5 - seatedCount)
-                      return (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (openSlots === 0) return
-                            send('poker_auto_fill_custom')
-                            setTableMenuOpen(false)
-                          }}
-                          disabled={openSlots === 0}
-                          className="block w-full px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          ★ {openSlots === 0 ? 'Custom · Full' : `Seat my custom bots (${Math.min(openSlots, 5)})`}
-                        </button>
+                        <>
+                          {/* ── Invite friend ── */}
+                          {authUser && (
+                            <div className="px-3 py-1">
+                              <ConfirmPopoverButton
+                                {...toolProps({
+                                  label: `★ Invite friend (${openSlots} seat${openSlots === 1 ? '' : 's'} open)`,
+                                  fullLabel: '★ Invite friend · Table full',
+                                  color: 'text-violet-200',
+                                  description: 'Search a registered user by name and DM them a one-click "join this table" invite. They sit down with the same chip stack as you.',
+                                  confirmLabel: 'Open invite picker',
+                                  kickAndAction: 'open the invite picker',
+                                  action: () => setInviteOpen(true)
+                                })}
+                              />
+                            </div>
+                          )}
+                          {/* ── ★ Auto-fill (public top bots) ── */}
+                          {(!isSpectator || isArena) && (
+                            <div className="px-3 py-1">
+                              <ConfirmPopoverButton
+                                {...toolProps({
+                                  label: `★ Auto-Fill ${openSlots} Empty Seat${openSlots === 1 ? '' : 's'}`,
+                                  fullLabel: '★ Auto-Fill · Full',
+                                  color: 'text-amber-200',
+                                  description: `Seats ${openSlots} top-rated public bot${openSlots === 1 ? '' : 's'} from the leaderboard into your open seat${openSlots === 1 ? '' : 's'}. They'll each start with the same chip stack as you (1000 minimum). Different ELOs to give you a mixed lobby.`,
+                                  confirmLabel: `Seat ${openSlots} bot${openSlots === 1 ? '' : 's'}`,
+                                  kickAndAction: 'seat top-rated public bots',
+                                  action: () => send('poker_auto_fill_bots')
+                                })}
+                              />
+                            </div>
+                          )}
+                          {/* ── ★ NN Squad (tiers 1-5) ── */}
+                          {(!isSpectator || isArena) && authUser && (
+                            <div className="px-3 py-1">
+                              <ConfirmPopoverButton
+                                {...toolProps({
+                                  label: `★ Seat my NN Squad (${Math.min(openSlots, 5)})`,
+                                  fullLabel: '★ NN Squad · Full',
+                                  color: 'text-cyan-200',
+                                  description: "Seats your 5 baseline neural bots (Neuron α–ε, tiers 1–5: REINFORCE, REINFORCE+baseline, MLP 1×8, Q-learning) into the open seats. They'll learn from every hand if you've enabled training persistence.",
+                                  confirmLabel: 'Seat NN squad',
+                                  kickAndAction: 'seat your NN squad',
+                                  action: () => send('poker_auto_fill_neural')
+                                })}
+                              />
+                            </div>
+                          )}
+                          {/* ── ★ MLP Squad (tiers 6-10) ── */}
+                          {(!isSpectator || isArena) && authUser && (
+                            <div className="px-3 py-1">
+                              <ConfirmPopoverButton
+                                {...toolProps({
+                                  label: `★ Seat my MLP Squad (${Math.min(openSlots, 5)})`,
+                                  fullLabel: '★ MLP Squad · Full',
+                                  color: 'text-purple-200',
+                                  description: 'Seats your 5 deep-MLP variants (Neuron ζ–κ, tiers 6–10: MLP 1×16, 2×16, 1×32, 3×16, 2×32) into the open seats. These step up from the 1×8 baseline with wider and deeper networks.',
+                                  confirmLabel: 'Seat MLP squad',
+                                  kickAndAction: 'seat your MLP squad',
+                                  action: () => send('poker_auto_fill_mlp')
+                                })}
+                              />
+                            </div>
+                          )}
+                          {/* ── ★ Custom bots ── */}
+                          {(!isSpectator || isArena) && authUser && (
+                            <div className="px-3 py-1">
+                              <ConfirmPopoverButton
+                                {...toolProps({
+                                  label: `★ Seat my custom bots (${Math.min(openSlots, 5)})`,
+                                  fullLabel: '★ Custom · Full',
+                                  color: 'text-violet-200',
+                                  description: 'Seats your own user-coded (rule-based) bots into the open seats, sorted by ELO. Skips clones and neural bots — only the JS bots you wrote yourself.',
+                                  confirmLabel: 'Seat custom bots',
+                                  kickAndAction: 'seat your custom bots',
+                                  action: () => send('poker_auto_fill_custom')
+                                })}
+                              />
+                            </div>
+                          )}
+                        </>
                       )
                     })()}
                     {(!isSpectator || isArena) && (
@@ -2390,7 +2519,18 @@ export default function PokerPage() {
       )}
 
       {activePokerPanel && (
-        <div ref={pokerPanelRef} className="fixed right-3 top-16 z-[90] max-h-[calc(100dvh-5rem)] w-[calc(100vw-1.5rem)] max-w-[460px] overflow-y-auto rounded-xl border border-zinc-600/60 bg-zinc-900/95 p-3 text-white shadow-2xl backdrop-blur-md sm:right-4 sm:top-20">
+        // The Add Bots and Bot Arena panels are picker-heavy and look
+        // cramped in the standard 460px max. They get a wider max
+        // (640px) so the pill picker can breathe without forcing
+        // every other tool to widen.
+        <div
+          ref={pokerPanelRef}
+          className={`fixed right-3 top-16 z-[90] max-h-[calc(100dvh-5rem)] w-[calc(100vw-1.5rem)] overflow-y-auto rounded-xl border border-zinc-600/60 bg-zinc-900/95 p-3 text-white shadow-2xl backdrop-blur-md sm:right-4 sm:top-20 ${
+            activePokerPanel === 'bots' || activePokerPanel === 'arena'
+              ? 'max-w-[640px]'
+              : 'max-w-[460px]'
+          }`}
+        >
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="text-sm font-black truncate">
               {activePokerPanel === 'help' ? 'How to Play'
@@ -2561,105 +2701,201 @@ export default function PokerPage() {
             </div>
           )}
 
-          {activePokerPanel === 'bots' && (
-            <div className="space-y-3">
-              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
-                Picks one and the bot sits at this table with the same chip stack as you (1000 minimum).
-              </div>
+          {activePokerPanel === 'bots' && (() => {
+            // Dedupe roster: your own public bots only show under
+            // "Your bots", never both there and in the public strip.
+            const mineIds = new Set(botRoster.mine.map(b => b.id))
+            const publicOnly = botRoster.public.filter(b => !mineIds.has(b.id))
+            const mineGroups = subgroupsFromBuckets(bucketByCategory(botRoster.mine))
+            const publicGroups = subgroupsFromBuckets(bucketByCategory(publicOnly))
+            const selectedCount = addBotSelection.size
+            // Seated bots — live snapshot from the game state. Lets users
+            // see (and kick) bots currently at the table without
+            // bouncing to the arena panel. Same pattern as the arena
+            // lineup display.
+            const seatedBots = (gameState?.players || []).filter(p => p && p.isBot)
 
-              {authUser && (
-                <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
-                  <div className="flex items-center justify-between gap-2">
+            // One labeled strip of pills. Header has a select-all
+            // toggle that flips its label based on current state.
+            function PillStrip({ label, accent, bots, ownerLabelFn }) {
+              if (bots.length === 0) return null
+              const ids = bots.map(b => b.id)
+              const allSelected = ids.every(id => addBotSelection.has(id))
+              const anySelected = ids.some(id => addBotSelection.has(id))
+              return (
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <div className="flex items-baseline gap-1.5">
+                      <span className={`text-[9px] font-black uppercase tracking-widest ${accent}`}>{label}</span>
+                      <span className="text-[9px] font-bold text-zinc-500">({bots.length})</span>
+                    </div>
                     <button
                       type="button"
-                      onClick={() => setMyBotsExpanded(v => !v)}
-                      className="flex flex-1 items-center gap-1.5 text-left"
-                      aria-expanded={myBotsExpanded}
+                      onClick={() => addBotToggleMany(ids, allSelected ? 'deselect' : 'select')}
+                      className="rounded border border-zinc-700 bg-zinc-800/60 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-zinc-200 hover:bg-zinc-700"
                     >
-                      <span className={`text-xs font-black text-zinc-200 transition-transform ${myBotsExpanded ? 'rotate-90' : ''}`}>›</span>
-                      <span className="text-xs font-black text-zinc-300">My Bots</span>
-                      <span className="text-[10px] font-bold text-zinc-500">({botRoster.mine.length})</span>
+                      {allSelected ? 'Unselect all' : anySelected ? 'Select rest' : 'Select all'}
                     </button>
-                    <Link href="/poker/bots" className="text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-white">
-                      Manage →
-                    </Link>
                   </div>
-                  {myBotsExpanded && (
-                    <div className="mt-2">
-                      {botRoster.loading ? (
-                        <div className="text-xs font-bold text-zinc-500 text-center py-2">Loading…</div>
-                      ) : botRoster.mine.length === 0 ? (
-                        <a
-                          href="/poker/bots"
-                          className="block text-center py-3 px-2 rounded-md border border-zinc-700/70 bg-zinc-950/40 text-xs font-bold text-amber-200 hover:bg-zinc-900 hover:border-amber-400/40"
-                        >
-                          No bots yet — <span className="underline">build your first one →</span>
-                        </a>
-                      ) : (
-                        <div className="space-y-1.5">
-                          {botRoster.mine.map(b => (
-                            <button
-                              key={b.id}
-                              type="button"
-                              onClick={() => addBotToTable(b.id)}
-                              className="flex w-full items-center gap-2 rounded-md border border-zinc-700/70 bg-zinc-900/60 px-2 py-1.5 text-left transition-colors hover:bg-zinc-800/80"
-                            >
-                              <BotAvatar name={b.name} color={b.color} textColor={b.textColor} size={28} />
-                              <div className="min-w-0 flex-1">
-                                <div className="truncate text-xs font-black text-white">{b.name}</div>
-                                <div className="truncate text-[10px] font-bold text-zinc-500">ELO {b.elo}</div>
-                              </div>
-                              <span className="rounded-md border border-zinc-500/50 bg-zinc-700 px-2 py-0.5 text-[10px] font-bold text-white">Add</span>
-                            </button>
-                          ))}
-                        </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {bots.map(b => (
+                      <BotPill
+                        key={b.id}
+                        bot={b}
+                        useBotAvatar
+                        selected={addBotSelection.has(b.id)}
+                        onToggle={() => addBotToggle(b.id)}
+                        ownerLabel={ownerLabelFn ? ownerLabelFn(b) : undefined}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )
+            }
+
+            return (
+              <div className="space-y-3">
+                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                  Tap the bots to seat. They each sit with the same chip stack as you (1000 minimum). Pick as many as you want — they'll all be added when you hit Add.
+                </div>
+
+                {/* ── Bots currently at the table ── */}
+                {/* Mirrors the Bot Arena panel's seated-bots strip so
+                    users can see (and kick) the table's current lineup
+                    without bouncing between panels. Updates live from
+                    gameState.players via the WS feed. */}
+                <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-2.5">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">
+                      Bots at the table ({seatedBots.length}/5)
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {/* Bulk kick — only shows once 2+ bots are
+                          seated; for a single bot the × on its chip
+                          is faster. ConfirmPopoverButton so a misclick
+                          doesn't wipe the whole table. */}
+                      {seatedBots.length >= 2 && (
+                        <ConfirmPopoverButton
+                          triggerLabel={`Kick all (${seatedBots.length})`}
+                          triggerClassName="rounded-md border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-red-200 hover:bg-red-500/20"
+                          description={`Remove all ${seatedBots.length} bots from the table in one shot. The empty seats stay open — use a ★ tool below to seat fresh bots, or invite a friend.`}
+                          confirmLabel="Kick all bots"
+                          align="right"
+                          onConfirm={() => send('poker_kick_all_bots')}
+                        />
                       )}
+                      <Link href="/poker/bots" className="text-[9px] font-black uppercase tracking-widest text-zinc-500 hover:text-white">
+                        Manage →
+                      </Link>
+                    </div>
+                  </div>
+                  {seatedBots.length === 0 ? (
+                    <div className="text-[10px] font-bold text-zinc-500 text-center py-1">No bots at the table yet.</div>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      {seatedBots.map(b => (
+                        <span key={b.id} className="inline-flex items-center gap-1 rounded-md border border-zinc-700/70 bg-zinc-900/60 pl-1 pr-0.5 py-0.5">
+                          <BotAvatar name={b.username} color={b.botColor} textColor={b.botTextColor} size={18} />
+                          <span className="max-w-[90px] truncate text-[10px] font-black text-white">{b.username}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeBotFromTable(b.id)}
+                            className="ml-0.5 rounded px-1 text-[10px] font-black text-red-200 hover:bg-red-500/20"
+                            title="Remove bot from table"
+                            aria-label={`Remove ${b.username}`}
+                          >×</button>
+                        </span>
+                      ))}
                     </div>
                   )}
                 </div>
-              )}
 
-              <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <div className="text-xs font-black text-zinc-300">Public Roster</div>
-                  <button
-                    type="button"
-                    onClick={refreshBotRoster}
-                    className="rounded-md border border-zinc-500/50 bg-zinc-700 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-zinc-600"
-                  >
-                    Refresh
-                  </button>
-                </div>
-                {botRoster.loading ? (
-                  <div className="text-xs font-bold text-zinc-500 text-center py-2">Loading…</div>
-                ) : botRoster.error ? (
-                  <div className="text-xs font-bold text-red-300 text-center py-2">{botRoster.error}</div>
-                ) : botRoster.public.length === 0 ? (
-                  <div className="text-xs font-bold text-zinc-500 text-center py-2">No public bots yet.</div>
-                ) : (
-                  <div className="space-y-1.5">
-                    {botRoster.public.map(b => (
+                {/* Sticky action bar — count + Add + Clear. */}
+                <div className="sticky top-0 z-10 -mx-3 -mt-3 mb-1 flex items-center justify-between gap-2 border-b border-zinc-700/70 bg-zinc-900/95 px-3 py-2 backdrop-blur">
+                  <div className="text-[11px] font-black text-zinc-200">
+                    {selectedCount === 0
+                      ? 'Nothing selected'
+                      : `${selectedCount} bot${selectedCount === 1 ? '' : 's'} selected`}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {selectedCount > 0 && (
                       <button
-                        key={b.id}
                         type="button"
-                        onClick={() => addBotToTable(b.id)}
-                        className="flex w-full items-center gap-2 rounded-md border border-zinc-700/70 bg-zinc-900/60 px-2 py-1.5 text-left transition-colors hover:bg-zinc-800/80"
+                        onClick={addBotClearSelection}
+                        className="rounded-md border border-zinc-600/60 bg-zinc-800 px-2 py-1 text-[10px] font-bold text-zinc-300 hover:bg-zinc-700"
                       >
-                        <BotAvatar name={b.name} color={b.color} textColor={b.textColor} size={28} />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-xs font-black text-white">{b.name}</div>
-                          <div className="truncate text-[10px] font-bold text-zinc-500">
-                            ELO {b.elo} · BY {(b.ownerDisplayName || 'UNKNOWN').toUpperCase()}
-                          </div>
-                        </div>
-                        <span className="rounded-md border border-zinc-500/50 bg-zinc-700 px-2 py-0.5 text-[10px] font-bold text-white">Add</span>
+                        Clear
                       </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={addBotCommitSelection}
+                      disabled={selectedCount === 0}
+                      className="rounded-md border border-emerald-500/50 bg-emerald-600 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-zinc-800 disabled:text-zinc-500"
+                    >
+                      Add {selectedCount > 0 ? selectedCount : ''}
+                    </button>
+                  </div>
+                </div>
+
+                {botRoster.loading && (
+                  <div className="text-xs font-bold text-zinc-500 text-center py-2">Loading roster…</div>
+                )}
+                {botRoster.error && (
+                  <div className="text-xs font-bold text-red-300 text-center py-2">{botRoster.error}</div>
+                )}
+
+                {/* ── Your bots ── */}
+                {authUser && botRoster.mine.length > 0 && (
+                  <div className="space-y-2 rounded-lg border border-zinc-700/70 bg-zinc-950/40 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-black uppercase tracking-widest text-emerald-200">Your bots</div>
+                      <Link href="/poker/bots" className="text-[9px] font-black uppercase tracking-widest text-zinc-500 hover:text-white">
+                        Manage →
+                      </Link>
+                    </div>
+                    {mineGroups.map(g => (
+                      <PillStrip key={g.key} label={g.label} accent={g.accent} bots={g.bots} />
                     ))}
                   </div>
                 )}
+                {authUser && !botRoster.loading && botRoster.mine.length === 0 && (
+                  <a
+                    href="/poker/bots"
+                    className="block rounded-md border border-zinc-700/70 bg-zinc-950/40 px-2 py-3 text-center text-xs font-bold text-amber-200 hover:border-amber-400/40 hover:bg-zinc-900"
+                  >
+                    No bots yet — <span className="underline">build your first one →</span>
+                  </a>
+                )}
+
+                {/* ── Public roster ── */}
+                <div className="space-y-2 rounded-lg border border-zinc-700/70 bg-zinc-950/40 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-black uppercase tracking-widest text-zinc-400">Public roster</div>
+                    <button
+                      type="button"
+                      onClick={refreshBotRoster}
+                      className="rounded-md border border-zinc-500/50 bg-zinc-700 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-zinc-600"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  {!botRoster.loading && publicOnly.length === 0 && (
+                    <div className="text-xs font-bold text-zinc-500 text-center py-2">No public bots yet.</div>
+                  )}
+                  {publicGroups.map(g => (
+                    <PillStrip
+                      key={g.key}
+                      label={g.label}
+                      accent={g.accent}
+                      bots={g.bots}
+                      ownerLabelFn={(b) => b.ownerDisplayName ? `by ${b.ownerDisplayName}` : null}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
 
           {activePokerPanel === 'bank' && (() => {
             const score = bankState.creditScore ?? 700
@@ -2917,148 +3153,113 @@ export default function PokerPage() {
                     </div>
                   )}
 
-                  {/* One-click auto-fill: server figures out how many seats
-                      are empty and seats the top distinct-ELO bots from
-                      the public catalog into each. Skips bots already at
-                      the table (no duplicates). Disabled when no slots
-                      remain. The NN-squad button below is auth-only and
-                      pulls the caller's own 5 neural bots instead. */}
+                  {/* Pill-style multi-select picker — matches the Add
+                      Bots tool and the training simulator. Pick as many
+                      as you want, "Add N" commits all at once.
+                      The ★ auto-fill shortcuts (top bots / NN squad /
+                      custom / MLP squad) live in the Tools menu so
+                      they aren't duplicated here. */}
                   {(() => {
-                    const totalSeats = 5  // mirrors POKER_CONFIG.MAX_PLAYERS
-                    const openSlots = Math.max(0, totalSeats - seatedBots.length)
-                    return (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => send('poker_auto_fill_bots')}
-                          disabled={openSlots === 0}
-                          className="mb-2 w-full rounded-md border border-amber-400/60 bg-amber-500/15 px-2 py-1.5 text-[11px] font-black text-amber-100 transition-colors hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {openSlots === 0
-                            ? 'Arena full'
-                            : `★ Fill ${openSlots} empty seat${openSlots === 1 ? '' : 's'} with top bots`}
-                        </button>
-                        {authUser && (
-                          <button
-                            type="button"
-                            onClick={() => send('poker_auto_fill_neural')}
-                            disabled={openSlots === 0}
-                            className="mb-2 w-full rounded-md border border-cyan-400/60 bg-cyan-500/15 px-2 py-1.5 text-[11px] font-black text-cyan-100 transition-colors hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {openSlots === 0 ? 'Arena full' : `★ Seat my NN squad (${Math.min(openSlots, 5)})`}
-                          </button>
-                        )}
-                        {authUser && (
-                          <button
-                            type="button"
-                            onClick={() => send('poker_auto_fill_custom')}
-                            disabled={openSlots === 0}
-                            className="mb-2 w-full rounded-md border border-violet-400/60 bg-violet-500/15 px-2 py-1.5 text-[11px] font-black text-violet-100 transition-colors hover:bg-violet-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {openSlots === 0 ? 'Arena full' : `★ Seat my custom bots (${Math.min(openSlots, 5)})`}
-                          </button>
-                        )}
-                      </>
-                    )
-                  })()}
-                  {/* Multi-pick: tap a bot to push it onto the queue. Same bot
-                      can be queued multiple times. Hit "Add N bots" to commit. */}
-                  {(() => {
-                    // Dedupe roster: each bot shows once. If the user owns it,
-                    // tag with `owned` so the row renders the MINE pill —
-                    // public list often contains the user's own public bots,
-                    // which would otherwise appear twice.
                     const mineIds = new Set(botRoster.mine.map(b => b.id))
-                    const seen = new Set()
-                    const combinedRoster = []
-                    for (const b of botRoster.mine) {
-                      if (seen.has(b.id)) continue
-                      seen.add(b.id)
-                      combinedRoster.push({ ...b, owned: true })
-                    }
-                    for (const b of botRoster.public) {
-                      if (seen.has(b.id)) continue
-                      seen.add(b.id)
-                      combinedRoster.push({ ...b, owned: mineIds.has(b.id) })
-                    }
-                    const rosterIndex = new Map(combinedRoster.map(b => [b.id, b]))
-                    const queueFull = arenaPickQueue.length >= MAX_ARENA_PICK
-                    return (
-                      <div className="space-y-2">
-                        {/* Queue */}
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">
-                            Queue ({arenaPickQueue.length}/{MAX_ARENA_PICK})
-                          </span>
-                          {arenaPickQueue.length > 0 && (
+                    const publicOnly = botRoster.public.filter(b => !mineIds.has(b.id))
+                    const mineGroups = subgroupsFromBuckets(bucketByCategory(botRoster.mine))
+                    const publicGroups = subgroupsFromBuckets(bucketByCategory(publicOnly))
+                    const selectedCount = arenaPickQueue.length
+
+                    function PillStrip({ label, accent, bots, ownerLabelFn }) {
+                      if (bots.length === 0) return null
+                      const ids = bots.map(b => b.id)
+                      const allSelected = ids.every(id => arenaPickQueue.includes(id))
+                      const anySelected = ids.some(id => arenaPickQueue.includes(id))
+                      return (
+                        <div>
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <div className="flex items-baseline gap-1.5">
+                              <span className={`text-[9px] font-black uppercase tracking-widest ${accent}`}>{label}</span>
+                              <span className="text-[9px] font-bold text-zinc-500">({bots.length})</span>
+                            </div>
                             <button
                               type="button"
-                              onClick={arenaQueueClear}
-                              className="text-[10px] font-bold text-zinc-400 hover:text-white"
+                              onClick={() => arenaQueueToggleMany(ids, allSelected ? 'deselect' : 'select')}
+                              className="rounded border border-zinc-700 bg-zinc-800/60 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-zinc-200 hover:bg-zinc-700"
                             >
-                              Clear
+                              {allSelected ? 'Unselect all' : anySelected ? 'Select rest' : 'Select all'}
                             </button>
-                          )}
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {bots.map(b => (
+                              <BotPill
+                                key={b.id}
+                                bot={b}
+                                useBotAvatar
+                                selected={arenaPickQueue.includes(b.id)}
+                                onToggle={() => arenaQueueToggle(b.id)}
+                                ownerLabel={ownerLabelFn ? ownerLabelFn(b) : undefined}
+                              />
+                            ))}
+                          </div>
                         </div>
-                        <div className="min-h-[28px] flex flex-wrap gap-1.5 rounded-md border border-zinc-700/70 bg-zinc-900/50 px-2 py-1.5">
-                          {arenaPickQueue.length === 0 && (
-                            <span className="text-[10px] font-bold text-zinc-500 self-center">Tap bots below to queue them.</span>
-                          )}
-                          {arenaPickQueue.map((id, i) => {
-                            const b = rosterIndex.get(id)
-                            return (
-                              <span key={`${id}-${i}`} className="inline-flex items-center gap-1 rounded border border-zinc-600/60 bg-zinc-800 pl-1 pr-0.5 py-0.5">
-                                {b && <BotAvatar name={b.name} color={b.color} textColor={b.textColor} size={16} />}
-                                <span className="max-w-[80px] truncate text-[10px] font-black text-white">{b?.name || 'bot'}</span>
-                                <button
-                                  type="button"
-                                  onClick={() => arenaQueueRemoveAt(i)}
-                                  className="ml-0.5 rounded px-1 text-[10px] font-black text-red-200 hover:bg-red-500/20"
-                                  aria-label="Remove from queue"
-                                >×</button>
-                              </span>
-                            )
-                          })}
+                      )
+                    }
+
+                    return (
+                      <div className="space-y-3">
+                        {/* Sticky action bar — count + Add + Clear */}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-[11px] font-black text-zinc-200">
+                            {selectedCount === 0
+                              ? 'Nothing selected'
+                              : `${selectedCount} bot${selectedCount === 1 ? '' : 's'} selected`}
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            {selectedCount > 0 && (
+                              <button
+                                type="button"
+                                onClick={arenaQueueClear}
+                                className="rounded-md border border-zinc-600/60 bg-zinc-800 px-2 py-1 text-[10px] font-bold text-zinc-300 hover:bg-zinc-700"
+                              >
+                                Clear
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={arenaQueueFlush}
+                              disabled={selectedCount === 0}
+                              className="rounded-md border border-emerald-500/50 bg-emerald-600 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-zinc-800 disabled:text-zinc-500"
+                            >
+                              Add {selectedCount > 0 ? selectedCount : ''}
+                            </button>
+                          </div>
                         </div>
 
-                        {/* Roster — combined list, click to queue */}
-                        <div className="max-h-44 space-y-1 overflow-y-auto pr-1">
-                          {botRoster.loading && (
-                            <div className="text-[10px] font-bold text-zinc-500 text-center py-1">Loading roster…</div>
+                        {botRoster.loading && (
+                          <div className="text-[10px] font-bold text-zinc-500 text-center py-1">Loading roster…</div>
+                        )}
+
+                        {authUser && botRoster.mine.length > 0 && (
+                          <div className="space-y-2 rounded-md border border-zinc-700/70 bg-zinc-950/30 p-2">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-emerald-200">Your bots</div>
+                            {mineGroups.map(g => (
+                              <PillStrip key={g.key} label={g.label} accent={g.accent} bots={g.bots} />
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="space-y-2 rounded-md border border-zinc-700/70 bg-zinc-950/30 p-2">
+                          <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Public roster</div>
+                          {!botRoster.loading && publicOnly.length === 0 && (
+                            <div className="text-[10px] font-bold text-zinc-500 text-center py-1">No public bots yet.</div>
                           )}
-                          {!botRoster.loading && combinedRoster.length === 0 && (
-                            <div className="text-[10px] font-bold text-zinc-500 text-center py-1">No bots available.</div>
-                          )}
-                          {combinedRoster.map(b => (
-                            <button
-                              key={b.id}
-                              type="button"
-                              disabled={queueFull}
-                              onClick={() => arenaQueueAdd(b.id)}
-                              className={`flex w-full items-center gap-2 rounded-md border px-2 py-1 text-left transition-colors disabled:opacity-40 ${
-                                b.owned
-                                  ? 'border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/15'
-                                  : 'border-zinc-700/70 bg-zinc-900/60 hover:bg-zinc-800/80'
-                              }`}
-                            >
-                              <BotAvatar name={b.name} color={b.color} textColor={b.textColor} size={20} />
-                              <span className="min-w-0 flex-1 truncate text-[11px] font-black text-white">{b.name}</span>
-                              <span className={`shrink-0 text-[9px] font-bold ${b.owned ? 'text-emerald-200' : 'text-zinc-400'}`}>
-                                {b.owned ? `MINE · ELO ${b.elo}` : `ELO ${b.elo}`}
-                              </span>
-                              <span className="shrink-0 rounded border border-zinc-500/50 bg-zinc-700 px-1.5 py-0.5 text-[10px] font-black text-white">+</span>
-                            </button>
+                          {publicGroups.map(g => (
+                            <PillStrip
+                              key={g.key}
+                              label={g.label}
+                              accent={g.accent}
+                              bots={g.bots}
+                              ownerLabelFn={(b) => b.ownerDisplayName ? `by ${b.ownerDisplayName}` : null}
+                            />
                           ))}
                         </div>
-
-                        <button
-                          type="button"
-                          onClick={arenaQueueFlush}
-                          disabled={arenaPickQueue.length === 0}
-                          className="w-full rounded-md border border-emerald-400/60 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-2 text-xs font-black text-white"
-                        >
-                          {arenaPickQueue.length === 0 ? 'Pick bots to add' : `Add ${arenaPickQueue.length} bot${arenaPickQueue.length === 1 ? '' : 's'}`}
-                        </button>
                       </div>
                     )
                   })()}
@@ -3568,7 +3769,11 @@ export default function PokerPage() {
                       )}
                     </div>
                     <div className="mt-0.5 flex items-center justify-center gap-1.5 text-[9px] sm:text-xs text-zinc-200 font-medium whitespace-nowrap">
-                      {player.isBot ? (
+                      {/* Hide the avatar at showdown so the hand name
+                          ("Two Pair, Jacks & 6s" etc.) has the full
+                          nameplate width to render without clipping.
+                          The avatar still shows in every other phase. */}
+                      {phase === 'showdown' && handName && !player.folded ? null : player.isBot ? (
                         <BotAvatar name={player.username} color={player.botColor || '#3b82f6'} textColor={player.botTextColor || 'auto'} avatarUrl={player.botAvatarUrl} size={24} className="h-5 w-5 sm:h-6 sm:w-6" />
                       ) : (
                         <ProfileAvatar
@@ -3582,7 +3787,7 @@ export default function PokerPage() {
                       {isPlayerWaiting ? (
                         <span className="text-zinc-400 font-bold italic">Waiting...</span>
                       ) : phase === 'showdown' && handName && !player.folded ? (
-                        <span className="text-amber-300 font-bold">{handName}</span>
+                        <span className="block max-w-full truncate text-amber-300 font-bold">{handName}</span>
                       ) : (
                         `${player.chips} chips`
                       )}
@@ -3704,7 +3909,15 @@ export default function PokerPage() {
           so the in-table view matches /feed exactly. */}
       <FeedWindow
         open={feedWindowOpen}
-        onClose={() => setFeedWindowOpen(false)}
+        onClose={() => { setFeedWindowOpen(false); setFeedOpenedFromTools(false) }}
+        // Show the back arrow only when the window was opened via the
+        // ★ Social Media entry in the Tools menu. Other entry points
+        // (e.g., notifications) don't have a Tools menu to return to.
+        onBack={feedOpenedFromTools ? () => {
+          setFeedWindowOpen(false)
+          setFeedOpenedFromTools(false)
+          setTableMenuOpen(true)
+        } : null}
       />
 
       {/* Run-it-twice flow: vote modal (server starts when both humans are
@@ -3906,12 +4119,21 @@ export default function PokerPage() {
             <div className="relative mx-auto max-w-7xl">
               <div
                 ref={statsPanelRef}
-                className={`pointer-events-auto absolute right-3 top-0 md:right-4 ${
+                // The equity widget's right edge has to clear the
+                // global AccountDock (profile + DMs + bell stacked
+                // top-right). The dock occupies ~48-56px of the right
+                // margin, so we pin the panel's right edge at the
+                // same column as the Tools/Lobby cluster header
+                // (which uses `mr-12 sm:mr-14`). On wider expansion
+                // sizes the panel still respects this offset, so the
+                // dock icons stay visible no matter how the panel
+                // grows.
+                className={`pointer-events-auto absolute right-14 top-0 sm:right-16 ${
                   statsExpansion === 'minimized'
                     ? 'w-[180px]'
                     : statsExpansion === 'detailed'
-                      ? 'w-[calc(100vw-2rem)] max-w-[420px]'
-                      : 'w-[calc(100vw-2rem)] max-w-[320px]'
+                      ? 'w-[calc(100vw-5.5rem)] max-w-[420px]'
+                      : 'w-[calc(100vw-5.5rem)] max-w-[320px]'
                 }`}
               >
                 <StatsPanel

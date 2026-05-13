@@ -2,7 +2,8 @@
 
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Suspense, useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import HomeBackLink from '../../components/HomeBackLink'
 import AccountMenu from '../../components/AccountMenu'
 import AuthGateModal from '../../components/AuthGateModal'
@@ -13,6 +14,7 @@ import { api } from '../../lib/api'
 import { BOT_COLOR_PRESETS, isValidHex } from '../../lib/botColors'
 import SuperBotForm from './SuperBotForm'
 import TrainingSimulatorPanel from './TrainingSimulatorPanel'
+import { infoForKind } from '../../lib/neuralVariants'
 
 // Persist collapse/expand state per-section across reloads. The key is
 // scoped under a single namespace so all of the page's sections share one
@@ -251,7 +253,7 @@ function CloneSlot({ slot, onBuilt, onUpdated, autoBuild = false, onVisibilityEr
 }
 
 // 5-slot shelf at the top of the My Bots tab.
-function PlayerCloneShelf({ user, onCreated, autoBuildTier = null, onVisibilityError }) {
+function PlayerCloneShelf({ user, onCreated, autoBuildTier = null, onVisibilityError, onResetError }) {
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -284,12 +286,35 @@ function PlayerCloneShelf({ user, onCreated, autoBuildTier = null, onVisibilityE
   }
   if (!preview) return null
 
+  // Built clones we can reset. Slots that haven't been generated yet
+  // (locked / unlocked-but-not-built) have no botId to act on.
+  const builtClones = (preview.tiers || [])
+    .filter(t => t.built && t.botId)
+    .map(t => ({
+      id: t.botId,
+      name: t.name,
+      elo: t.elo ?? 500,
+      // `t.hands` is the source data size for the tier — close enough
+      // for the "N hands of history" summary. The actual reset wipes
+      // the clone's lifetime ELO history, not the training data.
+      stats: { handsPlayed: t.hands ?? 0 }
+    }))
+
   return (
     <CollapsibleSection
       collapseKey="clones"
       title="Your clone bots"
       subtitle={`Five reserved slots — each one is more accurate, built from more of your hands. Played: ${preview.handsSeated ?? 0} hands.`}
       accent="amber"
+      headerRight={builtClones.length > 0 && (
+        <ResetAllStatsButton
+          bots={builtClones}
+          onUpdated={() => reload()}
+          onError={onResetError || onVisibilityError}
+          persistKey="bots:reset-all-clones-stats-confirmed"
+          sectionLabel="of your clone bots"
+        />
+      )}
     >
       {error && (
         <div className="mb-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] font-bold text-red-200">
@@ -348,20 +373,31 @@ function PlayerSuperShelf({ superBots, availableBots, onCreated, onUpdated, onVi
       subtitle="Ensembles that rotate between 3-5 member bots — every random 1-3 turns the next decision is delegated to a different member."
       accent="zinc"
       headerRight={
-        <button
-          type="button"
-          onClick={() => {
-            if (atLimit) {
-              setValidationError?.(`You can have at most ${SUPER_LIMIT} super bots. Delete one to make room.`)
-              return
-            }
-            setShowCreate(v => !v)
-            setCreateError(null)
-          }}
-          className="rounded-md border border-violet-400/50 bg-violet-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-violet-600"
-        >
-          {showCreate ? 'Cancel' : '+ New super bot'}
-        </button>
+        <div className="flex items-center gap-1.5">
+          {superBots.length > 0 && (
+            <ResetAllStatsButton
+              bots={superBots}
+              onUpdated={onUpdated}
+              onError={setValidationError}
+              persistKey="bots:reset-all-super-stats-confirmed"
+              sectionLabel="of your super bots"
+            />
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              if (atLimit) {
+                setValidationError?.(`You can have at most ${SUPER_LIMIT} super bots. Delete one to make room.`)
+                return
+              }
+              setShowCreate(v => !v)
+              setCreateError(null)
+            }}
+            className="rounded-md border border-violet-400/50 bg-violet-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-violet-600"
+          >
+            {showCreate ? 'Cancel' : '+ New super bot'}
+          </button>
+        </div>
       }
     >
       {showCreate && !atLimit && (
@@ -388,13 +424,68 @@ function PlayerSuperShelf({ superBots, availableBots, onCreated, onUpdated, onVi
   )
 }
 
-// Five auto-provisioned neural-net bots, one per variant. They live in
-// their own collapsible section so the manual bots count + UI doesn't
-// have to fight five permanent rows. Source list comes from the page's
-// myBots fetch (filtered to isNeural), so we don't need a second API call.
-function PlayerNeuralShelf({ neuralBots, onUpdated, onVisibilityError, onResetError }) {
+// Shared "Reset all stats" header action — used by every multi-bot
+// section (My Bots, Clones, Super). Fans out one resetBotStats call
+// per bot serially so the server doesn't see N simultaneous writes
+// for the same user. Errors don't abort the run; each failure is
+// surfaced via onError so the user can see WHICH bot failed without
+// the rest being skipped. Doesn't touch weights/code/super members —
+// just ELO + lifetime counters + per-hand history.
+function ResetAllStatsButton({ bots, onUpdated, onError, persistKey, sectionLabel }) {
+  const [busy, setBusy] = useState(false)
+  const totalHands = useMemo(
+    () => bots.reduce((sum, b) => sum + (b.stats?.handsPlayed ?? 0), 0),
+    [bots]
+  )
+  async function resetAll() {
+    if (busy) return
+    setBusy(true)
+    try {
+      for (const b of bots) {
+        try {
+          const { bot: updated } = await api.resetBotStats(b.id)
+          onUpdated?.(updated)
+        } catch (err) {
+          onError?.(`Reset failed for ${b.name}: ${err.detail || err.message || 'unknown error'}`)
+        }
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+  if (bots.length === 0) return null
+  return (
+    <ConfirmPopoverButton
+      triggerLabel={busy ? 'Resetting…' : 'Reset all stats'}
+      triggerClassName="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-widest text-amber-200 transition-colors hover:bg-amber-500/20 disabled:opacity-50"
+      description={`Reset stats on all ${bots.length} ${sectionLabel}? ELO drops back to 500 and every lifetime counter zeros out across ${totalHands.toLocaleString()} hand${totalHands === 1 ? '' : 's'} of history. Code, neural weights, and super members are left intact — only the ratings and per-hand audit trail get wiped. Permanent.`}
+      confirmLabel="Reset all stats"
+      persistKey={persistKey}
+      busy={busy}
+      onConfirm={resetAll}
+    />
+  )
+}
+
+// Generic neural-bots shelf. Used twice on the page:
+//   - "Your neural bots" → tiers 1-5 (baseline algorithms)
+//   - "Your deep MLP bots" → tiers 6-10 (architecture variants)
+// Both share the inline-Reset + Reset-all behavior; only the title /
+// subtitle / persist-keys change. Splitting them keeps each list to ~5
+// rows even after the deep-MLP tier shipped.
+function PlayerNeuralShelf({
+  neuralBots,
+  title,
+  subtitle,
+  collapseKey,
+  resetAllPersistKey,
+  emptyText,
+  onUpdated,
+  onVisibilityError,
+  onResetError
+}) {
   // Reset-all: fan out one resetNeuralBot call per bot. Serial fetches
-  // (not Promise.all) so the server doesn't see 5 simultaneous writes
+  // (not Promise.all) so the server doesn't see N simultaneous writes
   // hammering the same user's row — also gives users a stable
   // "trained" total at the end. Updates fire in-place via onUpdated.
   const [resetAllBusy, setResetAllBusy] = useState(false)
@@ -428,17 +519,17 @@ function PlayerNeuralShelf({ neuralBots, onUpdated, onVisibilityError, onResetEr
 
   return (
     <CollapsibleSection
-      collapseKey="neural"
-      title="Your neural bots"
-      subtitle="Five auto-provisioned learners — each uses a different ML algorithm and updates its weights every hand it plays. Toggle public to let anyone seat them."
+      collapseKey={collapseKey}
+      title={title}
+      subtitle={subtitle}
       accent="cyan"
       headerRight={neuralBots.length > 0 && (
         <ConfirmPopoverButton
           triggerLabel={resetAllBusy ? 'Resetting…' : 'Reset all'}
           triggerClassName="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-widest text-amber-200 transition-colors hover:bg-amber-500/20 disabled:opacity-50"
-          description={`Fully reset all ${neuralBots.length} of your neural bots to day one? Each bot's weights go back to random initialization, ELO resets to 500, every lifetime stat (${totalTrainingHands.toLocaleString()} hand${totalTrainingHands === 1 ? '' : 's'} of training across ${trainableBots.length} bot${trainableBots.length === 1 ? '' : 's'}) gets zeroed, and the hand history behind the ELO chart + head-to-head stats gets deleted. Permanent.`}
+          description={`Fully reset all ${neuralBots.length} of these bots to day one? Each bot's weights go back to random initialization, ELO resets to 500, every lifetime stat (${totalTrainingHands.toLocaleString()} hand${totalTrainingHands === 1 ? '' : 's'} of training across ${trainableBots.length} bot${trainableBots.length === 1 ? '' : 's'}) gets zeroed, and the hand history behind the ELO chart + head-to-head stats gets deleted. Permanent.`}
           confirmLabel="Reset all bots"
-          persistKey="bots:reset-all-neural-confirmed"
+          persistKey={resetAllPersistKey}
           busy={resetAllBusy}
           onConfirm={resetAll}
         />
@@ -447,7 +538,7 @@ function PlayerNeuralShelf({ neuralBots, onUpdated, onVisibilityError, onResetEr
       <BotList
         bots={neuralBots}
         mine
-        emptyText="No neural bots yet — they're auto-provisioned on your next /poker/bots load."
+        emptyText={emptyText}
         onDeleted={() => { /* NN bots aren't deletable; no-op */ }}
         onUpdated={onUpdated}
         onVisibilityError={onVisibilityError}
@@ -588,6 +679,109 @@ function CreatePanel({ onCreated }) {
   )
 }
 
+// Small "i" button on neural bot rows. Pops a description card with
+// the algorithm label, family, architecture, and blurb so users can
+// see how each policy works without diving into the detail page.
+//
+// The popover renders via a portal to document.body — the BotList
+// scroll container has `overflow-y-auto max-h-[60vh]`, which creates a
+// clipping context that swallowed absolutely-positioned children. A
+// portal escapes that container entirely so the popover is always
+// visible. Position is recomputed from the button's bounding rect on
+// open + on window resize/scroll so the card stays anchored.
+function NeuralInfoButton({ bot }) {
+  const [open, setOpen] = useState(false)
+  const [anchorRect, setAnchorRect] = useState(null)
+  const buttonRef = useRef(null)
+  const popoverRef = useRef(null)
+  const info = infoForKind(bot.neuralKind)
+
+  // Recompute the portal position whenever the popover is open. We
+  // listen to scroll on every ancestor (capture phase so scrolling the
+  // BotList container fires too) and to resize. The math itself is a
+  // single getBoundingClientRect call — cheap to run on every frame.
+  useEffect(() => {
+    if (!open) return
+    function reposition() {
+      const r = buttonRef.current?.getBoundingClientRect()
+      if (r) setAnchorRect({ top: r.bottom, right: window.innerWidth - r.right })
+    }
+    reposition()
+    window.addEventListener('resize', reposition)
+    // Capture-phase scroll so we catch scrolls on the inner BotList
+    // container, not just window-level scrolls.
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    function onPointer(e) {
+      if (buttonRef.current?.contains(e.target)) return
+      if (popoverRef.current?.contains(e.target)) return
+      setOpen(false)
+    }
+    function onKey(e) { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  if (!info) return null
+
+  const popover = open && anchorRect && typeof document !== 'undefined'
+    ? createPortal(
+        <div
+          ref={popoverRef}
+          role="dialog"
+          aria-label={`${info.label} description`}
+          className="fixed z-[200] w-[min(20rem,calc(100vw-1.5rem))] rounded-lg border border-cyan-400/50 bg-zinc-900/98 p-3 shadow-2xl backdrop-blur-md"
+          style={{ top: anchorRect.top + 6, right: anchorRect.right }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="mb-1 flex items-baseline justify-between gap-2">
+            <div className="text-[10px] font-black uppercase tracking-widest text-cyan-200">
+              {info.label}
+            </div>
+            <div className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">
+              {info.family}
+            </div>
+          </div>
+          <div className="mb-2 rounded-md border border-zinc-700/70 bg-zinc-950/60 px-2 py-1 font-mono text-[10px] font-bold text-zinc-200">
+            {info.arch}
+          </div>
+          <div className="text-[11px] font-medium leading-snug text-zinc-200">
+            {info.blurb}
+          </div>
+        </div>,
+        document.body
+      )
+    : null
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(o => !o) }}
+        aria-label={`About ${info.label}`}
+        aria-expanded={open}
+        title="See how this bot works"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-cyan-400/40 bg-cyan-500/10 text-[11px] font-black text-cyan-200 transition-colors hover:bg-cyan-500/25"
+      >
+        i
+      </button>
+      {popover}
+    </>
+  )
+}
+
 function BotRow({ bot, mine, onDeleted, onUpdated, onVisibilityError, onResetError }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
@@ -612,6 +806,22 @@ function BotRow({ bot, mine, onDeleted, onUpdated, onVisibilityError, onResetErr
     setResetBusy(true)
     try {
       const { bot: updated } = await api.resetNeuralBot(bot.id)
+      onUpdated?.(updated)
+    } catch (err) {
+      onResetError?.(err.detail || err.message || 'Reset failed')
+    } finally {
+      setResetBusy(false)
+    }
+  }
+
+  // Stats-only reset. Works for any bot type — wipes ELO + lifetime
+  // counters + hand history without touching code / weights / super
+  // members. Used after the ELO overhaul so users can clean up
+  // ratings from the old inflationary scoring without losing the bot.
+  async function resetStats() {
+    setResetBusy(true)
+    try {
+      const { bot: updated } = await api.resetBotStats(bot.id)
       onUpdated?.(updated)
     } catch (err) {
       onResetError?.(err.detail || err.message || 'Reset failed')
@@ -667,7 +877,12 @@ function BotRow({ bot, mine, onDeleted, onUpdated, onVisibilityError, onResetErr
                 </span>
               ) : bot.isNeural ? (
                 <span className="rounded border border-cyan-400/40 bg-cyan-500/10 px-1 py-px text-[9px] font-black uppercase tracking-widest text-cyan-200">
-                  {bot.neuralKind === 'mlp' ? 'MLP'
+                  {bot.neuralKind === 'mlp' ? 'MLP 1×8'
+                    : bot.neuralKind === 'mlp_16' ? 'MLP 1×16'
+                    : bot.neuralKind === 'mlp_32' ? 'MLP 1×32'
+                    : bot.neuralKind === 'mlp_2x16' ? 'MLP 2×16'
+                    : bot.neuralKind === 'mlp_2x32' ? 'MLP 2×32'
+                    : bot.neuralKind === 'mlp_3x16' ? 'MLP 3×16'
                     : bot.neuralKind === 'qlearning' ? 'Q-LEARN'
                     : bot.neuralKind === 'reinforce_baseline' ? 'PG+BL'
                     : 'PG'}
@@ -688,6 +903,11 @@ function BotRow({ bot, mine, onDeleted, onUpdated, onVisibilityError, onResetErr
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          {/* Info popover — only for neural bots (the only kind with
+              non-trivial architecture to explain). Sits first in the
+              action cluster so users can see "what is this?" before
+              touching public / reset. */}
+          {bot.isNeural && <NeuralInfoButton bot={bot} />}
           {/* Quick visibility toggle on owner rows. Public = emerald
               "shared", private = zinc "private only" — colors mirror the
               public-roster filter accent so the state is scannable.
@@ -741,6 +961,21 @@ function BotRow({ bot, mine, onDeleted, onUpdated, onVisibilityError, onResetErr
               persistKey={`bots:reset-neural-confirmed:${bot.id}`}
               busy={resetBusy}
               onConfirm={resetNeural}
+            />
+          )}
+          {/* Stats-only reset for non-neural bots (rule / clone /
+              super). Neural bots get the full "Reset bot" above which
+              already does the same stat wipe plus weights, so a
+              second button there would be redundant. */}
+          {mine && !bot.isNeural && (
+            <ConfirmPopoverButton
+              triggerLabel={resetBusy ? '…' : 'Reset stats'}
+              triggerClassName="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-widest text-amber-200 transition-colors hover:bg-amber-500/20 disabled:opacity-50"
+              description={`Reset ${bot.name}'s ELO + hand history? ELO drops to 500 and every lifetime stat (${(bot.stats?.handsPlayed ?? 0).toLocaleString()} hands played, ${(bot.stats?.handsWon ?? 0).toLocaleString()} won, ELO ${bot.elo ?? 500}) zeros out. ${bot.isClone ? 'The clone code stays' : bot.isSuper ? 'The lineup + bandit state stay' : 'Your JS code stays'} — only the stats and the per-hand history get wiped. Permanent.`}
+              confirmLabel="Reset stats"
+              persistKey={`bots:reset-stats-confirmed:${bot.id}`}
+              busy={resetBusy}
+              onConfirm={resetStats}
             />
           )}
           {mine && !bot.isClone && !bot.isNeural && (
@@ -985,19 +1220,30 @@ function BotsPageInner() {
               subtitle={`User-coded bots — edit code, share publicly, or sit them at a table. ${publicCount}/${publicLimit} of your bots are currently public.`}
               accent="zinc"
               headerRight={
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (manualBots.length >= botLimit) {
-                      setValidationError(`You can only have up to ${botLimit} manual bots per account. Delete one to make room. (Clone + neural slots don't count.)`)
-                      return
-                    }
-                    setTab('create')
-                  }}
-                  className="rounded-md border border-emerald-500/50 bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-emerald-600"
-                >
-                  + New bot
-                </button>
+                <div className="flex items-center gap-1.5">
+                  {manualBots.length > 0 && (
+                    <ResetAllStatsButton
+                      bots={manualBots}
+                      onUpdated={onBotUpdated}
+                      onError={setValidationError}
+                      persistKey="bots:reset-all-manual-stats-confirmed"
+                      sectionLabel="of your manual bots"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (manualBots.length >= botLimit) {
+                        setValidationError(`You can only have up to ${botLimit} manual bots per account. Delete one to make room. (Clone + neural slots don't count.)`)
+                        return
+                      }
+                      setTab('create')
+                    }}
+                    className="rounded-md border border-emerald-500/50 bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-emerald-600"
+                  >
+                    + New bot
+                  </button>
+                </div>
               }
             >
               {loading ? (
@@ -1033,9 +1279,33 @@ function BotsPageInner() {
           />
         )}
 
+        {/* Two neural shelves: baseline algorithms (one per family) at
+            tiers 1-5, then the deep-MLP architecture variants at tiers
+            6-10. The shelves stack so users can compare baseline ELOs
+            with the bigger-net ELOs without scrolling past 10 rows in
+            one section. */}
         {user && tab === 'mine' && (
           <PlayerNeuralShelf
-            neuralBots={myBots.filter(b => b.isNeural)}
+            neuralBots={myBots.filter(b => b.isNeural && (b.neuralTier ?? 0) <= 5)}
+            title="Your neural bots"
+            subtitle="Five auto-provisioned learners — each uses a different ML algorithm and updates its weights every hand it plays."
+            collapseKey="neural"
+            resetAllPersistKey="bots:reset-all-neural-confirmed"
+            emptyText="No neural bots yet — they're auto-provisioned on your next /poker/bots load."
+            onUpdated={(updated) => setMyBots(prev => prev.map(x => x.id === updated.id ? updated : x))}
+            onVisibilityError={(msg) => setValidationError(msg)}
+            onResetError={(msg) => setValidationError(msg)}
+          />
+        )}
+
+        {user && tab === 'mine' && (
+          <PlayerNeuralShelf
+            neuralBots={myBots.filter(b => b.isNeural && (b.neuralTier ?? 0) >= 6)}
+            title="Your deep MLP bots"
+            subtitle="Five architecture variants of the MLP policy — same REINFORCE training, different layer counts and widths. Ranked by parameter count (smallest → largest)."
+            collapseKey="deep-mlp"
+            resetAllPersistKey="bots:reset-all-deep-mlp-confirmed"
+            emptyText="No deep MLP bots yet — they're auto-provisioned on your next /poker/bots load."
             onUpdated={(updated) => setMyBots(prev => prev.map(x => x.id === updated.id ? updated : x))}
             onVisibilityError={(msg) => setValidationError(msg)}
             onResetError={(msg) => setValidationError(msg)}
@@ -1048,6 +1318,7 @@ function BotsPageInner() {
             autoBuildTier={autoBuildTier}
             onCreated={(bot) => setMyBots(prev => [bot, ...prev])}
             onVisibilityError={(msg) => setValidationError(msg)}
+            onResetError={(msg) => setValidationError(msg)}
           />
         )}
 

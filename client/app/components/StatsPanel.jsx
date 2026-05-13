@@ -110,10 +110,16 @@ function StatsPanelImpl({ statistics, expansion = 'minimized', onSetExpansion, o
     const equityLabel = hero?.equity ? formatPercent(hero.equity.equity) : '—'
     const phaseLabel = statistics?.phase ? statistics.phase.toUpperCase() : 'WAITING'
     return (
-      <div className="rounded-xl border border-zinc-600/50 bg-zinc-800/95 px-2.5 py-1.5 shadow-2xl backdrop-blur-md">
+      // Bumped px from 2.5 → 3 and added `whitespace-nowrap` on the
+      // label line so "EQUITY · SHOWDOWN" (the longest phase string)
+      // stays on one line. Removing `min-w-0` from the inner div lets
+      // its content drive the widget's natural width instead of
+      // shrinking and forcing a wrap when the right-side controls
+      // start competing for space.
+      <div className="rounded-xl border border-zinc-600/50 bg-zinc-800/95 px-3 py-1.5 shadow-2xl backdrop-blur-md">
         <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Equity · {phaseLabel}</div>
+          <div>
+            <div className="whitespace-nowrap text-[9px] font-black uppercase tracking-widest text-zinc-400">Equity · {phaseLabel}</div>
             <div className="text-sm font-black text-white tabular-nums">{equityLabel}</div>
           </div>
           <HeaderControls expansion={expansion} onSetExpansion={onSetExpansion} onClose={onClose} />

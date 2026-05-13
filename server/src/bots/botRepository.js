@@ -345,6 +345,41 @@ export async function resetNeuralBot({ botId, ownerUserId }) {
   })
 }
 
+// Stats-only reset. Works for ANY bot kind (rule, clone, neural,
+// super) — wipes ELO + lifetime stat columns + the per-hand history
+// rows that drive the ELO chart and head-to-head stats. Does NOT
+// touch the user's JS code, the neural weights, or the super
+// members. Used after the ELO overhaul so users can wipe inflated
+// ratings without losing the bots themselves.
+//
+// Same transaction shape as resetNeuralBot. Caller must own the bot.
+export async function resetBotStats({ botId, ownerUserId }) {
+  return withTransaction(async (client) => {
+    await client.query(
+      `DELETE FROM bot_hand_results WHERE bot_id = $1`,
+      [botId]
+    )
+    const { rows } = await client.query(
+      `UPDATE bots
+          SET elo              = $3,
+              hands_played     = 0,
+              hands_voluntary  = 0,
+              hands_won        = 0,
+              showdowns_played = 0,
+              showdowns_won    = 0,
+              bluffs_attempted = 0,
+              bluffs_succeeded = 0,
+              bluff_wins       = 0,
+              chips_won_total  = 0,
+              updated_at       = NOW()
+        WHERE id = $1 AND owner_user_id = $2
+        RETURNING ${PUBLIC_FIELDS.replace(/b\./g, '')}`,
+      [botId, ownerUserId, STARTING_RATING]
+    )
+    return rows[0] ? toApi(rows[0]) : null
+  })
+}
+
 // Counts only the user's manual bots — excludes clones, neural slots,
 // AND super bots (each is on its own quota). The name stays "NonClone"
 // for backward compat with call sites; the predicate is the source of
@@ -713,6 +748,23 @@ export async function listNeuralBotsByOwner(ownerUserId) {
       FROM bots b
       JOIN users u ON u.id = b.owner_user_id
      WHERE b.owner_user_id = $1 AND b.is_neural = TRUE
+     ORDER BY b.neural_tier ASC
+    `,
+    [ownerUserId]
+  )
+  return rows.map(r => toApi(r, r.owner_display_name))
+}
+
+// Just the deep-MLP tier (tiers 6-10: Neuron ζ-κ). Used by
+// POKER_AUTO_FILL_MLP to seat the user's 5 deep-MLP variants without
+// dragging the baseline α-ε along. Same shape as listNeuralBotsByOwner.
+export async function listDeepMlpBotsByOwner(ownerUserId) {
+  const { rows } = await query(
+    `
+    SELECT ${PUBLIC_FIELDS}, u.display_name AS owner_display_name
+      FROM bots b
+      JOIN users u ON u.id = b.owner_user_id
+     WHERE b.owner_user_id = $1 AND b.is_neural = TRUE AND b.neural_tier >= 6
      ORDER BY b.neural_tier ASC
     `,
     [ownerUserId]

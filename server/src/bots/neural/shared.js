@@ -84,6 +84,23 @@ export function legalActionMask(ctx) {
   return mask
 }
 
+// Reverse of actionToCommand — given the engine action+amount a bot
+// just played, return the discrete action index used by actionQuality
+// (0..5). Used to grade EVERY bot's decisions (not just neural ones)
+// at hand-end. Raise sizing is bucketed by amount-vs-pot ratio so a
+// small raise scores as raise_min and a big raise scores as raise_pot.
+export function engineActionToActionIdx(action, amount, ctx) {
+  if (action === 'fold')  return 0
+  if (action === 'check') return 1
+  if (action === 'call')  return 2
+  if (action === 'all_in') return 5
+  if (action === 'raise') {
+    const pot = Math.max(1, Number(ctx?.potSize) || 1)
+    return Number(amount) >= pot * 0.65 ? 4 : 3
+  }
+  return 2
+}
+
 export function actionToCommand(actionIdx, ctx) {
   const name = ACTION_NAMES[actionIdx]
   const myChips = Math.max(0, Number(ctx?.myChips ?? ctx?.myStack ?? 0))

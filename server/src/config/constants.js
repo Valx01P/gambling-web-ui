@@ -134,6 +134,15 @@ export const MESSAGE_TYPES = {
   // sorted by ELO. Auth required. Useful when you want a table of your
   // own creations without picking each one manually.
   POKER_AUTO_FILL_CUSTOM: 'poker_auto_fill_custom',
+  // Auto-fill with the caller's 5 deep-MLP neural bots (tiers 6-10:
+  // Neuron ζ-κ). Auth required. Distinct from POKER_AUTO_FILL_NEURAL,
+  // which seats the baseline α-ε lineup (tiers 1-5).
+  POKER_AUTO_FILL_MLP: 'poker_auto_fill_mlp',
+  // Bulk-remove every bot currently seated in the caller's room. Used
+  // by the Tools menu's "Kick all bots" action so a user who lands at
+  // a full bot table can clear seats in one click instead of fanning
+  // out N separate REMOVE_BOT messages.
+  POKER_KICK_ALL_BOTS: 'poker_kick_all_bots',
 
   // Auth handshake — client sends a JWT after connect so the server knows
   // which signed-in user this socket belongs to (needed for arena creation).

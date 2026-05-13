@@ -11,9 +11,46 @@ import { ProfileAvatar } from '../../components/ProfileSelector'
 const HAND_PRESETS = [10, 50, 100, 500, 1000, 2000]
 
 // Tiny pill button for picking a bot off the roster strip. The same
+// True for any policy in the MLP family — the original 1×8 plus the
+// deep-MLP architecture variants (1×16, 1×32, 2×16, 2×32, 3×16). Used
+// by the picker to bucket MLP bots into their own subsection and by
+// the pill badge to render an MLP-specific tag. Mirrors the kind list
+// in server/src/bots/neural/registry.js (sans the non-MLP entries).
+function isMlpFamily(bot) {
+  if (!bot?.isNeural) return false
+  const k = bot.neuralKind || ''
+  return k === 'mlp' || k.startsWith('mlp_')
+}
+
+// Compact architecture badge text for an MLP bot — turns the policy
+// kind into a one-line shape: "MLP 1×8", "MLP 2×32", etc.
+function mlpArchLabel(kind) {
+  switch (kind) {
+    case 'mlp':       return 'MLP 1×8'
+    case 'mlp_16':    return 'MLP 1×16'
+    case 'mlp_32':    return 'MLP 1×32'
+    case 'mlp_2x16':  return 'MLP 2×16'
+    case 'mlp_2x32':  return 'MLP 2×32'
+    case 'mlp_3x16':  return 'MLP 3×16'
+    default:          return 'MLP'
+  }
+}
+
+// Tag for the non-MLP neural kinds — keeps them visually distinct
+// from the MLP family so users can scan the picker at a glance.
+function nonMlpNeuralLabel(kind) {
+  switch (kind) {
+    case 'reinforce':           return 'PG'
+    case 'reinforce_baseline':  return 'PG+BL'
+    case 'qlearning':           return 'Q-LRN'
+    default:                    return 'NN'
+  }
+}
+
 // component is used for "available" + "selected" rows; `selected` flips
 // the colour scheme.
 function BotPill({ bot, selected, disabled, onToggle, ownerLabel }) {
+  const mlp = isMlpFamily(bot)
   return (
     <button
       type="button"
@@ -34,8 +71,19 @@ function BotPill({ bot, selected, disabled, onToggle, ownerLabel }) {
       />
       <span className="max-w-[14ch] truncate">{bot.name}</span>
       <span className="text-[10px] text-zinc-400">{bot.elo ?? '—'}</span>
-      {bot.isNeural && (
-        <span className="rounded bg-cyan-500/20 px-1 text-[9px] font-black uppercase tracking-wider text-cyan-200">NN</span>
+      {/* MLP family gets a purple architecture chip with the layer
+          shape, so a "1×8" baseline reads visibly different from a
+          "2×32" deep variant. Non-MLP neural kinds (REINFORCE, Q-
+          learning) get a smaller cyan algorithm chip. */}
+      {mlp && (
+        <span className="rounded bg-purple-500/25 px-1 text-[9px] font-black uppercase tracking-wider text-purple-100">
+          {mlpArchLabel(bot.neuralKind)}
+        </span>
+      )}
+      {bot.isNeural && !mlp && (
+        <span className="rounded bg-cyan-500/20 px-1 text-[9px] font-black uppercase tracking-wider text-cyan-200">
+          {nonMlpNeuralLabel(bot.neuralKind)}
+        </span>
       )}
       {bot.isClone && (
         <span className="rounded bg-fuchsia-500/20 px-1 text-[9px] font-black uppercase tracking-wider text-fuchsia-200">Clone</span>
@@ -404,6 +452,56 @@ function CompareDetails({ participant }) {
   )
 }
 
+// Splits a flat bot list into three category strips — MLP family,
+// other neural kinds (REINFORCE / Q-learning / etc.), then everything
+// else (rule bots, clones, super) — each with its own header so users
+// can scan "where are my MLP bots?" at a glance. Only renders a
+// subgroup if it has at least one bot.
+function BotGroupedPills({ bots, selectedIds, selectedCount, onToggle, showOwnerLabel = false }) {
+  const groups = useMemo(() => {
+    const mlp = []
+    const otherNeural = []
+    const rest = []
+    for (const b of bots) {
+      if (isMlpFamily(b)) mlp.push(b)
+      else if (b.isNeural) otherNeural.push(b)
+      else rest.push(b)
+    }
+    return { mlp, otherNeural, rest }
+  }, [bots])
+
+  const subgroups = [
+    { key: 'mlp',    bots: groups.mlp,         label: 'MLP family',    accent: 'text-purple-200' },
+    { key: 'neural', bots: groups.otherNeural, label: 'Other neural',  accent: 'text-cyan-200' },
+    { key: 'rest',   bots: groups.rest,        label: 'Rule + super',  accent: 'text-zinc-400' }
+  ].filter(g => g.bots.length > 0)
+
+  if (subgroups.length === 0) return null
+  return (
+    <div className="flex flex-col gap-2">
+      {subgroups.map(g => (
+        <div key={g.key}>
+          <div className={`mb-1 text-[8px] font-black uppercase tracking-widest ${g.accent}`}>
+            {g.label}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {g.bots.map(b => (
+              <BotPill
+                key={b.id}
+                bot={b}
+                selected={selectedIds.includes(b.id)}
+                disabled={!selectedIds.includes(b.id) && selectedCount >= 5}
+                onToggle={onToggle}
+                ownerLabel={showOwnerLabel && b.ownerDisplayName ? `by ${b.ownerDisplayName}` : null}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // Headless training simulator. Pick 2–5 participants from your own
 // bots + the public roster, choose a hand count, and run. The server
 // plays them at native speed (no THINK_DELAY, no broadcasts) and returns
@@ -438,7 +536,12 @@ export default function TrainingSimulatorPanel({ myBots = [], publicBots = [], o
   }, [myBots, publicBots])
 
   const selected = selectedIds.map(id => byId.get(id)).filter(Boolean)
-  const ownedNeuralSelected = selected.filter(b => b._owned && b.isNeural)
+  // Any owned bot — not just neural — has persistable stats now. Rule
+  // bots, clones, and super bots all get ELO + hand history written
+  // when persistTraining is on. Neural bots additionally get their
+  // weights saved.
+  const ownedSelected = selected.filter(b => b._owned)
+  const ownedNeuralSelected = ownedSelected.filter(b => b.isNeural)
   const canRun = selected.length >= 2 && selected.length <= 5 && numHands >= 1 && numHands <= 5000 && !busy
 
   function toggle(bot) {
@@ -458,7 +561,9 @@ export default function TrainingSimulatorPanel({ myBots = [], publicBots = [], o
       const out = await api.simulateBots({
         botIds: selectedIds,
         numHands,
-        persistTraining: persistTraining && ownedNeuralSelected.length > 0
+        // Persist when the user wants to AND there's at least one
+        // owned bot to write to (otherwise the flag has no effect).
+        persistTraining: persistTraining && ownedSelected.length > 0
       })
       setResult(out)
       // All bot rows start collapsed. Users open whichever bots they
@@ -506,36 +611,28 @@ export default function TrainingSimulatorPanel({ myBots = [], publicBots = [], o
         </div>
 
         {ownedBots.length > 0 && (
-          <div className="mb-2">
-            <div className="mb-1 text-[9px] font-black uppercase tracking-widest text-emerald-200">Your bots</div>
-            <div className="flex flex-wrap gap-1.5">
-              {ownedBots.map(b => (
-                <BotPill
-                  key={b.id}
-                  bot={b}
-                  selected={selectedIds.includes(b.id)}
-                  disabled={!selectedIds.includes(b.id) && selected.length >= 5}
-                  onToggle={toggle}
-                />
-              ))}
-            </div>
+          <div className="mb-2 flex flex-col gap-1.5">
+            <div className="text-[9px] font-black uppercase tracking-widest text-emerald-200">Your bots</div>
+            <BotGroupedPills
+              bots={ownedBots}
+              selectedIds={selectedIds}
+              selectedCount={selected.length}
+              onToggle={toggle}
+            />
           </div>
         )}
 
         {publicOnly.length > 0 && (
-          <div>
-            <div className="mb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Public roster</div>
-            <div className="flex max-h-32 flex-wrap gap-1.5 overflow-y-auto pr-1">
-              {publicOnly.map(b => (
-                <BotPill
-                  key={b.id}
-                  bot={b}
-                  selected={selectedIds.includes(b.id)}
-                  disabled={!selectedIds.includes(b.id) && selected.length >= 5}
-                  onToggle={toggle}
-                  ownerLabel={b.ownerDisplayName ? `by ${b.ownerDisplayName}` : null}
-                />
-              ))}
+          <div className="flex flex-col gap-1.5">
+            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Public roster</div>
+            <div className="max-h-44 overflow-y-auto pr-1">
+              <BotGroupedPills
+                bots={publicOnly}
+                selectedIds={selectedIds}
+                selectedCount={selected.length}
+                onToggle={toggle}
+                showOwnerLabel
+              />
             </div>
           </div>
         )}
@@ -579,26 +676,27 @@ export default function TrainingSimulatorPanel({ myBots = [], publicBots = [], o
         </div>
       </div>
 
-      {/* ─── Persist training toggle ────────────────────────────── */}
-      <label className={`flex items-center gap-2 ${ownedNeuralSelected.length === 0 ? 'opacity-50' : ''}`}>
+      {/* ─── Save-to-my-bots toggle ─────────────────────────────── */}
+      <label className={`flex items-center gap-2 ${ownedSelected.length === 0 ? 'opacity-50' : ''}`}>
         <input
           type="checkbox"
           checked={persistTraining}
-          disabled={ownedNeuralSelected.length === 0}
+          disabled={ownedSelected.length === 0}
           onChange={(e) => setPersistTraining(e.target.checked)}
           className="h-4 w-4 cursor-pointer accent-cyan-400 disabled:cursor-not-allowed"
         />
         <span className="text-xs font-bold text-white">
-          Persist training updates
-          {ownedNeuralSelected.length > 0 && (
+          Save results to my bots
+          {ownedSelected.length > 0 && (
             <span className="ml-1 text-[10px] font-bold text-cyan-200">
-              ({ownedNeuralSelected.length} neural bot{ownedNeuralSelected.length === 1 ? '' : 's'} to save)
+              ({ownedSelected.length} of your bot{ownedSelected.length === 1 ? '' : 's'} to update
+              {ownedNeuralSelected.length > 0 && `, ${ownedNeuralSelected.length} of which train weights`})
             </span>
           )}
         </span>
       </label>
       <div className="-mt-2 text-[10px] font-bold text-zinc-500">
-        Only your own neural bots get weight + ELO writes. Public/non-owned bots are played but never mutated.
+        Every one of your own bots (rule, clone, super, neural) gets ELO + hand-history writes. Neural bots additionally get their trained weights saved. Public / non-owned bots are played but never mutated.
       </div>
 
       {/* ─── Run button ─────────────────────────────────────────── */}
@@ -674,9 +772,20 @@ export default function TrainingSimulatorPanel({ myBots = [], publicBots = [], o
                         : 'bg-zinc-800/60 text-zinc-500'
                     }`}>{rank + 1}</span>
                     <span className="min-w-0 flex-1 truncate font-black text-white">{p.name}</span>
-                    {p.isNeural && (
+                    {/* MLP-family bots get the same purple architecture
+                        chip used in the picker (MLP 1×16, MLP 2×32, …)
+                        so the leaderboard reads consistently with the
+                        bot selection above. Non-MLP neural kinds get
+                        the smaller cyan algorithm chip (PG / PG+BL /
+                        Q-LRN). */}
+                    {isMlpFamily(p) && (
+                      <span className="shrink-0 rounded bg-purple-500/25 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-purple-100">
+                        {mlpArchLabel(p.neuralKind)}
+                      </span>
+                    )}
+                    {p.isNeural && !isMlpFamily(p) && (
                       <span className="shrink-0 rounded bg-cyan-500/20 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-cyan-200">
-                        {p.neuralKind?.replace(/_/g, ' ') || 'NN'}
+                        {nonMlpNeuralLabel(p.neuralKind)}
                       </span>
                     )}
                     <div className="flex shrink-0 items-baseline gap-1 text-[11px] tabular-nums">

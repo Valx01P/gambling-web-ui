@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 // Trigger button + small confirmation popover, all in one. Replaces the
 // fullscreen confirm dialog for low-stakes actions like "recalculate clone".
@@ -27,7 +28,13 @@ import { useEffect, useRef, useState } from 'react'
 //                        popover aligns to. Defaults to right (works for
 //                        action buttons living on the right side of a row).
 //   persistKey         — localStorage key for "don't show again". Optional.
-//   busy               — disables the trigger; replaces label with "Working…".
+//   busy               — async in-flight signal. Disables the trigger AND
+//                        replaces the label with "Working…". Use this for
+//                        callbacks that take time (e.g. an API write).
+//   disabled           — generic disabled state. Disables the trigger but
+//                        KEEPS the label intact. Use for "not currently
+//                        applicable" cases (e.g. "★ Auto-Fill · Full" when
+//                        no seats are available).
 //   onConfirm          — sync or async callback fired on confirm OR direct
 //                        click when persistKey is already skipped.
 export default function ConfirmPopoverButton({
@@ -38,11 +45,19 @@ export default function ConfirmPopoverButton({
   align = 'right',
   persistKey,
   busy = false,
+  disabled = false,
   onConfirm,
 }) {
   const [open, setOpen] = useState(false)
   const [dontShowAgain, setDontShowAgain] = useState(false)
-  const wrapperRef = useRef(null)
+  // Anchor rect snapped at open time + refreshed on resize/scroll so
+  // the portaled popover tracks the trigger button. Without portaling,
+  // the popover was clipped by ancestor `overflow-y-auto` containers
+  // (the Tools menu is the worst offender) — the user saw a sliver of
+  // a popup or nothing at all.
+  const [anchorRect, setAnchorRect] = useState(null)
+  const buttonRef = useRef(null)
+  const popoverRef = useRef(null)
 
   function shouldSkip() {
     if (!persistKey || typeof window === 'undefined') return false
@@ -52,7 +67,7 @@ export default function ConfirmPopoverButton({
   function handleTrigger(e) {
     e?.preventDefault()
     e?.stopPropagation()
-    if (busy) return
+    if (busy || disabled) return
     if (shouldSkip()) {
       onConfirm?.()
       return
@@ -73,12 +88,15 @@ export default function ConfirmPopoverButton({
     onConfirm?.()
   }
 
-  // Click-outside + Escape to close. Only wire when open so we don't leave
-  // listeners around the rest of the time.
+  // Click-outside + Escape to close. Only wire when open so we don't
+  // leave listeners around the rest of the time. The check is against
+  // BOTH the trigger button and the portaled popover, since they're
+  // no longer DOM-siblings (the popover lives on document.body).
   useEffect(() => {
     if (!open) return
     function onPointer(e) {
-      if (wrapperRef.current?.contains(e.target)) return
+      if (buttonRef.current?.contains(e.target)) return
+      if (popoverRef.current?.contains(e.target)) return
       close()
     }
     function onKey(e) {
@@ -92,30 +110,61 @@ export default function ConfirmPopoverButton({
     }
   }, [open])
 
+  // Track the trigger button's screen position so the portaled popover
+  // can pin to it. Recomputed on every resize + any ancestor scroll
+  // (capture phase, to catch scrolls inside containers like the Tools
+  // menu's `overflow-y-auto`).
+  useEffect(() => {
+    if (!open) return
+    function reposition() {
+      const r = buttonRef.current?.getBoundingClientRect()
+      if (r) {
+        setAnchorRect({
+          top: r.bottom,
+          left: r.left,
+          right: window.innerWidth - r.right,
+          width: r.width
+        })
+      }
+    }
+    reposition()
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  }, [open])
+
   const labelText = typeof triggerLabel === 'function'
     ? triggerLabel(busy)
     : (busy ? 'Working…' : triggerLabel)
 
-  return (
-    <div ref={wrapperRef} className="relative inline-block">
-      <button
-        type="button"
-        onClick={handleTrigger}
-        disabled={busy}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        className={triggerClassName}
-      >
-        {labelText}
-      </button>
+  // Portal style props derived from the live anchor rect. align='left'
+  // pins the popover to the trigger's left edge; align='right' pins to
+  // the right edge (the default — works for action buttons living on
+  // the right side of a row).
+  const popoverStyle = anchorRect
+    ? align === 'left'
+      ? { top: anchorRect.top + 6, left: anchorRect.left }
+      : { top: anchorRect.top + 6, right: anchorRect.right }
+    : null
 
-      {open && (
+  const popover = open && anchorRect && typeof document !== 'undefined'
+    ? createPortal(
         <div
+          ref={popoverRef}
           role="dialog"
           aria-label="Confirm"
-          className={`absolute top-[calc(100%+6px)] z-[150] w-[min(18rem,calc(100vw-1.5rem))] rounded-lg border border-amber-300/60 bg-zinc-900/98 shadow-2xl ${
-            align === 'left' ? 'left-0' : 'right-0'
-          }`}
+          className="fixed z-[210] w-[min(18rem,calc(100vw-1.5rem))] rounded-lg border border-amber-300/60 bg-zinc-900/98 shadow-2xl"
+          style={popoverStyle}
+          // Stop pointerdown (in addition to click) so the Tools menu's
+          // click-outside-to-close handler — which listens on
+          // pointerdown — doesn't fire when the user interacts with
+          // this portaled popover. Without this, the popup is on
+          // document.body and looks "outside" to the Tools menu.
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
         >
           <div className="p-3">
             {description && (
@@ -142,7 +191,7 @@ export default function ConfirmPopoverButton({
                 onClick={close}
                 className="rounded-md border border-zinc-600 bg-zinc-800 px-2.5 py-1 text-[10px] font-bold text-white transition-colors hover:bg-zinc-700"
               >
-                Cancel
+                ← Back
               </button>
               <button
                 type="button"
@@ -153,8 +202,25 @@ export default function ConfirmPopoverButton({
               </button>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        </div>,
+        document.body
+      )
+    : null
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={handleTrigger}
+        disabled={busy || disabled}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        className={triggerClassName}
+      >
+        {labelText}
+      </button>
+      {popover}
+    </>
   )
 }

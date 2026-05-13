@@ -154,6 +154,11 @@ export const api = {
   // bot plays. There's no save path — only a hard reset back to the
   // random initialization (loses all training progress).
   resetNeuralBot: (id) => apiFetch(`/api/bots/${id}/neural/reset`, { method: 'POST', auth: true }),
+  // Stats-only reset for any bot type the caller owns. Zeros ELO +
+  // hand counters + the per-hand history; preserves code, neural
+  // weights, super members. Useful after the ELO overhaul to wipe
+  // inflated ratings without losing the bot itself.
+  resetBotStats: (id) => apiFetch(`/api/bots/${id}/reset-stats`, { method: 'POST', auth: true }),
   // Per-hand ELO time series for the bot's edit-page chart. Auth-optional
   // (public bots are viewable to anyone); private bots 404 for non-owners.
   botEloHistory: (id, { limit } = {}) => {

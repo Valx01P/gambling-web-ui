@@ -46,7 +46,12 @@ function clamp({ x, y, w, h }) {
 // Floating, movable, resizable feed window. Renders via portal so the
 // table chrome can't trap it inside a stacking context. The viewport
 // edge gates ensure it can't be dragged completely off-screen.
-export default function FeedWindow({ open, onClose }) {
+// `onBack` is optional. When provided, the title bar renders a left-
+// arrow button that closes the window AND fires `onBack` — the poker
+// page uses it to reopen the Tools menu after the user opened the
+// feed via the ★ Social Media entry, so they can navigate back instead
+// of having to click Tools again from scratch.
+export default function FeedWindow({ open, onClose, onBack }) {
   const { user } = useAuth()
   const wrapRef = useRef(null)
   const [pos, setPos] = useState(() => loadJson(POS_KEY, { x: 80, y: 72 }))
@@ -183,12 +188,26 @@ export default function FeedWindow({ open, onClose }) {
         style={{ height: TITLE_H }}
       >
         <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-violet-200">
+          {onBack && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); onBack() }}
+              aria-label="Back to Tools menu"
+              title="Back to Tools menu"
+              className="inline-flex items-center gap-1 rounded-md border border-zinc-600/70 bg-zinc-800 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-zinc-100 transition-colors hover:bg-zinc-700"
+            >
+              <span aria-hidden className="text-[12px] leading-none">←</span>
+              Tools
+            </button>
+          )}
           <span aria-hidden>★</span>
-          <span>Feed</span>
+          <span>Social Media</span>
         </div>
         <button
           type="button"
-          onClick={onClose}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onClose() }}
           aria-label="Close feed window"
           className="rounded px-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white"
         >×</button>

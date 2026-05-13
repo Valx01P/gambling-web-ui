@@ -3,6 +3,9 @@ import { buildContext } from './signals.js'
 import { compileBot } from './codeSandbox.js'
 import { policyFor, DEFAULT_KIND } from '../neural/registry.js'
 import { normalizeSuperState, pickNextMember } from '../super/transitions.js'
+import {
+  extractFeatures, actionQuality, engineActionToActionIdx
+} from '../neural/shared.js'
 
 // Bumped from 800/2400 → 1800/3800 so spectators can actually follow the
 // active-player ring + last-action badges before the next bot acts. Real
@@ -74,6 +77,14 @@ export class BotPlayer {
       ? this.neuralPolicy.normalizeState(bot.neuralState)
       : null
     this.neuralTrajectory = []
+    // Per-action quality log, captured for ANY bot type (rule / clone /
+    // neural / super). Each entry is a number in actionQuality's range
+    // [-1.5, +1] grading the decision against the equity + pot-odds
+    // available at decision time. The hand-end ELO step averages this
+    // log to drive a *skill-based* score — a bot that jams quads and
+    // loses to a straight flush still scores high here even though it
+    // lost chips. Drained between hands by drainActionQualityLog().
+    this.actionQualityLog = []
     this.handStartChips = startingChips
 
     // Super bots are ensembles — they hold 3-5 sub-deciders (one per
@@ -166,6 +177,17 @@ export class BotPlayer {
     return trajectory
   }
 
+  // Drain the per-action quality log accumulated during this hand. Used
+  // by the hand-end ELO step to grade the bot's *decisions* (not just
+  // its outcome) against the equity / pot-odds available at decision
+  // time — the same lens "an onlooker who knew every player's cards"
+  // would use.
+  drainActionQualityLog() {
+    const log = this.actionQualityLog
+    this.actionQualityLog = []
+    return log
+  }
+
   // Reset chips tracking + clear stale trajectory at the start of every
   // new hand. The room knows when a hand starts; it calls this so we
   // don't accidentally carry decisions from the previous hand into the
@@ -176,6 +198,8 @@ export class BotPlayer {
     this.handStartChips = Math.max(1, Number(startingChips) || this.chips || 1)
     if (this.isNeural) this.neuralTrajectory = []
     if (this.isSuper) this._superTrajectory = []
+    // Per-action quality log is per-hand for every bot type.
+    this.actionQualityLog = []
   }
 
   updateActivity() { this.lastActiveTime = Date.now() }
@@ -291,6 +315,21 @@ export class BotPlayer {
     if (action === 'check' && toCall > 0) action = 'call'
     if (action === 'call' && toCall <= 0) action = 'check'
     if (action === 'call' && toCall >= this.chips) action = 'all_in'
+
+    // Grade THIS decision for the per-hand action-quality log. Even
+    // rule bots and clones contribute scores here — the new ELO system
+    // averages these to produce a skill-based hand score that's mostly
+    // immune to chip-swing variance. We snapshot quality before
+    // applying the action so the features reflect the pre-decision
+    // game state.
+    try {
+      const ctxNow = buildContext(game, this)
+      const features = extractFeatures(ctxNow)
+      const idx = engineActionToActionIdx(action, amount, ctxNow)
+      this.actionQualityLog.push(actionQuality(idx, features))
+    } catch {
+      // Never let a quality-tracking error block the actual decision.
+    }
 
     const result = game.handleAction(this.id, action, amount)
     if (!result?.success) {

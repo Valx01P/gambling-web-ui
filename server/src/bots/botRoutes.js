@@ -59,6 +59,7 @@ import {
   replaceCloneCode,
   provisionNeuralBotsForUser,
   resetNeuralBot,
+  resetBotStats,
   getBotEloHistory,
   getBotHeadToHead,
   // Used by the /simulate route to write trained neural weights + per-
@@ -256,6 +257,17 @@ export function botRoutes() {
   // user-editable code, no rules); reset is the only "edit" you can do.
   router.post('/:id/neural/reset', authRequired, botWriteLimiter, async (req, res) => {
     const bot = await resetNeuralBot({ botId: req.params.id, ownerUserId: req.user.id })
+    if (!bot) return res.status(404).json({ error: 'not_found' })
+    invalidateMyBotsCache(req.user.id)
+    res.json({ bot })
+  })
+
+  // Stats-only reset. Works for ANY bot the caller owns — zeros ELO +
+  // lifetime stats + deletes the per-hand history rows. Does NOT
+  // touch code, neural weights, or super members. Used after the
+  // ELO overhaul to wipe inflated ratings without losing the bot.
+  router.post('/:id/reset-stats', authRequired, botWriteLimiter, async (req, res) => {
+    const bot = await resetBotStats({ botId: req.params.id, ownerUserId: req.user.id })
     if (!bot) return res.status(404).json({ error: 'not_found' })
     invalidateMyBotsCache(req.user.id)
     res.json({ bot })
