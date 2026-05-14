@@ -845,6 +845,19 @@ export class PokerRoom {
     const winnerIds = new Set((broadcastData?.winners || []).map(w => w.playerId))
     const bigBlind = this.game.bigBlind || 10
     const allSeats = [...this.players.values()]
+    // Diagnostic: per-hand summary of seat occupants so we can tell at a
+    // glance whether a "missing hands in archive" complaint is upstream
+    // (human seat never reached the recording loop — e.g. arena spectators
+    // who never sit) or downstream (loop ran but the archive write failed).
+    const humanSeats = allSeats.filter(s => !s.isBot)
+    if (humanSeats.length > 0) {
+      console.log(
+        `[record-human] room=${this.roomId} arena=${this.isArena} humans=${humanSeats.length} ` +
+        humanSeats.map(s => `[uid=${s.userId ? s.userId.slice(0, 8) : 'null'} self=${s.playingAsSelf}]`).join(' ')
+      )
+    } else if (!this.isArena) {
+      console.log(`[record-human] room=${this.roomId} no human seats — bot-vs-bot table`)
+    }
     // Mirrors _recordBotHandResults: anonymous opponents count as the
     // baseline so a hidden account never influences your ELO math.
     const ratingFor = (p) => p.isBot
@@ -933,8 +946,10 @@ export class PokerRoom {
           chipsDelta,
           elo: seat.elo ?? STARTING_RATING,
           outcome: { won, wentToShowdown, voluntarilyIn, foldedPreflop }
+        }).then(() => {
+          console.log(`[anon-archive] OK user=${seat.userId.slice(0, 8)} room=${this.roomId} delta=${chipsDelta}`)
         }).catch(err =>
-          console.warn('[anon-archive] persist failed:', err.message)
+          console.warn('[anon-archive] persist failed:', err.message, 'user=', seat.userId?.slice(0, 8))
         )
         continue
       }

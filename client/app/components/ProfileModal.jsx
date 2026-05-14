@@ -759,11 +759,34 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
               {handsError && (
                 <div className="text-xs font-bold text-red-300">{handsError}</div>
               )}
-              {!handsLoading && hands.length === 0 && !handsError && (
-                <div className="rounded-md border border-dashed border-zinc-800 px-3 py-6 text-center text-[11px] font-bold text-zinc-500">
-                  No hands {selectedDay === ymd(new Date()) ? 'today yet — play one to see it here.' : 'on this day.'}
-                </div>
-              )}
+              {!handsLoading && hands.length === 0 && !handsError && (() => {
+                // Pull the day's daily-activity row so the empty-state can
+                // explain anon-only days (otherwise "no hands" reads as a
+                // bug when the calendar dot clearly shows N hands played).
+                const dayInfo = daysByKey.get(selectedDay)
+                const anon = dayInfo?.anonHands ?? 0
+                const pub = dayInfo?.handsPlayed ?? 0
+                const isToday = selectedDay === ymd(new Date())
+                if (anon > 0 && pub === 0) {
+                  // Pre-archive anon plays only got the daily counter
+                  // bump, never the JSONB row. New anon plays archive
+                  // properly — we surface that distinction here.
+                  return (
+                    <div className="rounded-md border border-dashed border-zinc-800 px-3 py-4 text-center text-[11px] font-bold text-zinc-500">
+                      {anon} anonymous hand{anon === 1 ? '' : 's'} played
+                      {isToday ? ' today' : ' this day'}.
+                      <div className="mt-1 text-[10px] font-bold text-zinc-600">
+                        Older anon hands aren't archived — newer ones will appear here.
+                      </div>
+                    </div>
+                  )
+                }
+                return (
+                  <div className="rounded-md border border-dashed border-zinc-800 px-3 py-6 text-center text-[11px] font-bold text-zinc-500">
+                    No hands {isToday ? 'today yet — play one to see it here.' : 'on this day.'}
+                  </div>
+                )
+              })()}
               {hands.length > 0 && (
                 <>
                   <ul className="max-h-[400px] divide-y divide-zinc-800/60 overflow-y-auto pr-1">
