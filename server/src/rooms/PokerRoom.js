@@ -15,7 +15,7 @@ import { applyReinforceUpdate } from '../bots/neuralPolicy.js'
 import { applyHandResult as applySuperHandResult } from '../bots/super/transitions.js'
 import {
   recordHumanHand,
-  recordAnonHand,
+  archiveAnonHand,
   markBotUnlocked,
   tierCrossedByHand,
   applyRivalryDeltas
@@ -115,6 +115,11 @@ export class PokerRoom {
     this.isArena = !!options.isArena
     this.arenaRunning = false
     this.arenaStartingChips = POKER_CONFIG.STARTING_CHIPS
+    // Spectator-controlled think-delay for arena bots (ms). Default sits in
+    // the middle of the legacy 1800-3800 jitter band; the slider in the
+    // arena UI lets viewers drop it to 200ms for fast-forward viewing or
+    // raise it to 2000ms for follow-along. Read by BotPlayer per turn.
+    this.arenaThinkDelayMs = 1200
     // Userid of the signed-in account that created this arena. Anonymous users
     // can never own arenas — RoomManager rejects creation upstream.
     this.ownerUserId = options.ownerUserId || null
@@ -852,18 +857,14 @@ export class PokerRoom {
       // anonymously keeps a seat off the record entirely — no ELO, no
       // archive, no rivalries — even if the WS itself is authenticated.
       if (seat.isBot) continue
-      // Signed-in but anonymous: doesn't go into the hand archive (the
-      // hands stay private), but we still bump a daily-activity counter
-      // so the profile calendar can show the user was active at all.
-      // Fire-and-forget — failure shouldn't block the rest of the
-      // hand-recording flow.
-      if (seat.userId && !seat.playingAsSelf) {
-        recordAnonHand(seat.userId).catch(err =>
-          console.warn('[anon-activity] persist failed:', err.message)
-        )
-        continue
-      }
-      if (!seat.userId || !seat.playingAsSelf) continue
+      // Signed-out players are skipped — nothing stable to key on. Anon
+      // signed-in players (`!seat.playingAsSelf`) still get processed
+      // below: they share the action-analysis + compressed-hand build
+      // with public plays, but branch into archiveAnonHand for storage
+      // (no ELO update, no rivalry attribution, is_anonymous = TRUE so
+      // non-self viewers can't see the row).
+      if (!seat.userId) continue
+      const isAnonPlay = !seat.playingAsSelf
 
       const seatActions = handSummary.actionsByPlayer?.[seat.id] ?? []
       const preflopActions = seatActions.filter(a => a.phase === GAME_PHASES.PREFLOP)
@@ -917,6 +918,25 @@ export class PokerRoom {
         bd: (handSummary.communityCards || []).map(c => `${c.rank}${c.suit?.[0] || ''}`),
         a: seatActions.map(a => [a.phase[0], a.action[0], a.amount || 0]),
         oa: summarizeOpponentAggression(handSummary.actions || [], seat.id)
+      }
+
+      // Anonymous play — archive the hand tagged is_anonymous = TRUE
+      // (visible to the user only), bump the daily anon counter, and
+      // skip everything that touches public stats (ELO, user_play_stats,
+      // rivalries, achievement-tier checks). Fire-and-forget: a flaky
+      // archive write shouldn't stall the rest of the per-seat loop.
+      if (isAnonPlay) {
+        archiveAnonHand({
+          userId: seat.userId,
+          tableId: this.roomId,
+          compressed,
+          chipsDelta,
+          elo: seat.elo ?? STARTING_RATING,
+          outcome: { won, wentToShowdown, voluntarilyIn, foldedPreflop }
+        }).catch(err =>
+          console.warn('[anon-archive] persist failed:', err.message)
+        )
+        continue
       }
 
       // --- Performance score for ELO seeding ------------------------------
@@ -1431,6 +1451,33 @@ export class PokerRoom {
     return { success: true, chips: n }
   }
 
+  // Adjust the think-delay used by every bot at this arena. Clamped to
+  // [200, 4000] ms — below 200 the table is too fast for spectators to
+  // follow active-seat / last-action UI; above 4000 the arena feels stalled.
+  // No system message: the slider is high-frequency input, the chat would
+  // get spammy. Room state still broadcasts so all viewers see the new value.
+  setArenaThinkDelay(playerId, ms) {
+    if (!this.isArena) return { success: false, error: 'Not an arena' }
+    if (!this.spectators.has(playerId) && !this.players.has(playerId)) {
+      return { success: false, error: 'Only people at the arena can change settings' }
+    }
+    const n = Math.max(200, Math.min(4000, Math.floor(Number(ms) || 0)))
+    const changed = n !== this.arenaThinkDelayMs
+    this.arenaThinkDelayMs = n
+    // Apply the new pace to bots already mid-think. Without this, dropping
+    // the slider from 4000ms → 200ms still waits the old 4s before the
+    // current bot acts — the slider feels broken at long delays.
+    if (changed) {
+      for (const player of this.players.values()) {
+        if (player?.isBot && typeof player.rescheduleArenaThinkDelay === 'function') {
+          player.rescheduleArenaThinkDelay()
+        }
+      }
+    }
+    this.broadcastRoomUpdate()
+    return { success: true, delayMs: n }
+  }
+
   // Auto-fill — seat the top N bots (one per ELO tier) into every empty
   // seat. Works at both arenas (caller is a spectator) AND regular tables
   // (caller is a seated player). Batched: every bot is created + seated
@@ -1696,6 +1743,7 @@ export class PokerRoom {
       isArena: this.isArena,
       arenaRunning: this.arenaRunning,
       arenaStartingChips: this.arenaStartingChips,
+      arenaThinkDelayMs: this.arenaThinkDelayMs,
       players: this.getPlayerList(),
       spectators: this.getSpectatorList(),
       gameState: this.game.getGameState(isSpectator ? null : forPlayerId, { revealAllCards: isSpectator }),
@@ -1880,6 +1928,7 @@ export class PokerRoom {
       isArena: this.isArena,
       arenaRunning: this.arenaRunning,
       arenaStartingChips: this.arenaStartingChips,
+      arenaThinkDelayMs: this.arenaThinkDelayMs,
       players: playerList,
       spectators: spectatorList,
       contestMode

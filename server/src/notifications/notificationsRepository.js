@@ -2,15 +2,22 @@ import { query } from '../db/pool.js'
 
 // All known notification kinds. Keeping them as a single export so
 // callers (route + WS pushers + the client) reference a single source.
-// `dm` is a thin "you got a message" — the actual conversation lives
-// in the DM tables; the notification just nudges the bell.
+//
+// Scope: the bell is reserved for SOCIAL signals — post replies / likes,
+// follows, mentions, achievements. DMs and table invites have their own
+// surfaces (inbox unread badge, live dm:new push, conversation popover)
+// so they don't dispatch here. The DM and TABLE_INVITE constants stay in
+// the enum because pre-existing rows in the DB use them; nothing
+// dispatches them going forward.
 export const KINDS = {
   MENTION:       'mention',
   POST_REPLY:    'post_reply',
   COMMENT_REPLY: 'comment_reply',
+  POST_LIKE:     'post_like',
   FOLLOW:        'follow',
-  DM:            'dm',
-  TABLE_INVITE:  'table_invite',
+  ACHIEVEMENT:   'achievement',
+  DM:            'dm',            // legacy — no new dispatches
+  TABLE_INVITE:  'table_invite',  // legacy — no new dispatches
   SYSTEM:        'system'
 }
 

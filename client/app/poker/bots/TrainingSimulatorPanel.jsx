@@ -91,6 +91,9 @@ function BotPill({ bot, selected, disabled, onToggle, ownerLabel }) {
       {bot.isSuper && (
         <span className="rounded bg-amber-500/20 px-1 text-[9px] font-black uppercase tracking-wider text-amber-200">Super</span>
       )}
+      {bot.isOracle && (
+        <span className="rounded bg-violet-500/25 px-1 text-[9px] font-black uppercase tracking-wider text-violet-100">Oracle</span>
+      )}
     </button>
   )
 }
@@ -452,27 +455,30 @@ function CompareDetails({ participant }) {
   )
 }
 
-// Splits a flat bot list into three category strips — MLP family,
-// other neural kinds (REINFORCE / Q-learning / etc.), then everything
-// else (rule bots, clones, super) — each with its own header so users
-// can scan "where are my MLP bots?" at a glance. Only renders a
-// subgroup if it has at least one bot.
+// Splits a flat bot list into category strips — MLP family, other neural
+// kinds (REINFORCE / Q-learning / etc.), oracle (one-of-a-kind omniscient
+// slot), then everything else (rule bots, clones, super). Each subgroup
+// gets its own header so users can scan "where are my MLP bots?" at a
+// glance. Only renders a subgroup if it has at least one bot.
 function BotGroupedPills({ bots, selectedIds, selectedCount, onToggle, showOwnerLabel = false }) {
   const groups = useMemo(() => {
     const mlp = []
     const otherNeural = []
+    const oracle = []
     const rest = []
     for (const b of bots) {
-      if (isMlpFamily(b)) mlp.push(b)
+      if (b.isOracle) oracle.push(b)
+      else if (isMlpFamily(b)) mlp.push(b)
       else if (b.isNeural) otherNeural.push(b)
       else rest.push(b)
     }
-    return { mlp, otherNeural, rest }
+    return { mlp, otherNeural, oracle, rest }
   }, [bots])
 
   const subgroups = [
     { key: 'mlp',    bots: groups.mlp,         label: 'MLP family',    accent: 'text-purple-200' },
     { key: 'neural', bots: groups.otherNeural, label: 'Other neural',  accent: 'text-cyan-200' },
+    { key: 'oracle', bots: groups.oracle,      label: 'Oracle',        accent: 'text-violet-200' },
     { key: 'rest',   bots: groups.rest,        label: 'Rule + super',  accent: 'text-zinc-400' }
   ].filter(g => g.bots.length > 0)
 

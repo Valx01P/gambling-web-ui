@@ -112,7 +112,7 @@ export function userHistoryRoutes() {
     if (!day) return res.status(400).json({ error: 'invalid_day' })
     const limit = Math.min(200, Math.max(1, Number(req.query?.limit) || 40))
     const offset = Math.max(0, Number(req.query?.offset) || 0)
-    const { hands, total } = await listHandsForDay(req.user.id, day, { limit, offset })
+    const { hands, total } = await listHandsForDay(req.user.id, day, { limit, offset, viewerIsSelf: true })
     // Decorate each row with the headline summary. Synchronous; bounded
     // by `limit` (max 200 evaluations per request).
     for (const h of hands) {

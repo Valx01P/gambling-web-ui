@@ -152,10 +152,16 @@ export class WebSocketServer {
           return
         }
 
-        // Refill the bucket then spend a token.
+        // Refill the bucket then spend a token. elapsedSec is capped at the
+        // time needed to fully top up the bucket — without this, a client
+        // idle for hours/days then sending one frame would multiply a huge
+        // elapsed value by REFILL_PER_SEC before Math.min clamps. Math.min
+        // saves us today, but the inner multiply is unbounded; cap early.
         const bucket = ws._tokenBucket
         const now = Date.now()
-        const elapsedSec = (now - bucket.lastRefill) / 1000
+        const rawElapsedSec = (now - bucket.lastRefill) / 1000
+        const maxRefillSec = MAX_MESSAGE_BURST / REFILL_PER_SEC
+        const elapsedSec = rawElapsedSec > maxRefillSec ? maxRefillSec : rawElapsedSec
         if (elapsedSec > 0) {
           bucket.tokens = Math.min(MAX_MESSAGE_BURST, bucket.tokens + elapsedSec * REFILL_PER_SEC)
           bucket.lastRefill = now

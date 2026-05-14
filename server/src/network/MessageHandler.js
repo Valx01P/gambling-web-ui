@@ -81,6 +81,9 @@ export class MessageHandler {
         case MESSAGE_TYPES.POKER_ARENA_SET_STARTING_CHIPS:
           return this.handleArenaSetStartingChips(player, data)
 
+        case MESSAGE_TYPES.POKER_ARENA_SET_SPEED:
+          return this.handleArenaSetSpeed(player, data)
+
         case MESSAGE_TYPES.POKER_AUTO_FILL_BOTS:
           return this.handleAutoFillBots(player)
 
@@ -476,6 +479,14 @@ export class MessageHandler {
     const room = this.roomManager.getPlayerRoom(player)
     if (!room || room.roomType !== 'poker' || !room.isArena) return this.error('Not in an arena', player)
     const result = room.setArenaStartingChips(player.id, data?.chips)
+    if (!result.success) player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
+    return result
+  }
+
+  handleArenaSetSpeed(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker' || !room.isArena) return this.error('Not in an arena', player)
+    const result = room.setArenaThinkDelay(player.id, data?.delayMs)
     if (!result.success) player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
     return result
   }

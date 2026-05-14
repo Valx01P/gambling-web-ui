@@ -80,6 +80,13 @@ export function useDms() {
         refreshCount()
       } else if (msg.type === 'dm:unread' && typeof msg.data?.unread === 'number') {
         setUnread(msg.data.unread)
+      } else if (msg.type === 'dm:deleted') {
+        // Stale-invite eviction. Cheap to just refetch — keeps the
+        // conversation preview honest when the deleted message was the
+        // last one (the inbox would otherwise still show "🎰 Table
+        // invite" until the next periodic refresh).
+        refresh()
+        refreshCount()
       }
     }
     window.addEventListener(DM_EVENT, onDmEvent)

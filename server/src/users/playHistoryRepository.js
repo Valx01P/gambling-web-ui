@@ -167,6 +167,62 @@ export async function recordAnonHand(userId) {
   )
 }
 
+// Anonymous-mode hand archive write. Mirrors `recordHumanHand` but skips
+// EVERYTHING that would influence public-facing stats (no ELO update, no
+// user_play_stats bump, no rolling 100-hand window in user_hand_history,
+// no rivalry signal). Just the archive row tagged is_anonymous = TRUE so
+// the user can drill into their own day list and replay the hand without
+// leaking anything to other viewers (the public day query filters on
+// is_anonymous = FALSE). Also bumps the per-day anon_hands counter so
+// the calendar still shows activity. Fire-and-forget at the call site.
+export async function archiveAnonHand({ userId, tableId, compressed, outcome = {}, chipsDelta = 0, elo = 0 }) {
+  if (!userId) return
+  await query(
+    `
+    INSERT INTO user_hand_archive (
+      user_id, table_id, chips_delta,
+      won, went_to_showdown, voluntarily_in, folded_preflop,
+      elo_before, elo_after, elo_delta,
+      data, is_anonymous
+    ) VALUES (
+      $1, $2, $3,
+      $4, $5, $6, $7,
+      $8, $8, 0,
+      $9::jsonb, TRUE
+    )
+    `,
+    [
+      userId,
+      tableId || 'unknown',
+      Math.floor(chipsDelta || 0),
+      Boolean(outcome.won),
+      Boolean(outcome.wentToShowdown),
+      Boolean(outcome.voluntarilyIn),
+      Boolean(outcome.foldedPreflop),
+      Math.floor(elo || 0),
+      JSON.stringify(compressed || {})
+    ]
+  )
+  // Same daily-counter bump that recordAnonHand does — kept atomic with
+  // the archive write by being inside the same async function. Callers
+  // get one Promise to await instead of two.
+  await query(
+    `
+    INSERT INTO user_daily_activity (
+      user_id, day, hands_played, hands_won, chips_delta,
+      elo_start, elo_end, first_hand_at, last_hand_at, anon_hands
+    ) VALUES (
+      $1, (NOW() AT TIME ZONE 'UTC')::date, 0, 0, 0,
+      0, 0, NOW(), NOW(), 1
+    )
+    ON CONFLICT (user_id, day) DO UPDATE SET
+      anon_hands   = user_daily_activity.anon_hands + 1,
+      last_hand_at = EXCLUDED.last_hand_at
+    `,
+    [userId]
+  )
+}
+
 // --- Read paths for the profile history UI -------------------------------
 
 // Daily summary list for a date range. Returns days in DESC order so the
@@ -213,25 +269,35 @@ export async function listDailyActivity(userId, { from, to } = {}) {
 // All hands a user played on a given day. Returns the compressed JSONB blob
 // + the outcome columns so the UI can render a hand-by-hand replay.
 // Returns `{ hands, total }` so the client knows how many pages remain.
-export async function listHandsForDay(userId, day, { limit = 40, offset = 0 } = {}) {
+//
+// `viewerIsSelf` gates the anonymous-hand visibility. When TRUE, anon
+// rows are returned with isAnonymous=true so the UI can badge them; when
+// FALSE (a non-self viewer hitting the public profile), anon rows are
+// excluded entirely — hidden plays stay hidden. The partial index on
+// (user_id, played_day) WHERE is_anonymous = FALSE serves the public path
+// directly so non-self queries don't waste IO scanning anon rows.
+export async function listHandsForDay(userId, day, { limit = 40, offset = 0, viewerIsSelf = true } = {}) {
   if (!userId || !day) return { hands: [], total: 0 }
-  // Fire the count + page in parallel so a 200-hand day isn't waiting on
-  // two sequential RTTs.
   const cappedLimit = Math.min(200, Math.max(1, limit))
   const cappedOffset = Math.max(0, offset)
+  // Append the anon filter for non-self queries. Self queries see
+  // everything (and the row's is_anonymous flag rides along so the UI
+  // can render a badge).
+  const anonClause = viewerIsSelf ? '' : ' AND is_anonymous = FALSE'
   const [pageResult, countResult] = await Promise.all([
     query(
       `SELECT id, played_at, table_id, chips_delta, won, went_to_showdown,
-              voluntarily_in, folded_preflop, elo_before, elo_after, elo_delta, data
+              voluntarily_in, folded_preflop, elo_before, elo_after, elo_delta, data,
+              is_anonymous
          FROM user_hand_archive
-        WHERE user_id = $1 AND played_day = $2
+        WHERE user_id = $1 AND played_day = $2${anonClause}
         ORDER BY played_at ASC, id ASC
         LIMIT $3 OFFSET $4`,
       [userId, day, cappedLimit, cappedOffset]
     ),
     query(
       `SELECT COUNT(*)::int AS n FROM user_hand_archive
-        WHERE user_id = $1 AND played_day = $2`,
+        WHERE user_id = $1 AND played_day = $2${anonClause}`,
       [userId, day]
     )
   ])
@@ -247,7 +313,8 @@ export async function listHandsForDay(userId, day, { limit = 40, offset = 0 } = 
     eloBefore: r.elo_before,
     eloAfter: r.elo_after,
     eloDelta: r.elo_delta,
-    data: r.data
+    data: r.data,
+    isAnonymous: Boolean(r.is_anonymous)
   }))
   return { hands, total: countResult.rows[0]?.n ?? hands.length }
 }

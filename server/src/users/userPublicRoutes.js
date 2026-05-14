@@ -13,6 +13,8 @@ import { asyncRouter as Router } from '../api/asyncRouter.js'
 import { authRequired, authOptional } from '../auth/middleware.js'
 import { findUserById, findUserByUsername } from './userRepository.js'
 import { listPublicBotsByOwner } from '../bots/botRepository.js'
+import { listHandsForDay, listDailyActivity } from './playHistoryRepository.js'
+import { summarizeHand } from './handSummary.js'
 import { dispatchNotification } from '../notifications/dispatcher.js'
 import { KINDS as NOTIF } from '../notifications/notificationsRepository.js'
 import {
@@ -150,6 +152,40 @@ export function userPublicRoutes() {
         avatarUrl: r.avatar_url
       }))
     })
+  })
+
+  // GET /api/users/:userId/hands?day=YYYY-MM-DD&offset=N&limit=N
+  // Public day-drill into a target user's hand archive. Anonymous rows are
+  // filtered out server-side (the partial index handles the read), so a
+  // visitor only ever sees plays the user made under their own name. The
+  // self path is /api/users/me/hands, which uses viewerIsSelf=true.
+  router.get('/:userId/hands', authOptional, publicReadLimiter, async (req, res) => {
+    const dayMatch = typeof req.query?.day === 'string' && req.query.day.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (!dayMatch) return res.status(400).json({ error: 'invalid_day' })
+    const day = req.query.day
+    const user = await resolveHandle(req.params.userId)
+    if (!user) return res.json({ day, hands: [], total: 0, offset: 0, limit: 0 })
+    const limit = Math.min(200, Math.max(1, Number(req.query?.limit) || 40))
+    const offset = Math.max(0, Number(req.query?.offset) || 0)
+    const { hands, total } = await listHandsForDay(user.id, day, { limit, offset, viewerIsSelf: false })
+    for (const h of hands) h.summary = summarizeHand(h)
+    res.json({ day, hands, total, offset, limit })
+  })
+
+  // GET /api/users/:userId/activity?from=YYYY-MM-DD&to=YYYY-MM-DD
+  // Public daily activity for a user (drives the calendar on the public
+  // profile page). Same shape the /me/activity route returns, including
+  // anonHands so the calendar dot reflects total activity — but the
+  // accompanying /:userId/hands route filters anon rows out, so a viewer
+  // sees "10 hands today" but only the public ones drill in.
+  router.get('/:userId/activity', authOptional, publicReadLimiter, async (req, res) => {
+    const user = await resolveHandle(req.params.userId)
+    if (!user) return res.json({ days: [] })
+    const days = await listDailyActivity(user.id, {
+      from: typeof req.query?.from === 'string' ? req.query.from : null,
+      to: typeof req.query?.to === 'string' ? req.query.to : null
+    })
+    res.json({ days })
   })
 
   // GET /api/users/:userId/public-bots

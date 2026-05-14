@@ -130,12 +130,23 @@ export function feedRoutes() {
 
   router.post('/:postId/like', authRequired, writeLimiter, async (req, res) => {
     if (!isUuid(req.params.postId)) return res.status(400).json({ error: 'invalid_id' })
-    await likePost({ postId: req.params.postId, userId: req.user.id })
+    const wasNew = await likePost({ postId: req.params.postId, userId: req.user.id })
     // Re-read the row so concurrent likes don't ship stale counts to
     // the client. The like INSERT is atomic but the count we report
     // back has to reflect the post-write state, not a pre-write snapshot.
     const post = await getPostById(req.params.postId, { viewerUserId: req.user.id })
     if (!post) return res.status(404).json({ error: 'not_found' })
+    // Notify the author — but only on the first like (idempotent re-likes
+    // would spam) and never on a self-like. Fire-and-forget; the like
+    // itself already happened.
+    if (wasNew && post.authorId && post.authorId !== req.user.id) {
+      dispatchNotification({
+        userId: post.authorId,
+        kind: NOTIF.POST_LIKE,
+        senderUserId: req.user.id,
+        payload: { postId: post.id }
+      }).catch(err => console.warn('[feed] like notify failed:', err.message))
+    }
     res.json({ ok: true, liked: true, likeCount: post.likeCount })
   })
 

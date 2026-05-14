@@ -65,6 +65,11 @@ const CHAT_VISIBLE_STORAGE_KEY = 'poker_chat_visible'
 // Keeping the tool's last state across reloads matches the user's mental
 // model — they shouldn't have to re-enable side bets every session.
 const SIDE_BETS_VISIBLE_STORAGE_KEY = 'poker_side_bets_visible'
+// Inverted defaults: these widgets start OFF for new users, so we store
+// '1' = explicitly enabled. Anything else (including missing) = off.
+// Same persistence model as chat / side-bets, just flipped polarity.
+const FINANCES_WIDGET_STORAGE_KEY = 'poker_finances_widget_open'
+const STATS_MODE_STORAGE_KEY = 'poker_stats_mode_on'
 // Last blind level the user successfully applied to a table. Used as the
 // preferred default when they next create / propose at a table.
 const BLIND_LEVEL_PREF_STORAGE_KEY = 'poker_blind_level_pref'
@@ -416,7 +421,11 @@ export default function PokerPage() {
   // on separate rows. Single-pot messages render as a 1-element array.
   const [splitPotNotice, setSplitPotNotice] = useState([])
   const [selectedAvatarId, setSelectedAvatarId] = useState('op1')
-  const [statsMode, setStatsMode] = useState(false)
+  const [statsMode, setStatsMode] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try { return window.localStorage.getItem(STATS_MODE_STORAGE_KEY) === '1' }
+    catch { return false }
+  })
   const [statsExpansion, setStatsExpansion] = useState('minimized')
   const statsPanelRef = useRef(null)
   // Stable handler so the memoized StatsPanel doesn't re-render every tick
@@ -424,6 +433,7 @@ export default function PokerPage() {
   const closeStatsPanel = useCallback(() => {
     setStatsMode(false)
     setStatsExpansion('minimized')
+    try { window.localStorage.removeItem(STATS_MODE_STORAGE_KEY) } catch {}
   }, [])
   const [tableList, setTableList] = useState([])
   const [spectatorBlindMode, setSpectatorBlindMode] = useState(false)
@@ -478,6 +488,22 @@ export default function PokerPage() {
   const arenaRunningRef = useRef(false)
   useEffect(() => { arenaRunningRef.current = arenaRunning }, [arenaRunning])
   const [arenaStartingChips, setArenaStartingChips] = useState(1000)
+  // Spectator-controlled bot think delay (ms). Mirrors the server's clamp
+  // band [200, 4000]. Default (1200) lines up with PokerRoom's default.
+  const [arenaThinkDelayMs, setArenaThinkDelayMs] = useState(1200)
+  // Debounce handle for the slider's WS send. The local state updates on
+  // every drag pixel for instant visual feedback, but the server message
+  // is coalesced — otherwise dragging across the band fires 30+ broadcasts
+  // to every viewer in the arena.
+  const arenaSpeedSendTimerRef = useRef(null)
+  // Cancel any pending debounced slider send on unmount; otherwise the
+  // setTimeout closure would still try to call `send()` after the WS is gone.
+  useEffect(() => () => {
+    if (arenaSpeedSendTimerRef.current) {
+      clearTimeout(arenaSpeedSendTimerRef.current)
+      arenaSpeedSendTimerRef.current = null
+    }
+  }, [])
   // Page zoom is now backed by useZoom (cross-component, cross-tab sync
   // via localStorage + a custom event). The AccountMenu has its own zoom
   // controls that hit the same hook — both surfaces stay in lockstep.
@@ -532,9 +558,35 @@ export default function PokerPage() {
   const [cryptoState, setCryptoState] = useState(null)
   // Persistent top-left finance widget. Once opened it stays visible across
   // hands so the player can keep an eye on unrealized P/L as side bets and
-  // crypto prices move. Local-only UI state, never broadcast.
-  const [financesWidgetOpen, setFinancesWidgetOpen] = useState(false)
-  
+  // crypto prices move. Local-only UI state, never broadcast — but the
+  // on/off choice is persisted to localStorage so the user doesn't have to
+  // re-enable it every session.
+  const [financesWidgetOpen, setFinancesWidgetOpen] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try { return window.localStorage.getItem(FINANCES_WIDGET_STORAGE_KEY) === '1' }
+    catch { return false }
+  })
+
+  // Cross-tab sync for the two persisted UI toggles. Without this, opening
+  // the table in two tabs and toggling the finance widget / stats mode in
+  // one leaves the other tab stale. The `storage` event only fires on OTHER
+  // tabs, so this is safe to wire to the same setters.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    function onStorage(e) {
+      if (e.key === FINANCES_WIDGET_STORAGE_KEY) {
+        setFinancesWidgetOpen(e.newValue === '1')
+      } else if (e.key === STATS_MODE_STORAGE_KEY) {
+        const on = e.newValue === '1'
+        setStatsMode(on)
+        if (!on) setStatsExpansion('minimized')
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+
   // New room feature states
   // 'general' | 'private' | 'spectate'. `private` is a UI tab only — the
   // actual join sends the legacy `create_private` / `join_private` modes.
@@ -870,6 +922,7 @@ export default function PokerPage() {
           if (typeof msg.data.isArena === 'boolean') setIsArena(msg.data.isArena)
           if (typeof msg.data.arenaRunning === 'boolean') setArenaRunning(msg.data.arenaRunning)
           if (typeof msg.data.arenaStartingChips === 'number') setArenaStartingChips(msg.data.arenaStartingChips)
+          if (typeof msg.data.arenaThinkDelayMs === 'number') setArenaThinkDelayMs(msg.data.arenaThinkDelayMs)
           {
             // Find self in players[] first, then spectators[]. Spectators
             // get the same Player.toJSON() payload — chips, loans, credit
@@ -950,6 +1003,7 @@ export default function PokerPage() {
           if (typeof msg.data.isArena === 'boolean') setIsArena(msg.data.isArena)
           if (typeof msg.data.arenaRunning === 'boolean') setArenaRunning(msg.data.arenaRunning)
           if (typeof msg.data.arenaStartingChips === 'number') setArenaStartingChips(msg.data.arenaStartingChips)
+          if (typeof msg.data.arenaThinkDelayMs === 'number') setArenaThinkDelayMs(msg.data.arenaThinkDelayMs)
           {
             // Find self in players[] first, then spectators[]. Spectators
             // get the same Player.toJSON() payload — chips, loans, credit
@@ -1028,8 +1082,11 @@ export default function PokerPage() {
         case 'dm:new':
         case 'dm:unread':
         case 'dm:read':
+        case 'dm:deleted':
           // Same bridge for the DMs popup. Open chat windows + the
-          // conversation list both listen to this event.
+          // conversation list both listen to this event. `dm:deleted`
+          // fires when a stale table_invite gets evicted (host left the
+          // table) so the inbox can drop the row without a refresh.
           emitDmEvent(msg)
           break
         case 'showdown':
@@ -1435,6 +1492,15 @@ export default function PokerPage() {
   }, [gameState?.players, playerId])
   const myPlayer = gameState?.players?.find((p) => p.id === playerId)
   const isMyTurn = gameState?.activePlayerId === playerId
+  // Self's peer loans, extracted from whichever side of the table we're
+  // on (seated or spectating). Pulled out of liquidatedSummary's deps so
+  // unrelated gameState churn (bets/folds by other seats) doesn't invalidate
+  // the memo on every action.
+  const myPeerLoans = useMemo(() => {
+    return gameState?.players?.find(p => p.id === playerId)?.peerLoans
+      || gameState?.spectators?.find?.(p => p.id === playerId)?.peerLoans
+      || []
+  }, [gameState?.players, gameState?.spectators, playerId])
   // "If everything settles right now" stack — drives the persistent
   // top-left widget and is the same formula FinancesPanel renders.
   // bank loans (owed) leave; parked side-bet stake comes back; peer
@@ -1444,12 +1510,9 @@ export default function PokerPage() {
     const chips = bankState.chips ?? 0
     const bankDebt = (bankState.loans || []).reduce((s, l) => s + (l.owed || 0), 0)
     const parked = bankState.openSideBetStake ?? 0
-    const peer = gameState?.players?.find(p => p.id === playerId)?.peerLoans
-      || gameState?.spectators?.find?.(p => p.id === playerId)?.peerLoans
-      || []
     let peerOwedIn = 0
     let peerOwedOut = 0
-    for (const l of peer) {
+    for (const l of myPeerLoans) {
       if (l.borrowerId === playerId) peerOwedOut += l.owed || 0
       else if (l.lenderId === playerId) peerOwedIn += l.owed || 0
     }
@@ -1475,7 +1538,7 @@ export default function PokerPage() {
       cryptoCost: Math.round(cryptoCost),
       cryptoPnl: Math.round(cryptoValue - cryptoCost)
     }
-  }, [bankState.chips, bankState.loans, bankState.openSideBetStake, gameState, playerId, cryptoState])
+  }, [bankState.chips, bankState.loans, bankState.openSideBetStake, myPeerLoans, playerId, cryptoState])
   const myBet = myPlayer?.bet || 0
   const currentBetAmount = gameState?.currentBet || 0
   const toCall = currentBetAmount - myBet
@@ -1872,7 +1935,25 @@ export default function PokerPage() {
     setStatsMode(prev => {
       const next = !prev
       if (next) setStatsExpansion('minimized')
+      try {
+        if (next) window.localStorage.setItem(STATS_MODE_STORAGE_KEY, '1')
+        else window.localStorage.removeItem(STATS_MODE_STORAGE_KEY)
+      } catch {}
       return next
+    })
+  }
+
+  // Wrapper around setFinancesWidgetOpen that mirrors the new value to
+  // localStorage. All toggle sites (Tools menu, the × on the inline pill)
+  // route through here so persistence stays in lockstep with state.
+  function setFinancesWidgetOpenPersist(next) {
+    setFinancesWidgetOpen(prev => {
+      const value = typeof next === 'function' ? next(prev) : next
+      try {
+        if (value) window.localStorage.setItem(FINANCES_WIDGET_STORAGE_KEY, '1')
+        else window.localStorage.removeItem(FINANCES_WIDGET_STORAGE_KEY)
+      } catch {}
+      return value
     })
   }
 
@@ -2091,6 +2172,41 @@ export default function PokerPage() {
                <span className="text-amber-400 tracking-widest">{inviteCode}</span>
              </button>
           )}
+          {/* Finances widget — inline in the header row so it flex-wraps
+              alongside the other pills (Arena / Phase / Chips·PL / Code)
+              instead of fixed-positioning at top-left, where it would
+              overlap the spectator chips/PL pill. Same rounded-lg /
+              border / padding as those siblings for visual parity. Only
+              renders when toggled on via the Tools menu. */}
+          {financesWidgetOpen && joined && (
+            <div className="rounded-lg border border-zinc-600/60 bg-zinc-900/95 px-2 py-1 sm:px-3 sm:py-1.5 shadow-sm backdrop-blur-md flex items-center gap-2 text-[11px] sm:text-xs font-bold text-zinc-100 whitespace-nowrap">
+              <button
+                type="button"
+                onClick={() => openPokerPanel('finances')}
+                title="Open full finances breakdown"
+                className="flex items-center gap-2 hover:opacity-90"
+              >
+                <span className="text-[9px] uppercase tracking-wider text-zinc-500">Net</span>
+                <span className="tabular-nums">${liquidatedSummary.liquidated.toLocaleString()}</span>
+                {(liquidatedSummary.cryptoValue > 0 || liquidatedSummary.cryptoCost > 0) && (
+                  <>
+                    <span className="text-zinc-700">·</span>
+                    <span className={`tabular-nums ${liquidatedSummary.cryptoPnl > 0 ? 'text-emerald-300' : liquidatedSummary.cryptoPnl < 0 ? 'text-red-300' : 'text-zinc-400'}`}>
+                      {liquidatedSummary.cryptoPnl >= 0 ? '+' : ''}${liquidatedSummary.cryptoPnl.toLocaleString()}
+                    </span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setFinancesWidgetOpenPersist(false)}
+                aria-label="Close finance widget"
+                className="-mr-0.5 rounded px-1 text-sm leading-none text-zinc-500 hover:text-zinc-200"
+              >
+                ×
+              </button>
+            </div>
+          )}
         </div>
         {/* Tools + Lobby cluster. RouteNavCluster uses `position: fixed`
             so it lives in the viewport coordinate system (same as the
@@ -2213,7 +2329,7 @@ export default function PokerPage() {
                         </span>
                       ) : null}
                     </button>
-                    <button type="button" onClick={() => setFinancesWidgetOpen(prev => !prev)} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${financesWidgetOpen ? 'text-emerald-200' : 'text-zinc-400'}`}>
+                    <button type="button" onClick={() => setFinancesWidgetOpenPersist(prev => !prev)} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${financesWidgetOpen ? 'text-emerald-200' : 'text-zinc-400'}`}>
                       <span className={`inline-block h-2 w-2 rounded-full ${financesWidgetOpen ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]' : 'bg-zinc-600'}`} />
                       Finances Widget {financesWidgetOpen ? 'On' : 'Off'}
                     </button>
@@ -2507,61 +2623,6 @@ export default function PokerPage() {
           Arena / Spectating badges and PhaseLabel in the header row, instead
           of sticking to the viewport edge. pointer-events-none on the wrap
           lets table clicks pass through; the widget itself re-enables them. */}
-      {financesWidgetOpen && joined && (
-        <div className="pointer-events-none fixed inset-x-0 top-12 z-[70] sm:top-14">
-          <div className="relative mx-auto max-w-7xl">
-            <div className="pointer-events-auto absolute left-3 top-0 w-[180px] max-w-[60vw] rounded-xl border border-zinc-600/50 bg-zinc-800/95 px-2.5 py-1.5 text-white shadow-2xl backdrop-blur-md sm:w-[200px] md:left-4">
-              <div className="flex items-center justify-between gap-1.5">
-                <div className="text-[9px] font-black uppercase tracking-wider text-zinc-500">Net now</div>
-                <button
-                  type="button"
-                  onClick={() => setFinancesWidgetOpen(false)}
-                  aria-label="Close finance widget"
-                  className="-mr-1 rounded px-1 text-base leading-none text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-                >
-                  ×
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={() => openPokerPanel('finances')}
-                className="block w-full text-left"
-                title="Open full finances breakdown"
-              >
-                <div className="text-base font-black tabular-nums leading-tight text-white">
-                  ${liquidatedSummary.liquidated.toLocaleString()}
-                </div>
-                {/* Only the mark-to-market crypto delta is shown as the
-                    "unrealized" signal. Bank loans and peer loans don't
-                    count — they're known liabilities, not P/L swings — so
-                    taking a loan no longer turns the widget red. */}
-                {(liquidatedSummary.cryptoValue > 0 || liquidatedSummary.cryptoCost > 0) ? (
-                  <div className={`text-[10px] font-bold tabular-nums leading-tight ${liquidatedSummary.cryptoPnl > 0 ? 'text-emerald-300' : liquidatedSummary.cryptoPnl < 0 ? 'text-red-300' : 'text-zinc-400'}`}>
-                    {liquidatedSummary.cryptoPnl >= 0 ? '+' : ''}${liquidatedSummary.cryptoPnl.toLocaleString()} unrealized
-                  </div>
-                ) : (
-                  <div className="text-[10px] font-bold tabular-nums leading-tight text-zinc-500">
-                    liquidated stack
-                  </div>
-                )}
-                <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[9px] font-bold text-zinc-500">
-                  {liquidatedSummary.bankDebt > 0 && <span>Bank −${liquidatedSummary.bankDebt.toLocaleString()}</span>}
-                  {liquidatedSummary.parked > 0 && <span className="text-amber-300/80">Bets ${liquidatedSummary.parked.toLocaleString()}</span>}
-                  {(liquidatedSummary.peerOwedIn || liquidatedSummary.peerOwedOut) > 0 && (
-                    <span>Peer {liquidatedSummary.peerOwedIn - liquidatedSummary.peerOwedOut >= 0 ? '+' : '-'}${Math.abs(liquidatedSummary.peerOwedIn - liquidatedSummary.peerOwedOut).toLocaleString()}</span>
-                  )}
-                  {(liquidatedSummary.cryptoValue > 0 || liquidatedSummary.cryptoCost > 0) && (
-                    <span className={liquidatedSummary.cryptoPnl >= 0 ? 'text-emerald-300/80' : 'text-red-300/80'}>
-                      Crypto {liquidatedSummary.cryptoPnl >= 0 ? '+' : ''}${liquidatedSummary.cryptoPnl.toLocaleString()}
-                    </span>
-                  )}
-                </div>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {activePokerPanel && (
         // The Add Bots and Bot Arena panels are picker-heavy and look
         // cramped in the standard 460px max. They get a wider max
@@ -3650,7 +3711,44 @@ export default function PokerPage() {
 
       {/* Main Table Wrapper */}
       <div className="flex-1 flex flex-col justify-center relative w-full mb-4">
-        
+
+        {/* Arena speed slider — centered above the table on the same vertical
+            axis (max-w-5xl mirrors the felt below). Only renders inside an
+            arena, where it's the spectator's pacing control. Slider sends
+            POKER_ARENA_SET_SPEED on every change; the server clamps + echoes
+            via room_update so all viewers see the same value. */}
+        {isArena && (
+          <div className="w-full max-w-5xl mx-auto px-3 mt-2 sm:mt-0 mb-1 flex justify-center">
+            <div className="flex items-center gap-2 sm:gap-3 rounded-full border border-emerald-700/40 bg-zinc-950/70 backdrop-blur px-3 sm:px-4 py-1.5 sm:py-2 shadow-md w-full max-w-xs sm:max-w-sm">
+              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-emerald-200/80 shrink-0">Speed</span>
+              <input
+                type="range"
+                min={200}
+                max={4000}
+                step={100}
+                value={arenaThinkDelayMs}
+                onChange={(e) => {
+                  const v = Number(e.target.value)
+                  setArenaThinkDelayMs(v)
+                  // Coalesce rapid drag events into one WS send. Without
+                  // this, a quick drag across the band would broadcast a
+                  // room_update to every spectator on every step.
+                  if (arenaSpeedSendTimerRef.current) clearTimeout(arenaSpeedSendTimerRef.current)
+                  arenaSpeedSendTimerRef.current = setTimeout(() => {
+                    arenaSpeedSendTimerRef.current = null
+                    send('poker_arena_set_speed', { delayMs: v })
+                  }, 200)
+                }}
+                aria-label="Bot move delay"
+                className="flex-1 h-1.5 accent-emerald-400 cursor-pointer touch-pan-y"
+              />
+              <span className="text-[10px] sm:text-xs font-black tabular-nums text-emerald-100 w-10 sm:w-12 text-right shrink-0">
+                {(arenaThinkDelayMs / 1000).toFixed(1)}s
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* `mb-` here is the gap between the table felt's lower edge
             (where the "You" seat protrudes outward) and the bottom-UI
             wrapper below. The original mb-24 (96px) was too far; the
@@ -4220,7 +4318,12 @@ export default function PokerPage() {
             Mobile gets NO lift — sidebets stacks directly above the
             spectator panel there, so lifting would cause overlap. */}
         {isSpectator && (
-          <div className="order-2 w-[92%] max-w-[360px] md:order-1 md:w-[320px] md:max-w-none shrink-0 md:-translate-y-20 md:-mb-20 md:relative md:z-10">
+          // Mobile gets `mt-10` so the centered panel clears the bottom-
+          // center seat's protruding cards (the felt's bottom edge sits a
+          // little above the panel; without margin the panel rides up and
+          // overlaps the seat-6 hand). Reset to `md:mt-0` so the desktop
+          // lift logic (-translate-y-20 / -mb-20) is unchanged.
+          <div className="order-2 w-[92%] max-w-[360px] mt-10 md:mt-0 md:order-1 md:w-[320px] md:max-w-none shrink-0 md:-translate-y-20 md:-mb-20 md:relative md:z-10">
             <SpectatorPanel
               players={orderedPlayers}
               oddsByPlayer={spectatorOddsByPlayer}

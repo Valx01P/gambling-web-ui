@@ -328,6 +328,15 @@ function ChatView({ other, meId, onSend }) {
     function onDm(e) {
       const msg = e.detail
       if (!msg) return
+      // Stale-invite eviction (host left their table). Drop the message
+      // from the open thread immediately so the recipient doesn't try to
+      // click into an empty table. Server already deleted the row.
+      if (msg.type === 'dm:deleted') {
+        const id = msg.data?.messageId
+        if (id == null) return
+        setMessages(prev => prev.filter(m => m.id !== id))
+        return
+      }
       if (msg.type !== 'dm:new') return
       const data = msg.data
       if (!data?.message) return

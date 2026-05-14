@@ -230,6 +230,20 @@ export const api = {
   // profile modal — visitor can see what someone is sharing.
   publicBotsByUser: (userId) =>
     apiFetch(`/api/users/${userId}/public-bots`, { auth: true }),
+  // Public day-drill into another user's hand archive. Anonymous rows are
+  // filtered server-side, so the visitor only sees plays under the user's
+  // own name. Powers the hands section on /users/[handle].
+  publicHandsByUser: (userId, { day, limit = 40, offset = 0 } = {}) => {
+    const q = new URLSearchParams({ day, limit: String(limit), offset: String(offset) })
+    return apiFetch(`/api/users/${userId}/hands?${q.toString()}`, { auth: true })
+  },
+  publicActivityByUser: (userId, { from, to } = {}) => {
+    const q = new URLSearchParams()
+    if (from) q.set('from', from)
+    if (to) q.set('to', to)
+    const tail = q.toString() ? `?${q.toString()}` : ''
+    return apiFetch(`/api/users/${userId}/activity${tail}`, { auth: true })
+  },
 
   // Dailies + achievements + skin. /today is auth-optional — anon users
   // see the daily catalog entry, but `progress`/`lifetime` only fill in

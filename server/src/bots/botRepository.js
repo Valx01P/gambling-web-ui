@@ -1195,10 +1195,16 @@ function decide(ctx) {
     const activeCount = Math.max(2, (ctx.numActiveOpponents || 0) + 1);
     const fairShare = 1 / activeCount;
     const equityRatio = trueEq / Math.max(0.01, fairShare);
-    // profitableCall is the strict +EV check (equity > potOdds). Always
-    // honor this when it's true — pot odds math is the foundation, the
-    // ratio thresholds are layered ON TOP for raise sizing.
-    const profitable = !!ctx.profitableCall;
+    // profitableCall on ctx uses RANGE-inferred equity (same number every
+    // bot sees). For Oracle we recompute it against trueEq — otherwise the
+    // bot folds spots its omniscient view says are clearly +EV just because
+    // the range model under-reads the hand. Falls back to ctx.profitableCall
+    // when toCall is 0 (no call decision pending) so blinds-only edges still
+    // read sane.
+    const breakeven = ctx.facingBet
+      ? (ctx.toCall || 0) / Math.max(1, (ctx.potSize || 0) + (ctx.toCall || 0))
+      : 0;
+    const profitable = ctx.facingBet ? (trueEq > breakeven) : !!ctx.profitableCall;
 
     // ── Preflop ──
     if (ctx.streetIsPreflop) {

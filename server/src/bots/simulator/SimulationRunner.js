@@ -18,6 +18,8 @@ import { PokerGame } from '../../poker/PokerGame.js'
 import { GAME_PHASES } from '../../config/constants.js'
 import { buildContext } from '../runtime/signals.js'
 import { compileBot } from '../runtime/codeSandbox.js'
+import { buildMemberDecider } from '../runtime/BotPlayer.js'
+import { normalizeSuperState, pickNextMember } from '../super/transitions.js'
 import { policyFor, DEFAULT_KIND } from '../neural/registry.js'
 import {
   extractFeatures, actionQuality, engineActionToActionIdx
@@ -65,13 +67,53 @@ class SimSeat {
     // skill-based ELO can grade decisions, not just outcomes.
     this.actionQualityLog = []
 
-    // Compile JS code for rule bots once. Errors fall back to safe
-    // fold/check at decision time — matches the live BotPlayer policy.
+    // Oracle: signals.js gates omniscient ctx fields (allHoleCards,
+    // exactEquity) on `seat.isOracle`. Without this flag the Oracle's
+    // user-coded strategy compiles + runs, but ctx.exactEquity is
+    // undefined so it falls back to range equity — defeating the whole
+    // point of the bot. Mirrors BotPlayer's `this.isOracle` assignment.
+    this.isOracle = Boolean(bot.isOracle)
+
+    // Super-bot scaffolding mirrors BotPlayer:
+    //   _superMembers      — per-member decider (NN policy or compiled JS)
+    //   _superMemberIds    — id list, used by the bandit re-roll
+    //   superState         — persisted bandit state (Thompson / Markov / weighted)
+    //   _superTurnsLeft    — countdown to next bandit re-roll
+    // Without this the simulator skipped super bots entirely (the rule
+    // branch was gated on !isSuper) and they fold/checked every turn.
     this.isSuper = Boolean(bot.isSuper)
+    this._superMembers = null
+    this._superActiveIdx = 0
+    this._superTurnsLeft = 0
+    this.superState = null
+    this._superMemberIds = null
+    if (this.isSuper && Array.isArray(bot.members) && bot.members.length > 0) {
+      this._superMembers = bot.members.map(m => buildMemberDecider(m))
+      this._superMemberIds = bot.members.map(m => m.id)
+      this.superState = normalizeSuperState(bot.superState, this._superMemberIds)
+      this._rerollSuperActive()
+    }
+
+    // Compile JS code for rule bots once (also covers Oracle — its
+    // strategy is just JS in `bot.code`, marked is_oracle = TRUE so the
+    // signals layer enriches the ctx). Errors fall back to safe
+    // fold/check at decision time — matches the live BotPlayer policy.
     this._compiled = null
     if (!this.isNeural && !this.isSuper && typeof bot.code === 'string' && bot.code.trim()) {
       this._compiled = compileBot(bot.code)
     }
+  }
+
+  _rerollSuperActive() {
+    if (!this._superMembers || this._superMembers.length === 0) return
+    const currentId = this._superActiveIdx != null && this._superMemberIds
+      ? this._superMemberIds[this._superActiveIdx]
+      : null
+    const nextIdx = pickNextMember(this.superState, this._superMemberIds || [], currentId)
+    this._superActiveIdx = nextIdx >= 0 ? nextIdx : 0
+    // Same 1-3 turn budget as live play. The bandit re-rolls when this
+    // hits zero so super-bot strategies actually rotate inside a hand.
+    this._superTurnsLeft = 1 + Math.floor(Math.random() * 3)
   }
 
   // No-op — the runner drives decisions directly off the game's
@@ -266,17 +308,37 @@ export class SimulationRunner {
     let action = null
     let amount = 0
 
+    // Build context once per decision and pass it through every branch.
+    // buildContext does Monte Carlo equity + range inference (200-600
+    // iterations); rebuilding it 2-3 times per decision dominated sim
+    // runtime on training jobs of 10K+ hands.
+    let ctx = null
+    try { ctx = buildContext(this.game, seat) }
+    catch (err) { console.error('[sim] buildContext error:', err.message) }
+
     try {
-      if (seat.isNeural && seat.neuralState && seat.neuralPolicy) {
-        const ctx = buildContext(this.game, seat)
+      if (ctx && seat.isSuper && seat._superMembers && seat._superMembers.length > 0) {
+        // Mirrors BotPlayer's super dispatch: route to the active member,
+        // count down, re-roll the bandit at zero. Trajectory isn't
+        // recorded here — the simulator doesn't persist super_state
+        // updates back to the DB (training runs are read-only for super
+        // members; their stats are credited only in live play).
+        const member = seat._superMembers[seat._superActiveIdx]
+        const cmd = member?.decide?.(ctx) || null
+        if (cmd) { action = cmd.action; amount = cmd.amount }
+        seat._superTurnsLeft--
+        if (seat._superTurnsLeft <= 0) seat._rerollSuperActive()
+      } else if (ctx && seat.isNeural && seat.neuralState && seat.neuralPolicy) {
         const result = seat.neuralPolicy.decide(seat.neuralState, ctx)
         if (result) {
           seat.neuralTrajectory.push(result.step)
           action = result.command.action
           amount = result.command.amount
         }
-      } else if (seat._compiled && !seat._compiled.error) {
-        const ctx = buildContext(this.game, seat)
+      } else if (ctx && seat._compiled && !seat._compiled.error) {
+        // Oracle bots flow through here — `seat.isOracle` was set in the
+        // SimSeat ctor, so signals.js populates ctx.exactEquity for them
+        // exactly as it does in live play.
         const r = seat._compiled.run(ctx)
         if (r.ok) { action = r.action; amount = r.amount }
       }
@@ -293,15 +355,16 @@ export class SimulationRunner {
     if (action === 'call' && toCall <= 0) action = 'check'
     if (action === 'call' && toCall >= seat.chips) action = 'all_in'
 
-    // Grade THIS decision for the per-hand action-quality log. Same
-    // capture point used by BotPlayer; lets the skill-based ELO score
-    // work identically in live play and headless sims.
-    try {
-      const ctxNow = buildContext(this.game, seat)
-      const features = extractFeatures(ctxNow)
-      const idx = engineActionToActionIdx(action, amount, ctxNow)
-      seat.actionQualityLog.push(actionQuality(idx, features))
-    } catch {}
+    // Grade THIS decision for the per-hand action-quality log. Reuses the
+    // same ctx the decider saw — the pre-decision snapshot is what we want
+    // to grade against, and buildContext is expensive.
+    if (ctx) {
+      try {
+        const features = extractFeatures(ctx)
+        const idx = engineActionToActionIdx(action, amount, ctx)
+        seat.actionQualityLog.push(actionQuality(idx, features))
+      } catch {}
+    }
 
     const result = this.game.handleAction(seat.id, action, amount)
     if (!result?.success) {
@@ -542,6 +605,11 @@ export class SimulationRunner {
         botId: seat.bot.id,
         name: seat.bot.name,
         isNeural: seat.isNeural,
+        // Surface non-rule kinds so the training UI can badge them. Only
+        // isNeural shipped originally; oracle + super are now first-class
+        // kinds in live play and need to round-trip through the sim too.
+        isOracle: seat.isOracle,
+        isSuper: seat.isSuper,
         neuralKind: pre.neuralKind,
         before: pre.snapshot,
         after,

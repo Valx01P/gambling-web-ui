@@ -1,4 +1,6 @@
 import { PokerRoom } from './PokerRoom.js'
+import { deleteTableInvitesFromSender } from '../dms/dmsRepository.js'
+import { pushToUser } from '../notifications/dispatcher.js'
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -117,9 +119,30 @@ export class RoomManager {
       return { success: false, error: 'Room not found' }
     }
 
+    const roomId = room.roomId
+    const userId = player.userId || null
     room.removePlayer(player.id)
     player.currentRoom = null
     player.isSpectator = false
+
+    // Stale invite cleanup. The moment a signed-in player leaves a table,
+    // every "join my table" DM they sent for it is meaningless — clicking
+    // the invite would land the recipient in an empty/abandoned room with
+    // no host. Wipe those invites and push live "dm:deleted" frames so
+    // any open inbox re-renders without the stale row. Fire-and-forget:
+    // a DB hiccup here can't be allowed to fail the leave.
+    if (userId) {
+      deleteTableInvitesFromSender(userId, roomId)
+        .then(deleted => {
+          for (const d of deleted) {
+            pushToUser(d.recipientUserId, {
+              type: 'dm:deleted',
+              data: { messageId: d.messageId, conversationId: d.conversationId, reason: 'host_left' }
+            })
+          }
+        })
+        .catch(err => console.warn('[invites] cleanup failed:', err.message))
+    }
 
     if (room.isEmpty()) {
       this.rooms.delete(room.roomId)

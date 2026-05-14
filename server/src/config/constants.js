@@ -121,6 +121,10 @@ export const MESSAGE_TYPES = {
   // Bot Arena
   POKER_ARENA_SET_RUNNING: 'poker_arena_set_running',
   POKER_ARENA_SET_STARTING_CHIPS: 'poker_arena_set_starting_chips',
+  // Spectator-controlled think delay for bot moves in an arena. Lets the
+  // viewer trade follow-along comfort (longer pause) for fast-forward
+  // density (shorter pause). Server clamps to [200, 4000] ms.
+  POKER_ARENA_SET_SPEED: 'poker_arena_set_speed',
   // Auto-fill works at both arenas (spectator-initiated) and regular
   // tables (seated-player-initiated). Generic name reflects the
   // broader scope; the previous POKER_ARENA_AUTO_FILL was arena-only.

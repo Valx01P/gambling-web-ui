@@ -13,6 +13,8 @@
 
 import { query } from '../db/pool.js'
 import { ACHIEVEMENTS } from './catalog.js'
+import { dispatchNotification } from '../notifications/dispatcher.js'
+import { KINDS as NOTIF } from '../notifications/notificationsRepository.js'
 
 export function evaluateAchievements(player, event) {
   if (!player || player.isBot || !event) return
@@ -64,6 +66,19 @@ export function evaluateAchievements(player, event) {
   if (typeof player.send === 'function') {
     for (const id of newlyUnlocked) {
       player.send({ type: 'achievement', data: { achievementId: id, kind: 'trophy' } })
+    }
+  }
+  // Persist a bell row per unlock so the achievement also appears in the
+  // notifications dropdown (the toast is ephemeral; the bell entry stays
+  // until dismissed). Self-dispatch — no senderUserId.
+  if (player.userId) {
+    for (const id of newlyUnlocked) {
+      dispatchNotification({
+        userId: player.userId,
+        kind: NOTIF.ACHIEVEMENT,
+        senderUserId: null,
+        payload: { achievementId: id }
+      }).catch(err => console.warn('[ach] notify failed:', err.message))
     }
   }
 }

@@ -7,6 +7,7 @@ import { useAuth } from '../lib/useAuth'
 import { useUpload } from '../lib/useUpload'
 import { ProfileAvatar } from './ProfileSelector'
 import AvatarCropper from './AvatarCropper'
+import BotAvatar from './BotAvatar'
 
 // Unified profile modal. One flowing surface:
 //   identity strip → meta row → calendar + day list → follows row → edit.
@@ -578,12 +579,13 @@ export default function ProfileModal({ open, onClose, onProfileChange }) {
                       href={`/poker/bots/${b.id}`}
                       className="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950/40 px-2 py-1.5 transition-colors hover:border-zinc-600 hover:bg-zinc-900"
                     >
-                      <div
-                        className="h-6 w-6 shrink-0 rounded-full flex items-center justify-center text-[9px] font-black text-white"
-                        style={{ background: b.color || '#3b82f6' }}
-                      >
-                        {(b.name || '?').slice(0, 2).toUpperCase()}
-                      </div>
+                      <BotAvatar
+                        name={b.name}
+                        color={b.color || '#3b82f6'}
+                        textColor={b.textColor || 'auto'}
+                        avatarUrl={b.avatarUrl}
+                        size={24}
+                      />
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-[12px] font-black text-white">{b.name}</div>
                         <div className="truncate text-[9px] font-bold text-zinc-400">
@@ -1099,6 +1101,14 @@ function HandRow({ hand }) {
             </span>
             <span className="shrink-0 font-mono text-[10px] text-zinc-600">{time}</span>
             <span className={`truncate text-[11px] font-black ${headlineClass}`}>{summary}</span>
+            {/* "Anon" pill — only the user themselves sees this row at all
+                (the public-profile endpoint filters anon out). The badge
+                makes it clear the hand isn't visible to anyone else. */}
+            {hand.isAnonymous && (
+              <span className="shrink-0 rounded bg-zinc-700/60 px-1 text-[8px] font-black uppercase tracking-wider text-zinc-300">
+                Anon
+              </span>
+            )}
           </div>
         </div>
         <div className={`shrink-0 text-[11px] font-black ${profitClass}`}>{fmtChips(hand.chipsDelta)}</div>

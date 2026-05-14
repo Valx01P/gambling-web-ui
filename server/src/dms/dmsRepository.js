@@ -173,3 +173,36 @@ export async function countUnreadConversations(userId) {
   )
   return rows[0]?.count || 0
 }
+
+// Delete every table_invite DM the sender ever sent for this tableId.
+// Fired when the sender leaves the room — the invite is dead the moment
+// they walk away, so we evict it from every recipient's inbox rather
+// than leaving them with a "join the host's empty table" footgun.
+// Returns the list of (messageId, conversationId, recipientUserId) the
+// caller can use to push live "dm:deleted" frames so open inboxes
+// re-render without a refresh. Matches metadata.tableId verbatim.
+export async function deleteTableInvitesFromSender(senderUserId, tableId) {
+  if (!senderUserId || !tableId) return []
+  const { rows } = await query(
+    `
+    WITH deleted AS (
+      DELETE FROM dm_messages m
+       USING dm_conversations c
+       WHERE m.conversation_id = c.id
+         AND m.sender_user_id = $1
+         AND m.kind = 'table_invite'
+         AND m.metadata ->> 'tableId' = $2
+       RETURNING m.id AS message_id,
+                 m.conversation_id,
+                 CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END AS recipient_user_id
+    )
+    SELECT * FROM deleted
+    `,
+    [senderUserId, tableId]
+  )
+  return rows.map(r => ({
+    messageId: Number(r.message_id),
+    conversationId: r.conversation_id,
+    recipientUserId: r.recipient_user_id
+  }))
+}

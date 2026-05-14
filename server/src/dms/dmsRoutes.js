@@ -11,8 +11,7 @@ import {
   MAX_BODY_LENGTH
 } from './dmsRepository.js'
 import { findUserById } from '../users/userRepository.js'
-import { dispatchNotification, pushToUser } from '../notifications/dispatcher.js'
-import { KINDS as NOTIF } from '../notifications/notificationsRepository.js'
+import { pushToUser } from '../notifications/dispatcher.js'
 
 const readLimiter = rateLimit({
   windowMs: 60 * 1000, limit: 120,
@@ -113,21 +112,12 @@ export function dmsRoutes() {
         data: { conversationId: conversation.id, message, otherId }
       })
 
-      // Notification — only for the recipient. Skipping the bell if the
-      // recipient already has an unread message in this conversation
-      // would be nice (avoid spamming on a back-and-forth) but for v1
-      // we always send. The bell collapses identical-day notifications
-      // visually on the client.
-      dispatchNotification({
-        userId: otherId,
-        kind: NOTIF.DM,
-        senderUserId: req.user.id,
-        payload: {
-          conversationId: conversation.id,
-          preview: body.slice(0, 120),
-          messageKind: typeof kind === 'string' ? kind : null
-        }
-      }).catch(err => console.warn('[dms] notify failed:', err.message))
+      // Notifications intentionally OMIT DMs: the bell is reserved for
+      // social signals (post replies, likes, follows, achievements). DMs
+      // already have their own surfaces — the inbox icon's unread count,
+      // the live `dm:new` push, and the conversation popover — so a bell
+      // notification would just duplicate noise. Same for table invites
+      // (which are DM-typed under the hood).
 
       res.status(201).json({ conversationId: conversation.id, message })
     } catch (err) {

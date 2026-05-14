@@ -7,9 +7,11 @@ import {
   extractFeatures, actionQuality, engineActionToActionIdx
 } from '../neural/shared.js'
 
-// Bumped from 800/2400 → 1800/3800 so spectators can actually follow the
-// active-player ring + last-action badges before the next bot acts. Real
-// players don't hit this code path.
+// Default jitter band used at non-arena tables (and as a fallback when the
+// arena room hasn't set a custom delay). Bumped from 800/2400 → 1800/3800
+// so spectators can actually follow the active-player ring + last-action
+// badges before the next bot acts. Arenas override this via
+// room.arenaThinkDelayMs (set by the speed slider in the spectator UI).
 const THINK_DELAY_MIN_MS = 1800
 const THINK_DELAY_MAX_MS = 3800
 
@@ -233,11 +235,36 @@ export class BotPlayer {
     this._lastTurnKey = turnKey
 
     if (this._pendingTimeout) clearTimeout(this._pendingTimeout)
-    const delay = THINK_DELAY_MIN_MS + Math.random() * (THINK_DELAY_MAX_MS - THINK_DELAY_MIN_MS)
+    // Arena: use the spectator-controlled delay verbatim (no jitter — the
+    // user picked an exact pace, jitter would feel inconsistent on the
+    // slider). Non-arena: keep the legacy randomized 1.8-3.8s window.
+    const arenaDelay = this.room?.isArena ? this.room?.arenaThinkDelayMs : null
+    const delay = (typeof arenaDelay === 'number' && arenaDelay > 0)
+      ? arenaDelay
+      : THINK_DELAY_MIN_MS + Math.random() * (THINK_DELAY_MAX_MS - THINK_DELAY_MIN_MS)
     this._pendingTimeout = setTimeout(() => {
       this._pendingTimeout = null
       this._decideAndAct()
     }, delay)
+  }
+
+  // Cancel + reschedule any in-flight think timeout against the room's
+  // current arenaThinkDelayMs. Called from PokerRoom.setArenaThinkDelay
+  // so the spectator slider applies to the bot that's already mid-think,
+  // not just the next turn. Returns true if a reschedule actually fired.
+  rescheduleArenaThinkDelay() {
+    if (!this._pendingTimeout) return false
+    if (this._destroyed) return false
+    if (!this.room?.isArena) return false
+    if (this.room?.arenaRunning === false) return false
+    const ms = this.room?.arenaThinkDelayMs
+    if (typeof ms !== 'number' || ms <= 0) return false
+    clearTimeout(this._pendingTimeout)
+    this._pendingTimeout = setTimeout(() => {
+      this._pendingTimeout = null
+      this._decideAndAct()
+    }, ms)
+    return true
   }
 
   // Cancel any queued decision and forget the last turn-key so the next

@@ -35,12 +35,26 @@ function StatTile({ label, value, accent = 'zinc' }) {
   )
 }
 
+// UTC-anchored YYYY-MM-DD — matches user_hand_archive.played_day, which is
+// stored in UTC. A 23:00-local hand otherwise reads as the wrong calendar
+// day in the API and renders blank.
+function todayKey() {
+  const d = new Date()
+  const y = d.getUTCFullYear()
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(d.getUTCDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 export default function UserProfilePage({ params }) {
   const { handle } = use(params)
   const { user: viewer } = useAuth()
   const [profile, setProfile] = useState(null)
   const [bots, setBots] = useState([])
   const [posts, setPosts] = useState([])
+  const [hands, setHands] = useState([])
+  const [handsTotal, setHandsTotal] = useState(0)
+  const [handsLoading, setHandsLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [followBusy, setFollowBusy] = useState(false)
@@ -50,12 +64,20 @@ export default function UserProfilePage({ params }) {
     try {
       const { user } = await api.publicUser(handle)
       setProfile(user)
-      const [{ bots = [] } = {}, { posts = [] } = {}] = await Promise.all([
+      // Public hands fetch joins the bots + posts batch — same fan-out
+      // pattern used elsewhere on this page. Anonymous rows are filtered
+      // server-side; what comes back here is safe to render verbatim.
+      setHandsLoading(true)
+      const [{ bots = [] } = {}, { posts = [] } = {}, { hands = [], total = 0 } = {}] = await Promise.all([
         api.publicBotsByUser(user.id).catch(() => ({ bots: [] })),
-        api.listFeed({ authorId: user.id, limit: 20 }).catch(() => ({ posts: [] }))
+        api.listFeed({ authorId: user.id, limit: 20 }).catch(() => ({ posts: [] })),
+        api.publicHandsByUser(user.id, { day: todayKey(), limit: 20 }).catch(() => ({ hands: [], total: 0 }))
       ])
       setBots(bots)
       setPosts(posts)
+      setHands(hands)
+      setHandsTotal(total)
+      setHandsLoading(false)
     } catch (err) {
       setError(err.detail || err.message || 'Failed to load profile')
     } finally { setLoading(false) }
@@ -217,6 +239,46 @@ export default function UserProfilePage({ params }) {
                     </Link>
                   ))}
                 </div>
+              </section>
+            )}
+
+            {/* Hands today — public only. Anonymous plays are filtered out
+                server-side, so the visitor sees nothing about hands the
+                user opted to keep private. Self viewers should use the
+                ProfileModal (account menu) for the full anon-aware view. */}
+            {(hands.length > 0 || handsLoading) && (
+              <section className="rounded-xl border border-zinc-700/70 bg-zinc-900/40 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-300">
+                    Hands today · {hands.length}{handsTotal > hands.length ? ` of ${handsTotal}` : ''}
+                  </div>
+                  {isSelf && (
+                    <div className="text-[9px] font-bold text-zinc-500">Public only · open profile for anon</div>
+                  )}
+                </div>
+                {handsLoading && hands.length === 0 ? (
+                  <div className="text-[11px] font-bold text-zinc-500">Loading…</div>
+                ) : (
+                  <ul className="flex flex-col gap-0.5">
+                    {hands.map(h => {
+                      const time = new Date(h.playedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+                      const cls = h.chipsDelta > 0 ? 'text-emerald-300' : h.chipsDelta < 0 ? 'text-red-300' : 'text-zinc-400'
+                      return (
+                        <li key={h.id} className="flex items-center justify-between gap-2 rounded px-1 py-1 hover:bg-zinc-800/40">
+                          <div className="min-w-0 flex items-center gap-2">
+                            <span className="shrink-0 font-mono text-[10px] text-zinc-600">{time}</span>
+                            <span className={`truncate text-[11px] font-black ${h.won ? 'text-emerald-200' : h.voluntarilyIn ? 'text-zinc-300' : 'text-zinc-500'}`}>
+                              {h.summary || (h.won ? 'Won' : 'Hand')}
+                            </span>
+                          </div>
+                          <div className={`shrink-0 text-[11px] font-black ${cls}`}>
+                            {h.chipsDelta > 0 ? '+' : h.chipsDelta < 0 ? '−' : ''}${Math.abs(h.chipsDelta || 0).toLocaleString()}
+                          </div>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
               </section>
             )}
 

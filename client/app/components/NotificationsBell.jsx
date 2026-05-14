@@ -16,6 +16,11 @@ function describe(notif) {
     case 'mention':        return `${who} mentioned you in a ${notif.payload?.context || 'post'}.`
     case 'post_reply':     return `${who} replied to your post.`
     case 'comment_reply':  return `${who} replied to your comment.`
+    case 'post_like':      return `${who} liked your post.`
+    case 'achievement':    return `Achievement unlocked: ${notif.payload?.achievementId || 'trophy'}.`
+    // Legacy kinds — server no longer dispatches these, but old rows may
+    // still surface from the bell history. Keep the labels so they read
+    // sane until the user dismisses them.
     case 'dm':             return `${who} sent you a message.`
     case 'table_invite':   return `${who} invited you to their table.`
     default:               return notif.payload?.message || `${who} did something.`
@@ -30,7 +35,7 @@ function linkFor(notif) {
     return `/poker?table=${encodeURIComponent(notif.payload.tableId)}`
   }
   if (notif.kind === 'dm' && notif.sender?.id) return `/messages/${notif.sender.id}`
-  if ((notif.kind === 'mention' || notif.kind === 'post_reply' || notif.kind === 'comment_reply') && notif.payload?.postId) {
+  if ((notif.kind === 'mention' || notif.kind === 'post_reply' || notif.kind === 'comment_reply' || notif.kind === 'post_like') && notif.payload?.postId) {
     return `/feed/${notif.payload.postId}`
   }
   return null
