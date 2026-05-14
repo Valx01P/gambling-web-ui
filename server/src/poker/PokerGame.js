@@ -186,6 +186,29 @@ export class PokerGame {
     }
   }
 
+  // Heads-up and 3-handed games are slower by nature — fewer players means
+  // each one faces more decisions per orbit, and a tight 60s cap makes the
+  // table feel like a chess clock when really only one other person is
+  // waiting. Scale the per-turn cap to the seated human count:
+  //   2 humans → 180s (heads-up, lots of room to think)
+  //   3 humans → 120s
+  //   4+      → POKER_CONFIG.TURN_LIMIT_MS (default 60s — keeps full
+  //              tables moving)
+  // Bots don't count: a bot waiting on a human doesn't care about pace, and
+  // a human waiting on a bot has _scheduleTurnTimeout's bot-only path that
+  // fires for stuck-fold safety regardless. Same timing surface drives
+  // both the auto-fold timer AND the client's countdown ring (via
+  // activeTurnExpiresAt + activeTurnLimitMs in the broadcast envelope).
+  _currentTurnLimitMs() {
+    let humans = 0
+    for (const p of this.players) {
+      if (p && !p.isBot && p.isConnected) humans++
+    }
+    if (humans <= 2) return 180_000
+    if (humans === 3) return 120_000
+    return POKER_CONFIG.TURN_LIMIT_MS
+  }
+
   _scheduleTurnTimeout() {
     this._clearTurnTimeout()
     if (!this.onTurnTimeout) return
@@ -217,7 +240,7 @@ export class PokerGame {
       try { this.onTurnTimeout(playerId) } catch (err) {
         console.error('[poker] turn timeout cb:', err)
       }
-    }, POKER_CONFIG.TURN_LIMIT_MS)
+    }, this._currentTurnLimitMs())
   }
 
   ensurePokerBankroll(player) {
@@ -1365,8 +1388,12 @@ export class PokerGame {
         dealerIndex: visibleDealerIndex,
         activePlayerId,
         activeTurnStartedAt: turnStartedAt,
-        activeTurnExpiresAt: hasTimedActiveTurn ? this.lastTurnChange + POKER_CONFIG.TURN_LIMIT_MS : null,
-        activeTurnLimitMs: POKER_CONFIG.TURN_LIMIT_MS,
+        // Use the headcount-scaled limit so the client's countdown ring
+        // matches what the server will actually enforce. Without this the
+        // 2-handed UI would still show a 60s warning at 50s in even though
+        // the auto-fold won't fire for 170s.
+        activeTurnExpiresAt: hasTimedActiveTurn ? this.lastTurnChange + this._currentTurnLimitMs() : null,
+        activeTurnLimitMs: this._currentTurnLimitMs(),
         activeTurnWarningMs: POKER_CONFIG.TURN_WARNING_MS
       }
     }

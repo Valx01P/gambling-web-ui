@@ -84,9 +84,16 @@ function ConversationRow({ conv, meId, onOpen }) {
   )
 }
 
+// Server-side TTL for table invites. Mirror the constant client-side so
+// we can grey out the join button as soon as the row crosses 60s — even
+// if the periodic dm:deleted sweep hasn't fired yet (worst case 30s lag).
+const INVITE_TTL_MS = 60_000
+
 // Single message bubble. Sender on the right (own), recipient on left.
 function MessageBubble({ msg, fromMe }) {
   const isInvite = msg.kind === 'table_invite' && msg.metadata?.tableId
+  const inviteExpired = isInvite &&
+    msg.created_at && (Date.now() - new Date(msg.created_at).getTime() > INVITE_TTL_MS)
   return (
     <div className={`flex ${fromMe ? 'justify-end' : 'justify-start'}`}>
       <div className={`max-w-[80%] rounded-lg px-2.5 py-1.5 text-[12px] font-bold leading-snug ${
@@ -96,14 +103,22 @@ function MessageBubble({ msg, fromMe }) {
       }`}>
         {isInvite ? (
           <div>
-            <div className="text-[10px] font-black uppercase tracking-widest text-amber-200">Table invite</div>
+            <div className="text-[10px] font-black uppercase tracking-widest text-amber-200">
+              Table invite{inviteExpired ? ' · expired' : ''}
+            </div>
             <div className="mt-0.5">{msg.body}</div>
-            <a
-              href={`/poker?table=${encodeURIComponent(msg.metadata.tableId)}`}
-              className="mt-1 inline-block rounded border border-amber-400/60 bg-amber-500/30 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-amber-100 hover:bg-amber-500/40"
-            >
-              Join table →
-            </a>
+            {inviteExpired ? (
+              <div className="mt-1 inline-block rounded border border-zinc-700 bg-zinc-900/60 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                Expired
+              </div>
+            ) : (
+              <a
+                href={`/poker?table=${encodeURIComponent(msg.metadata.tableId)}`}
+                className="mt-1 inline-block rounded border border-amber-400/60 bg-amber-500/30 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-amber-100 hover:bg-amber-500/40"
+              >
+                Join table →
+              </a>
+            )}
           </div>
         ) : (
           msg.body
@@ -129,6 +144,10 @@ export default function DmsPopup() {
   const [activeChat, setActiveChat] = useState(null)
   const [searchQ, setSearchQ] = useState('')
   const [searchResults, setSearchResults] = useState([])
+  // Arrow-key cursor over whichever list is currently rendered (search
+  // results when typing, conversations when empty). Reset to 0 each time
+  // the underlying list changes so the highlight always lands on a real row.
+  const [cursor, setCursor] = useState(0)
   const wrapRef = useRef(null)
 
   // ── Click outside / ESC ──────────────────────────────────────────────
@@ -166,6 +185,20 @@ export default function DmsPopup() {
     }, 200)
     return () => clearTimeout(handle)
   }, [open, activeChat, searchQ])
+
+  // Whichever list is currently shown — search results or conversations.
+  // The cursor + Enter handler both read from this so we don't have to
+  // branch on "which list is visible" twice.
+  const isSearching = searchQ.trim().length >= 2
+  const visibleList = isSearching
+    ? searchResults.map(u => ({ pickAs: u, key: u.id }))
+    : conversations.slice(0, 5).map(c => ({ pickAs: c.other, key: c.conversationId }))
+  // Reset the highlight whenever the underlying list changes (new query,
+  // new conversations array). Clamp to the new length so the cursor never
+  // points past the end.
+  useEffect(() => {
+    setCursor(prev => Math.min(prev, Math.max(0, visibleList.length - 1)))
+  }, [visibleList.length])
 
   if (!user) return null
 
@@ -214,6 +247,22 @@ export default function DmsPopup() {
                   type="text"
                   value={searchQ}
                   onChange={(e) => setSearchQ(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Arrow-key cursor over `visibleList` (search results
+                    // when typing, recent conversations when not). Enter
+                    // picks whichever row the cursor is on, so users can
+                    // start a chat without ever touching the mouse.
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault()
+                      setCursor(c => Math.min(visibleList.length - 1, c + 1))
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault()
+                      setCursor(c => Math.max(0, c - 1))
+                    } else if (e.key === 'Enter') {
+                      const pick = visibleList[cursor]?.pickAs
+                      if (pick) { e.preventDefault(); setActiveChat(pick); setSearchQ('') }
+                    }
+                  }}
                   placeholder="Search a user to start a new message"
                   // text-sm = 14px desktop (matches the lobby + bot
                   // editor inputs). globals.css already forces 16px
@@ -227,13 +276,16 @@ export default function DmsPopup() {
                   show the existing conversation list. Once the user
                   types 2+ chars, swap to user search results. No mode
                   toggle — the input drives everything. */}
-              {searchQ.trim().length >= 2 ? (
+              {isSearching ? (
                 <ul className="max-h-[60vh] overflow-y-auto">
                   {searchResults.length === 0 && (
                     <li className="px-3 py-2.5 text-center text-[11px] font-bold text-zinc-500">No matches.</li>
                   )}
-                  {searchResults.map(u => (
-                    <li key={u.id} className="border-b border-zinc-800/60 last:border-b-0">
+                  {searchResults.map((u, i) => (
+                    <li
+                      key={u.id}
+                      className={`border-b border-zinc-800/60 last:border-b-0 ${i === cursor ? 'bg-zinc-800/60' : ''}`}
+                    >
                       <UserResultRow user={u} onPick={(u) => { setActiveChat(u); setSearchQ('') }} />
                     </li>
                   ))}
@@ -248,8 +300,15 @@ export default function DmsPopup() {
                       No messages yet. Search above to start one.
                     </li>
                   )}
-                  {conversations.map(c => (
-                    <li key={c.conversationId} className="border-b border-zinc-800/60 last:border-b-0">
+                  {/* Cap the recent-conversations strip at 5 — the cursor
+                      list stays in lockstep so arrow-nav lines up with
+                      what's visible. Older conversations remain reachable
+                      via search. */}
+                  {conversations.slice(0, 5).map((c, i) => (
+                    <li
+                      key={c.conversationId}
+                      className={`border-b border-zinc-800/60 last:border-b-0 ${i === cursor ? 'bg-zinc-800/60' : ''}`}
+                    >
                       <ConversationRow conv={c} meId={user.id} onOpen={() => setActiveChat(c.other)} />
                     </li>
                   ))}
@@ -309,6 +368,7 @@ function ChatView({ other, meId, onSend }) {
   const [error, setError] = useState(null)
   const [body, setBody] = useState('')
   const scrollRef = useRef(null)
+  const inputRef = useRef(null)
 
   const load = useCallback(async () => {
     try {
@@ -366,12 +426,24 @@ function ChatView({ other, meId, onSend }) {
     setBusy(true); setError(null)
     try {
       const { message } = await api.sendMessage(other.id, { body: text })
-      setMessages(prev => [...prev, message])
+      // The server fires a `dm:new` push to the sender's other tabs at
+      // the same time it returns the HTTP response — and `pushToUser`
+      // delivers to THIS tab too. So the WS handler may have already
+      // appended this message by the time we get here. Dedupe by id.
+      setMessages(prev => prev.some(m => m.id === message.id) ? prev : [...prev, message])
       setBody('')
       onSend?.()
     } catch (err) {
       setError(err.detail || err.message || 'Send failed')
-    } finally { setBusy(false) }
+    } finally {
+      setBusy(false)
+      // Re-focus the textarea so the user can keep typing without
+      // having to click back into it. The disabled-while-busy attribute
+      // momentarily steals focus, so we restore it after the toggle.
+      // requestAnimationFrame waits one tick for React to re-enable the
+      // input before .focus() lands.
+      requestAnimationFrame(() => inputRef.current?.focus())
+    }
   }, [body, other.id, onSend])
 
   return (
@@ -388,6 +460,7 @@ function ChatView({ other, meId, onSend }) {
         {error && <div className="mb-1 text-[10px] font-bold text-rose-300">{error}</div>}
         <div className="flex items-end gap-1">
           <textarea
+            ref={inputRef}
             value={body}
             onChange={(e) => setBody(e.target.value)}
             onKeyDown={(e) => {

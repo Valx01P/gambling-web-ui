@@ -1287,19 +1287,20 @@ export default function PokerPage() {
     wsRef.current?.send(JSON.stringify({ type, data }))
   }
 
-  // Auto-spectate into a specific table when the page is opened via a
-  // shared link (?table=ROOM_ID) — typically a DM table invite. We wait
-  // for: WS up, playerId assigned (server welcome), not already joined,
-  // and guard against re-firing on every dependency change.
+  // Auto-join a specific table when the page is opened via a shared link
+  // (?table=ROOM_ID) — typically a DM table invite. We wait for: WS up,
+  // playerId assigned (server welcome), not already joined, and guard
+  // against re-firing on every dependency change.
   useEffect(() => {
     if (!pendingTableId) return
     if (!connected || !playerId || joined) return
     if (autoJoinTried.current) return
     autoJoinTried.current = true
-    // Spectate so the invitee can decide whether to take a seat — auto-
-    // seating them would be presumptuous, and arenas only allow
-    // spectator entry anyway.
-    send('join_game', { roomId: pendingTableId, mode: 'spectate' })
+    // `join_table` tries for a seat first and falls back to spectator if
+    // the room is full or it's an arena. The previous `spectate` mode
+    // dropped the invitee in as a viewer even at empty regular tables —
+    // not what an invite means; the host expects you to sit and play.
+    send('join_game', { roomId: pendingTableId, mode: 'join_table' })
   }, [connected, playerId, joined, pendingTableId])
 
   function persistUsername(nextUsername) {
@@ -3709,8 +3710,13 @@ export default function PokerPage() {
         </div>
       )}
 
-      {/* Main Table Wrapper */}
-      <div className="flex-1 flex flex-col justify-center relative w-full mb-4">
+      {/* Main Table Wrapper. Mobile anchors the table near the top
+          (justify-start) so the seat cards — which protrude BELOW the
+          felt — clear the bottom-pinned action panel. justify-center
+          looked balanced on its own but stacked the seat cards into the
+          fold/check buttons. md+ keeps the centered layout because the
+          desktop sidebets/chat sit in a side column, not below. */}
+      <div className="flex-1 flex flex-col justify-start md:justify-center relative w-full mb-4">
 
         {/* Arena speed slider — centered above the table on the same vertical
             axis (max-w-5xl mirrors the felt below). Only renders inside an
@@ -3749,14 +3755,22 @@ export default function PokerPage() {
           </div>
         )}
 
-        {/* `mb-` here is the gap between the table felt's lower edge
-            (where the "You" seat protrudes outward) and the bottom-UI
-            wrapper below. The original mb-24 (96px) was too far; the
-            first revision pulled it to mb-8 (32px) which the user said
-            was too close. mb-12 / md:mb-16 (48/64px) splits the
-            difference — comfortable room for the seat's protrusion +
-            visible gap, without a big empty band of felt. */}
-        <div className="relative w-full max-w-5xl mx-auto aspect-[1.1/1] sm:aspect-[1.8/1] md:aspect-[2.2/1] rounded-[50%] border-4 border-emerald-900/40 shrink-0 mt-10 sm:mt-6 mb-12 md:mb-16"
+        {/* The table is free-floating: no `mb-` ties it to the controls
+            below. Mobile uses justify-start on the parent (above) so the
+            felt sits at the top of the flex-1 column, and the bottom-UI
+            sibling has its own pb-* offset from the viewport bottom —
+            the gap between them is whatever flex-1 space remains, which
+            grows naturally when the user zooms out (smaller felt → more
+            room for the bottom seat's protruding cards to clear the
+            action panel).
+            Mobile aspect is capped at 1.4/1 (wider than tall) so the
+            felt height never bullies the available column on phones in
+            the 400-640px range — at the previous 1.1/1 the felt's
+            natural height equalled the entire flex-1 space, leaving the
+            bottom seat's cards to overflow into the controls below. md+
+            keeps the original wide-oval ratios since the desktop layout
+            puts sidebets/chat in a side column instead of below. */}
+        <div className="relative w-full max-w-5xl mx-auto aspect-[1.4/1] sm:aspect-[1.8/1] md:aspect-[2.2/1] rounded-[50%] border-4 border-emerald-900/40 shrink-0 mt-2 sm:mt-6 md:mb-16"
              style={{
                background: 'radial-gradient(ellipse 70% 60% at 50% 45%, #1a5c3a 0%, #14472c 45%, #0f3521 80%, #0a2a18 100%)',
                boxShadow: 'inset 0 2px 50px rgba(0,0,0,0.5), 0 0 100px rgba(0,0,0,0.4)',
@@ -3829,8 +3843,16 @@ export default function PokerPage() {
               ? (spectatorCanRevealCards ? player.cards : player.cards.map(() => null))
               : player.cards
 
+            // Bottom-center seat (seatIndex === 0) used to bias mt-8 at every
+            // viewport below lg. Combined with the seat cards rendering BELOW
+            // the nameplate, that pushed the cards 32px deeper INTO the action
+            // panel on every mobile width (worst at the in-between 400-640px
+            // range where the table is taller in proportion to its width).
+            // Drop the bias on mobile/sm; keep the original mt-8 only in the
+            // md range where the desktop-ish layout actually benefited from
+            // the extra spacing.
             return (
-              <div key={player.id} className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center min-w-[120px] sm:min-w-[140px] ${seatIndex === 0 ? 'mt-8 lg:mt-0' : ''}`} style={{ top: pos.top, left: pos.left }}>
+              <div key={player.id} className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center min-w-[120px] sm:min-w-[140px] ${seatIndex === 0 ? 'md:mt-8 lg:mt-0' : ''}`} style={{ top: pos.top, left: pos.left }}>
                 
                 {/* Bet Stack projected into the table */}
                 {(player.lastAction || playerChipThrowEvents.length > 0) && (
@@ -4099,7 +4121,15 @@ export default function PokerPage() {
           No more pb-[XXXpx] reservations — panels are in-flow, the wrapper
           takes their natural height, and flex-1 on the table area auto-
           adjusts to fit whatever's left. */}
-      <div className={`w-full flex flex-col md:flex-row md:relative justify-center md:justify-between items-center md:items-end gap-3 sm:gap-4 shrink-0 mt-auto pb-4 md:pb-0 ${isSpectator ? 'md:min-h-[210px]' : ''}`}>
+      {/* `pb-6` on mobile is the bottom-UI's distance from the viewport
+          bottom — independent of the table above. With `mt-auto` pushing
+          this block to the end of the page flex column, this is what
+          drives "controls X pixels above the screen bottom" semantics:
+          zoom out → felt shrinks → bigger gap between felt and these
+          controls; we never re-tie to the felt's geometry. md+ keeps
+          pb-0 because the desktop layout pins sidebets/chat to the side
+          and the bottom-UI sits naturally at the column bottom. */}
+      <div className={`w-full flex flex-col md:flex-row md:relative justify-center md:justify-between items-center md:items-end gap-3 sm:gap-4 shrink-0 mt-auto pb-6 md:pb-0 ${isSpectator ? 'md:min-h-[210px]' : ''}`}>
         
         {/* Actions Panel — fixed-size chrome regardless of turn so the rest
             of the layout doesn't shift between waiting and acting. */}

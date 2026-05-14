@@ -14,20 +14,35 @@ import { ProfileAvatar } from './ProfileSelector'
 export default function InviteToTablePopover({ open, onClose, roomId, fromDisplayName }) {
   const [q, setQ] = useState('')
   const [results, setResults] = useState([])
+  // Recent DM convo partners — pre-populated as quick-pick rows when the
+  // search box is empty so the user can reinvite their last 5 contacts in
+  // one click. Pulled lazily on open; the conversations endpoint already
+  // sorts by last_message_at DESC.
+  const [recents, setRecents] = useState([])
   const [sentTo, setSentTo] = useState(null)
   const [busyId, setBusyId] = useState(null)
   const [error, setError] = useState(null)
+  // Arrow-key cursor over the visible list (results when typing, recents
+  // when not). Mirrors the DmsPopup pattern — Enter sends the invite to
+  // whichever row the cursor is on, no mouse needed.
+  const [cursor, setCursor] = useState(0)
   const wrapRef = useRef(null)
 
   useEffect(() => {
     if (!open) {
-      setQ(''); setResults([]); setSentTo(null); setError(null); setBusyId(null)
+      setQ(''); setResults([]); setSentTo(null); setError(null); setBusyId(null); setCursor(0)
       return
     }
     function onPointer(e) { if (wrapRef.current?.contains(e.target)) return; onClose?.() }
     function onKey(e) { if (e.key === 'Escape') onClose?.() }
     document.addEventListener('pointerdown', onPointer)
     document.addEventListener('keydown', onKey)
+    // Pre-load recent contacts when the popover first opens. listDms is
+    // already cheap (single indexed query) and we cap to 5 below — no
+    // need to paginate or filter beyond the empty-query default.
+    api.listDms()
+      .then(({ conversations }) => setRecents((conversations || []).slice(0, 5)))
+      .catch(() => setRecents([]))
     return () => {
       document.removeEventListener('pointerdown', onPointer)
       document.removeEventListener('keydown', onKey)
@@ -47,6 +62,17 @@ export default function InviteToTablePopover({ open, onClose, roomId, fromDispla
     }, 200)
     return () => clearTimeout(t)
   }, [q, open])
+
+  const isSearching = q.trim().length >= 2
+  // Normalize recents → same {id, displayName, username, avatarUrl} shape
+  // the search results have, so the row renderer doesn't have to branch.
+  const recentUsers = recents
+    .map(c => c.other)
+    .filter(u => u && u.id)
+  const visibleList = isSearching ? results : recentUsers
+  useEffect(() => {
+    setCursor(prev => Math.min(prev, Math.max(0, visibleList.length - 1)))
+  }, [visibleList.length])
 
   async function invite(u) {
     if (!roomId) { setError('No active table — refresh.'); return }
@@ -86,6 +112,21 @@ export default function InviteToTablePopover({ open, onClose, roomId, fromDispla
           type="text"
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            // Arrow-nav over visibleList (search results when typing,
+            // recent contacts when empty). Enter sends the invite to
+            // whichever row the cursor is on.
+            if (e.key === 'ArrowDown') {
+              e.preventDefault()
+              setCursor(c => Math.min(visibleList.length - 1, c + 1))
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault()
+              setCursor(c => Math.max(0, c - 1))
+            } else if (e.key === 'Enter') {
+              const pick = visibleList[cursor]
+              if (pick) { e.preventDefault(); invite(pick) }
+            }
+          }}
           placeholder="Search username or display name"
           // text-sm matches the rest of the app's inputs on desktop.
           // The 16px mobile floor in globals.css still applies.
@@ -93,18 +134,30 @@ export default function InviteToTablePopover({ open, onClose, roomId, fromDispla
         />
       </div>
       {error && <div className="px-3 pb-2 text-[10px] font-bold text-rose-300">{error}</div>}
+      {/* Section label only when showing recents — search results don't
+          need a header (the input already labels itself). */}
+      {!isSearching && visibleList.length > 0 && (
+        <div className="px-3 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">
+          Recent
+        </div>
+      )}
       <ul className="max-h-[50vh] overflow-y-auto">
-        {results.length === 0 && q.trim().length >= 2 && (
+        {visibleList.length === 0 && isSearching && (
           <li className="px-3 py-3 text-center text-[11px] font-bold text-zinc-500">No matches.</li>
         )}
-        {results.length === 0 && q.trim().length < 2 && (
-          <li className="px-3 py-3 text-center text-[11px] font-bold text-zinc-500">Type at least 2 characters.</li>
+        {visibleList.length === 0 && !isSearching && (
+          <li className="px-3 py-3 text-center text-[11px] font-bold text-zinc-500">
+            Type a username — or message someone first to fill this list.
+          </li>
         )}
-        {results.map(u => {
+        {visibleList.map((u, i) => {
           const sent = sentTo === u.id
           const busy = busyId === u.id
           return (
-            <li key={u.id} className="border-b border-zinc-800/60 last:border-b-0">
+            <li
+              key={u.id}
+              className={`border-b border-zinc-800/60 last:border-b-0 ${i === cursor ? 'bg-zinc-800/60' : ''}`}
+            >
               <div className="flex items-center gap-2 px-3 py-2">
                 <ProfileAvatar
                   avatarUrl={u.avatarUrl}

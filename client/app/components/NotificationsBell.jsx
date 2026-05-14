@@ -73,8 +73,17 @@ export default function NotificationsBell() {
   }, [open])
 
   // Refetch on open so the dropdown shows the absolute latest when the
-  // user actually looks at it (poll-based cache may be 30s stale).
-  useEffect(() => { if (open) refresh() }, [open, refresh])
+  // user actually looks at it (poll-based cache may be 30s stale). Also
+  // mark every visible notification as read in one shot — the user has
+  // implicitly seen them by opening the panel, and forcing them to click
+  // each row individually is friction with no upside. The server's
+  // markAllRead is idempotent (WHERE read_at IS NULL), so re-calling on
+  // every re-open is cheap.
+  useEffect(() => {
+    if (!open) return
+    refresh()
+    markAllRead()
+  }, [open, refresh, markAllRead])
 
   if (!user) return null
 
@@ -145,7 +154,26 @@ export default function NotificationsBell() {
                       size={28}
                     />
                   ) : (
-                    <div className="h-7 w-7 shrink-0 rounded-full bg-zinc-700" />
+                    // Sender-less notifications today are achievement
+                    // unlocks (system-dispatched, no user attribution).
+                    // The empty grey disc looked like a missing avatar
+                    // bug — swap in a trophy so the row reads as a
+                    // first-class achievement notification.
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-amber-300">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                        className="h-4 w-4"
+                        aria-hidden
+                      >
+                        <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
+                        <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
+                        <path d="M4 22h16" />
+                        <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+                        <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+                        <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+                      </svg>
+                    </div>
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[12px] font-bold text-zinc-100">{describe(n)}</div>

@@ -174,6 +174,38 @@ export async function countUnreadConversations(userId) {
   return rows[0]?.count || 0
 }
 
+// Sweep expired table invites. Anything older than `maxAgeSeconds`
+// (default 60s) gets deleted. Invites are time-sensitive — the host's
+// table state can change in seconds — so the inbox shouldn't accumulate
+// stale rows. Returns deleted rows so the caller can push `dm:deleted`
+// frames to BOTH parties (sender + recipient) — unlike the host-left
+// path, which only notifies recipients.
+export async function expireOldTableInvites({ maxAgeSeconds = 60 } = {}) {
+  const { rows } = await query(
+    `
+    WITH deleted AS (
+      DELETE FROM dm_messages m
+       USING dm_conversations c
+       WHERE m.conversation_id = c.id
+         AND m.kind = 'table_invite'
+         AND m.created_at < NOW() - ($1::int * INTERVAL '1 second')
+       RETURNING m.id AS message_id,
+                 m.conversation_id,
+                 m.sender_user_id,
+                 c.user_a_id, c.user_b_id
+    )
+    SELECT * FROM deleted
+    `,
+    [maxAgeSeconds]
+  )
+  return rows.map(r => ({
+    messageId: Number(r.message_id),
+    conversationId: r.conversation_id,
+    senderUserId: r.sender_user_id,
+    recipientUserId: r.sender_user_id === r.user_a_id ? r.user_b_id : r.user_a_id
+  }))
+}
+
 // Delete every table_invite DM the sender ever sent for this tableId.
 // Fired when the sender leaves the room — the invite is dead the moment
 // they walk away, so we evict it from every recipient's inbox rather

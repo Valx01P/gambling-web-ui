@@ -5,6 +5,8 @@ import { WebSocketServer } from './src/network/WebSocketServer.js'
 import { apiRouter } from './src/api/index.js'
 import { runMigrations } from './src/db/migrate.js'
 import { closePool, query as dbQuery } from './src/db/pool.js'
+import { expireOldTableInvites } from './src/dms/dmsRepository.js'
+import { pushToUser } from './src/notifications/dispatcher.js'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -124,6 +126,28 @@ async function start() {
     // call is a single bounded DELETE against an indexed column.
     pruneAuditLog().catch(() => {})
     setInterval(pruneAuditLog, 24 * 60 * 60 * 1000).unref()
+
+    // Table invites are short-lived by design — the host's seat / table
+    // state can change in seconds, so a stale invite leads users into
+    // empty / abandoned rooms. Sweep every 30s with a 60s TTL; push
+    // dm:deleted to BOTH parties so each side's UI drops the row.
+    const sweepInvites = async () => {
+      try {
+        const deleted = await expireOldTableInvites({ maxAgeSeconds: 60 })
+        for (const d of deleted) {
+          const frame = {
+            type: 'dm:deleted',
+            data: { messageId: d.messageId, conversationId: d.conversationId, reason: 'expired' }
+          }
+          pushToUser(d.senderUserId, frame)
+          pushToUser(d.recipientUserId, frame)
+        }
+      } catch (err) {
+        console.warn('[invites] expire sweep failed:', err.message)
+      }
+    }
+    sweepInvites()
+    setInterval(sweepInvites, 30 * 1000).unref()
   } else {
     console.warn('[db] DATABASE_URL not set; bot endpoints will fail. See server/.env.example.')
   }

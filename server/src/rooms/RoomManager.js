@@ -89,6 +89,16 @@ export class RoomManager {
         message: 'Joined as spectator.'
       })
       return { ...result, room }
+    } else if (mode === 'join_table') {
+      // Same surface as `spectate` (caller passes a known roomId) but tries
+      // for an actual seat first. addPlayer already falls back to spectator
+      // if the room is full or it's an arena, so the caller doesn't need to
+      // branch — they just get isSpectator back in the result. Used by the
+      // table-invite click path: the invitee should sit at the host's table,
+      // not just watch.
+      if (!roomId) return { success: false, error: 'Table required' }
+      room = this.rooms.get(roomId)
+      if (!room) return { success: false, error: 'Table no longer exists' }
     } else if (mode === 'bot_arena') {
       // Creating an arena requires a signed-in account — anonymous WS sockets
       // never get player.userId set, which is the gate.
