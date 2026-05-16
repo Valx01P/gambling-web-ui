@@ -22,8 +22,11 @@ const TICK_MS = 2000
 const NUM_SCAM_COINS = 4
 const MAX_PLAYER_COINS = 1            // per player
 const PLAYER_COIN_FEE = 500           // chips burned to mint
-const RUG_KEEP_PERCENT = 0.30         // owner extracts this fraction of
-                                      // outsiders' invested cost on rug
+// Owner's rug bonus as a fraction of outsiders' total cost basis.
+// Bumped 0.30 → 0.60 in 2026-05 alongside the change that wipes
+// holders' positions entirely (see rugPull). The trolling has to
+// be worth pulling the trigger.
+const RUG_KEEP_PERCENT = 0.60
 const RUG_PRICE_FLOOR = 0.001         // coin collapses to ~0 after rug
 const MIN_TRADE_CHIPS = 1
 const MAX_HISTORY_FROM_FLAT = HISTORY_LEN
@@ -136,20 +139,56 @@ export class CryptoMarketEngine {
   getStatePayload(forPlayerId = null) {
     const coins = []
     for (const coin of this.coins.values()) {
+      // Top holders — sort by current share count, take top 5. Lets a
+      // would-be dumper see exactly who they're about to wreck (and
+      // lets a would-be buyer see whether one whale dominates the
+      // float, which is its own warning).
+      const holders = []
+      for (const [pid, bag] of this.holdings) {
+        const pos = bag.get(coin.id)
+        if (!pos || pos.shares <= 0) continue
+        const p = this._findPlayer(pid)
+        holders.push({
+          playerId: pid,
+          username: p?.username || 'gone',
+          shares: round4(pos.shares),
+          value: Math.round(pos.shares * coin.price)
+        })
+      }
+      holders.sort((a, b) => b.value - a.value)
+      const topHolders = holders.slice(0, 5)
+      // Market cap estimate. Player coins know their supply; base/scam
+      // coins use the liquidity as a proxy so the number feels "real".
+      const marketCap = coin.kind === 'player'
+        ? Math.round(coin.price * (coin.totalSupply || 0))
+        : Math.round(coin.liquidity * 2)
+      // 2026-05: disguise player coins from non-owners. The whole
+      // grift only works if other players think it's just another
+      // scam meme coin — so for outside viewers we lie about `kind`
+      // and strip ownerId / ownerName / totalSupply. The owner still
+      // sees their own coin's owner fields so they can rug it.
+      const isOwnCoin = forPlayerId && coin.ownerId === forPlayerId
+      const reportedKind = coin.kind === 'player' && !isOwnCoin ? 'scam' : coin.kind
       coins.push({
         id: coin.id,
         symbol: coin.symbol,
         name: coin.name,
-        kind: coin.kind,
+        kind: reportedKind,
         price: round4(coin.price),
         prevPrice: round4(coin.prevPrice),
         history: coin.history.slice(),
-        ownerId: coin.ownerId || null,
-        ownerName: coin.ownerName || null,
-        ownerShares: coin.kind === 'player' ? round4(coin.ownerShares) : null,
-        totalSupply: coin.kind === 'player' ? coin.totalSupply : null,
+        ownerId: isOwnCoin ? coin.ownerId : null,
+        ownerName: isOwnCoin ? coin.ownerName : null,
+        ownerShares: isOwnCoin ? round4(coin.ownerShares) : null,
+        totalSupply: isOwnCoin ? coin.totalSupply : null,
         rugged: !!coin.rugged,
-        createdAt: coin.createdAt
+        createdAt: coin.createdAt,
+        // Whale-mechanic surface: depth + cap + holders. Drives the
+        // "you'll move it X%" preview on the client.
+        liquidity: Math.round(coin.liquidity),
+        marketCap,
+        topHolders,
+        holderCount: holders.length
       })
     }
     const myPositions = []
@@ -203,13 +242,15 @@ export class CryptoMarketEngine {
     if (player.isBot) return { success: false, error: 'bots_cannot_trade' }
     const coin = this.coins.get(coinId)
     if (!coin) return { success: false, error: 'coin_not_found' }
+    if (coin.rugged) return { success: false, error: 'coin_rugged' }
     const spend = Math.floor(Number(chipsToSpend) || 0)
     if (!Number.isFinite(spend) || spend < MIN_TRADE_CHIPS) {
       return { success: false, error: 'invalid_amount' }
     }
     if (player.chips < spend) return { success: false, error: 'insufficient_chips' }
 
-    const shares = spend / coin.price
+    const priceAtTrade = coin.price
+    const shares = spend / priceAtTrade
     if (!Number.isFinite(shares) || shares <= 0) {
       return { success: false, error: 'invalid_amount' }
     }
@@ -235,8 +276,19 @@ export class CryptoMarketEngine {
       this._outsideInvested.set(coinId, (this._outsideInvested.get(coinId) || 0) + spend)
     }
 
+    // Apply whale price impact AFTER the trade fills. The buyer gets
+    // shares at priceAtTrade; subsequent buyers see the elevated
+    // price. Big bankrolls swinging chips around literally move the
+    // market here. Broadcast a "you moved the market X%" toast when
+    // the impact is meaningful (>1%) so the whale knows they whaled.
+    const impact = applyPriceImpact(coin, spend)
+    pushHistory(coin, coin.price)
+    if (Math.abs(impact) >= 0.01) {
+      this._notifyImpact(player, coin, impact, 'buy')
+    }
+
     this._broadcastState({ reason: 'buy' })
-    return { success: true, shares: round4(shares), spent: spend }
+    return { success: true, shares: round4(shares), spent: spend, priceImpact: impact, newPrice: coin.price }
   }
 
   sell(playerId, coinId, shareCount) {
@@ -255,7 +307,8 @@ export class CryptoMarketEngine {
     }
     if (toSell > pos.shares) toSell = pos.shares
 
-    const proceeds = Math.floor(toSell * coin.price)
+    const priceAtTrade = coin.price
+    const proceeds = Math.floor(toSell * priceAtTrade)
     player.chips += proceeds
 
     // Reduce cost basis proportionally — keeps realized vs unrealized
@@ -270,8 +323,35 @@ export class CryptoMarketEngine {
 
     if (pos.shares <= 0.00001) bag.delete(coinId)
 
+    // Apply downward price impact AFTER the seller cashes out. The
+    // seller gets priceAtTrade; the next holder watching the chart
+    // sees a candle crash. This is what makes whale dumps brutal —
+    // and what makes pump-and-dump viable: pump price, dump on the
+    // bagholders chasing the green candle. Liquidity also shrinks on
+    // sells, so each successive dump moves the price further.
+    const impact = applyPriceImpact(coin, -proceeds)
+    pushHistory(coin, coin.price)
+    if (Math.abs(impact) >= 0.01) {
+      this._notifyImpact(player, coin, impact, 'sell')
+    }
+
     this._broadcastState({ reason: 'sell' })
-    return { success: true, shares: round4(toSell), proceeds }
+    return { success: true, shares: round4(toSell), proceeds, priceImpact: impact, newPrice: coin.price }
+  }
+
+  // Toast back to the trader when their order moved the market in a
+  // visible way (>1% impact). Helps the whale feel like a whale and
+  // helps the minnow understand why their trade barely registered.
+  _notifyImpact(player, coin, impactFraction, side) {
+    const pct = Math.round(impactFraction * 1000) / 10  // one decimal
+    const arrow = pct >= 0 ? '↑' : '↓'
+    const verb = side === 'buy' ? 'buy' : 'dump'
+    player.send({
+      type: 'system_message',
+      data: {
+        message: `🐋 Your $${coin.symbol} ${verb} moved the market ${arrow}${Math.abs(pct).toFixed(1)}% — new price $${coin.price < 1 ? coin.price.toFixed(5) : coin.price.toFixed(2)}.`
+      }
+    })
   }
 
   createCoin(playerId, opts = {}) {
@@ -307,6 +387,12 @@ export class CryptoMarketEngine {
     const totalSupply = 1_000_000   // 1M shares; lets fractional buys feel chunky
     const ownerShares = totalSupply * keepPercent
 
+    // Player-coin liquidity starts shallow — any decent-sized buyer
+    // can pump it, any decent-sized seller can crash it. This is the
+    // "shitcoin" feel: huge volatility, tiny capital required to
+    // whale your own bag. Owner can pump their own coin then either
+    // dump it (sell) for proceeds OR rug it for the bonus.
+    const playerLiquidity = Math.max(20_000, Math.floor(startPrice * totalSupply * 0.05))
     const coin = makeCoin({
       id,
       symbol,
@@ -317,8 +403,11 @@ export class CryptoMarketEngine {
       ownerName: player.username,
       ownerShares,
       totalSupply,
-      outstandingHeld: 0
+      outstandingHeld: 0,
+      liquidity: playerLiquidity,
+      impactCap: 0.50
     })
+    coin._initialLiquidity = playerLiquidity
     this.coins.set(id, coin)
     this.ownerCoinIds.set(playerId, id)
     this._outsideInvested.set(id, 0)
@@ -364,6 +453,44 @@ export class CryptoMarketEngine {
 
     player.chips += ownerProceeds + rugBonus
 
+    // 2026-05: actually drain holders. Pre-change, rugging crashed the
+    // chart but every outsider could still in theory sell at the floor
+    // price and recover ~1% of their position, so the rug felt toothless
+    // ("I lost 99% of paper value but my chip count is fine"). Now every
+    // non-owner position in this coin is deleted: the chips outsiders
+    // already moved into shares at buy-time are now permanently locked.
+    // Broadcast a SYSTEM_MESSAGE per drained holder so the table sees
+    // what happened, and capture the per-holder amount on the return
+    // value for the UI's "you got rugged for $N" toast.
+    const drainedHolders = []
+    for (const [holderId, holderBag] of this.holdings) {
+      if (holderId === playerId) continue
+      const pos = holderBag.get(coinId)
+      if (!pos || pos.shares <= 0) continue
+      drainedHolders.push({
+        playerId: holderId,
+        shares: pos.shares,
+        costBasis: pos.costBasis
+      })
+      holderBag.delete(coinId)
+    }
+    // Per-holder system messages — surface the loss visibly. Goes
+    // through the room's broadcaster so connected holders see it on
+    // their feed even if they had the coin chart closed.
+    if (this.broadcast && drainedHolders.length > 0) {
+      const symbol = coin.symbol || 'COIN'
+      for (const h of drainedHolders) {
+        const victim = this._findPlayer(h.playerId)
+        if (!victim) continue
+        this.broadcast({
+          type: 'system_message',
+          data: {
+            message: `${player.username} rugged $${symbol} — ${victim.username} lost $${h.costBasis.toLocaleString()}.`
+          }
+        })
+      }
+    }
+
     // Crash the coin to penny-stock territory and freeze the owner status.
     coin.price = Math.max(RUG_PRICE_FLOOR, coin.price * 0.01)
     coin.rugged = true
@@ -374,12 +501,43 @@ export class CryptoMarketEngine {
     // Flatten history a bit so the chart actually shows the crash candle.
     pushHistory(coin, coin.price)
 
+    // Rug contagion — every OTHER live player coin takes a 10-25%
+    // hit because the room loses confidence in the meme-coin market
+    // for a few minutes. Base coins (BTC/ETH-style) and scam coins
+    // get a smaller 3-6% bump down because crypto-wide vibes sour.
+    // Mirrors the "one rug pulls liquidity from everyone else's
+    // shitcoin" dynamic of real meme cycles.
+    let contagionCount = 0
+    for (const other of this.coins.values()) {
+      if (other.id === coin.id || other.rugged) continue
+      let drop = 0
+      if (other.kind === 'player') drop = 0.10 + Math.random() * 0.15
+      else if (other.kind === 'scam') drop = 0.03 + Math.random() * 0.03
+      else drop = 0.005 + Math.random() * 0.01   // base coins barely flinch
+      other.price = Math.max(0.0001, other.price * (1 - drop))
+      // Sucking a bit of liquidity out reflects panicked outflows.
+      other.liquidity = Math.max(
+        (other._initialLiquidity || other.liquidity) * 0.25,
+        other.liquidity * (1 - drop * 0.6)
+      )
+      pushHistory(other, other.price)
+      contagionCount += 1
+    }
+    if (contagionCount > 0) {
+      this.broadcast({
+        type: 'system_message',
+        data: { message: `📉 The $${coin.symbol} rug shook the market. ${contagionCount} other coins dropped on contagion.` }
+      })
+    }
+
     this._broadcastState({ reason: 'rug', coinId, by: player.username })
     return {
       success: true,
       ownerProceeds,
       rugBonus,
-      totalCollected: ownerProceeds + rugBonus
+      totalCollected: ownerProceeds + rugBonus,
+      drainedHolders,
+      contagionCount
     }
   }
 
@@ -401,20 +559,26 @@ export class CryptoMarketEngine {
   _spawnInitial() {
     for (const tmpl of BASE_COIN_TEMPLATES) {
       const id = nextCoinId('base')
-      this.coins.set(id, makeCoin({
+      const baseLiquidity = 50_000_000   // BTC/ETH-style deep market
+      const coin = makeCoin({
         id,
         symbol: tmpl.symbol,
         name: tmpl.name,
         kind: 'base',
         price: tmpl.startPrice,
         volatility: tmpl.volatility,
-        trendBias: tmpl.trendBias
-      }))
+        trendBias: tmpl.trendBias,
+        liquidity: baseLiquidity,
+        impactCap: 0.20
+      })
+      coin._initialLiquidity = baseLiquidity
+      this.coins.set(id, coin)
     }
     for (let i = 0; i < NUM_SCAM_COINS; i += 1) {
       const id = nextCoinId('scam')
       const meme = generateMemeCoin(id)
-      this.coins.set(id, makeCoin({
+      const scamLiquidity = 2_000_000 + Math.random() * 3_000_000
+      const coin = makeCoin({
         id,
         symbol: meme.symbol,
         name: meme.name,
@@ -422,8 +586,12 @@ export class CryptoMarketEngine {
         // Scam coins start at low fractional prices — buyers can grab
         // millions of shares for a small chip outlay, makes pump candles
         // psychologically thrilling.
-        price: 0.001 + Math.random() * 0.1
-      }))
+        price: 0.001 + Math.random() * 0.1,
+        liquidity: scamLiquidity,
+        impactCap: 0.40
+      })
+      coin._initialLiquidity = scamLiquidity
+      this.coins.set(id, coin)
     }
   }
 
@@ -459,6 +627,18 @@ function makeCoin(init) {
     anchor: init.price,
     volatility: init.volatility ?? 0.02,
     trendBias: init.trendBias ?? 0,
+    // ── Whale / price-impact ────────────────────────────────────────
+    // `liquidity` is the chip pool backing this market for the price-
+    // impact calculation. Big numbers = deep market = small trades
+    // barely register. Small numbers = thin market = single buyer can
+    // move the price 10-50%. Picked per kind:
+    //   base   — $50M+ (BTC/ETH-style: only a billionaire moves it)
+    //   scam   — $2-5M  (modest depth, big traders can swing it)
+    //   player — $50K seed (any buyer can pump or dump it noticeably)
+    // `impactCap` clamps the per-trade % move so a single absurd buy
+    // can't 100x the price in one shot — keeps the chart readable.
+    liquidity: init.liquidity ?? 1_000_000,
+    impactCap: init.impactCap ?? 0.30,
     // scam-only fields
     regimeName: null,
     regimeDrift: 0,
@@ -474,6 +654,41 @@ function makeCoin(init) {
     ownerLeft: false,
     createdAt: Date.now()
   }
+}
+
+// ─── Price-impact engine ─────────────────────────────────────────────────
+// Move a coin's price in response to a chip-denominated order. Positive
+// chipsDelta = buy pressure; negative = sell pressure. Uses a smoothed
+// linear impact model: the % price move = (chipsDelta / liquidity) *
+// kind-specific multiplier, clamped to ±impactCap. Liquidity grows on
+// buys and shrinks on sells, so a chain of dumps gets WORSE per trade
+// (less depth left to absorb the next sell) — i.e., panic-selling a
+// thin coin spirals fast. Returns the % impact actually applied so
+// callers can broadcast "you moved the market X%" feedback.
+function applyPriceImpact(coin, chipsDelta) {
+  if (!coin || !Number.isFinite(chipsDelta) || chipsDelta === 0) return 0
+  const depth = Math.max(1000, coin.liquidity || 1000)
+  // Kind-based amplifier: player coins are the MOST volatile of all.
+  // A $100K trade on BTC barely registers; on a scam coin it bumps
+  // the chart visibly; on a player meme coin it can 2-3x the price
+  // (or crash it 60%). Big enough swings that other players are
+  // tempted to YOLO in for the pump — exactly the trap the minter
+  // is hoping for.
+  const kindMul = coin.kind === 'player' ? 2.4
+                : coin.kind === 'scam'   ? 1.0
+                : 0.4   // base coins
+  const rawImpact = (chipsDelta / depth) * kindMul
+  const clamped = Math.max(-coin.impactCap, Math.min(coin.impactCap, rawImpact))
+  const newPrice = Math.max(coin.kind === 'player' && coin.rugged ? RUG_PRICE_FLOOR : 0.0001,
+    coin.price * (1 + clamped))
+  coin.price = newPrice
+  // Liquidity adjusts toward the order direction. Buys deposit chips
+  // into the pool; sells remove them. Don't let liquidity collapse to
+  // zero — clamp at 25% of starting value so the market is still
+  // tradeable even after sustained panic sells.
+  const liquidityFloor = Math.max(1000, (coin._initialLiquidity || depth) * 0.25)
+  coin.liquidity = Math.max(liquidityFloor, depth + chipsDelta)
+  return clamped
 }
 
 function round4(x) { return Math.round(x * 10000) / 10000 }

@@ -24,7 +24,12 @@ import {
 } from './propCatalog.js'
 import { recordSideBetResult } from '../users/luckStats.js'
 
-const EDGE = 0.04                    // 4% total spread (≈2% per side)
+// House cut on side bets. Set to 0 in 2026-05 — the casino-style vig
+// felt punitive in a friends-only game where the prop catalog already
+// has variance baked in. With EDGE = 0 buy and sell happen at the same
+// fair price, so a player can in-and-out a market with no implicit
+// rake (only the rounding from int shares).
+const EDGE = 0
 const PRICE_FLOOR = 0.02
 const PRICE_CEIL = 0.98
 const MIN_BET = 10                   // smallest stake the server accepts

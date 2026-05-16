@@ -16,21 +16,36 @@ export const POKER_CONFIG = {
 
 // Allowed blind levels at the table. Validated server-side so a malicious
 // client can't propose arbitrary numbers. Tail end of the list (1k/2k
-// through 16k/32k) is for deep-stack contest mode / late tournament feel
-// — the buy-in at STARTING_CHIPS=10k makes these reachable in normal play.
+// through the 500M/1B "absurd" tiers) is for deep-stack contest mode /
+// late tournament feel and high-stakes trolling — the buy-in at
+// STARTING_CHIPS=10k means the absurd tiers require loans, but the
+// chip math still works.
+// IMPORTANT: must stay in sync with client/app/poker/page.jsx BLIND_LEVELS.
 export const BLIND_LEVELS = [
-  { id: '5_10',         small: 5,     big: 10     },
-  { id: '15_25',        small: 15,    big: 25     },
-  { id: '25_50',        small: 25,    big: 50     },
-  { id: '50_100',       small: 50,    big: 100    },
-  { id: '100_200',      small: 100,   big: 200    },
-  { id: '250_500',      small: 250,   big: 500    },
-  { id: '500_1000',     small: 500,   big: 1000   },
-  { id: '1000_2000',    small: 1000,  big: 2000   },
-  { id: '2000_4000',    small: 2000,  big: 4000   },
-  { id: '4000_8000',    small: 4000,  big: 8000   },
-  { id: '8000_16000',   small: 8000,  big: 16000  },
-  { id: '16000_32000',  small: 16000, big: 32000  }
+  { id: '5_10',           small: 5,         big: 10         },
+  { id: '15_25',          small: 15,        big: 25         },
+  { id: '25_50',          small: 25,        big: 50         },
+  { id: '50_100',         small: 50,        big: 100        },
+  { id: '100_200',        small: 100,       big: 200        },
+  { id: '250_500',        small: 250,       big: 500        },
+  { id: '500_1000',       small: 500,       big: 1000       },
+  { id: '1000_2000',      small: 1000,      big: 2000       },
+  { id: '2000_4000',      small: 2000,      big: 4000       },
+  { id: '4000_8000',      small: 4000,      big: 8000       },
+  { id: '8000_16000',     small: 8000,      big: 16000      },
+  { id: '16000_32000',    small: 16000,     big: 32000      },
+  { id: '50000_100000',   small: 50000,     big: 100000     },
+  { id: '150000_300000',  small: 150000,    big: 300000     },
+  { id: '500000_1m',      small: 500000,    big: 1000000    },
+  { id: '1m_2m',          small: 1000000,   big: 2000000    },
+  { id: '5m_10m',         small: 5000000,   big: 10000000   },
+  { id: '50m_100m',       small: 50000000,  big: 100000000  },
+  { id: '500m_1b',        small: 500000000,    big: 1000000000    },
+  // Trillion tier — keep in sync with client BLIND_LEVELS.
+  { id: '5b_10b',         small: 5000000000,    big: 10000000000    },
+  { id: '50b_100b',       small: 50000000000,   big: 100000000000   },
+  { id: '500b_1t',        small: 500000000000,  big: 1000000000000  },
+  { id: '5t_10t',         small: 5000000000000, big: 10000000000000 }
 ]
 
 // Approvals required to apply a blinds change, indexed by # of seated humans
@@ -151,6 +166,34 @@ export const MESSAGE_TYPES = {
   // Auth handshake — client sends a JWT after connect so the server knows
   // which signed-in user this socket belongs to (needed for arena creation).
   AUTH_HELLO: 'auth_hello',
+
+  // Safe rejoin: the client sends RECONNECT with the last-issued
+  // sessionToken to re-attach a fresh WS to its existing seat (which the
+  // server held during the grace window). On success the server replies
+  // with RECONNECT_OK + a full room snapshot; on failure (token unknown,
+  // grace expired, seat already filled) it replies RECONNECT_FAIL and the
+  // client falls back to a fresh join.
+  RECONNECT: 'reconnect',
+  RECONNECT_OK: 'reconnect_ok',
+  RECONNECT_FAIL: 'reconnect_fail',
+
+  // Broadcast to a room when one of its players' WS closes but they're
+  // still in the grace window. Lets the client show a "(reconnecting…)"
+  // tag on the affected seat instead of treating them as gone.
+  PLAYER_DISCONNECTED: 'player_disconnected',
+  PLAYER_RECONNECTED: 'player_reconnected',
+
+  // Player-vs-player griefing items. See server/src/items/itemEngine.js.
+  // - item:use     (client → server)  { itemId, targetId? }
+  // - item:result  (server → client)  generic ack for the user (cards on peek, amount on hack, etc.)
+  // - item:scam_popup (server → target only)  trigger the shifting-buttons popup
+  // - item:scam_resolve (client → server)     { scamId, accepted }
+  // - items:state  (server → client)  per-player snapshot of cooldowns / readiness
+  ITEM_USE: 'item:use',
+  ITEM_RESULT: 'item:result',
+  ITEM_SCAM_POPUP: 'item:scam_popup',
+  ITEM_SCAM_RESOLVE: 'item:scam_resolve',
+  ITEMS_STATE: 'items:state',
 
   // Achievement events — fired when a signed-in user crosses a milestone
   // (e.g., the 12-hand "your bot is unlocked" trigger). Renders as a toast

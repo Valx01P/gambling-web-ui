@@ -34,7 +34,14 @@ import { useAuth } from '../lib/useAuth'
 // already spans the viewport, so fixed and absolute behave identically.
 export default function RouteNavCluster({ as: As = 'div', className = '', children, ...rest }) {
   const { user } = useAuth()
-  const offset = user ? 'right-14 sm:right-16' : 'right-24 sm:right-28'
+  // The `right` offset is `max(<mobile-offset>, calc((100vw - 80rem) / 2 + <mobile-offset>))`
+  // so on viewports wider than the `max-w-7xl` (80rem = 1280px) content
+  // band, the cluster tracks the content's right edge instead of drifting
+  // out to the viewport edge alongside the AccountDock. Mirrors the dock's
+  // offset math so the two stay aligned at every width.
+  const offset = user
+    ? 'right-[max(3.5rem,calc((100vw-80rem)/2+3.5rem))] sm:right-[max(4rem,calc((100vw-80rem)/2+4rem))]'
+    : 'right-[max(6rem,calc((100vw-80rem)/2+6rem))] sm:right-[max(7rem,calc((100vw-80rem)/2+7rem))]'
   return (
     <As
       className={`fixed ${offset} top-3 z-10 flex items-center gap-2 sm:top-4 ${className}`}

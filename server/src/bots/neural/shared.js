@@ -227,14 +227,18 @@ export function actionQuality(actionIdx, features) {
 
   switch (actionIdx) {
     case 0: {  // fold
-      if (!facing) return -0.6  // folding into a free check is just wrong
+      // 2026-05: stronger negative signal on over-folding. Bots were
+      // learning to fold too readily because the loss for "fold a hand
+      // we'd have won" was only modestly bigger than "call and lose".
+      // The new scale pulls aggressively when fold was clearly wrong.
+      if (!facing) return -1.0  // folding into a free check is just wrong
       // Pot-odds-justified fold: equity is below the breakeven, so passing
       // is +EV. Worse the equity vs pot odds, better the fold.
       const margin = equity - potOdds
       if (margin < -0.10) return +0.8   // textbook fold (weak hand vs cheap call)
-      if (margin <  0.05) return +0.2   // marginal fold, fine
-      if (margin <  0.20) return -0.6   // bad fold — should be calling
-      return -1.2                       // terrible fold — clear value left on the table (AK preflop, etc.)
+      if (margin <  0.05) return +0.1   // marginal fold, only slightly OK
+      if (margin <  0.20) return -0.9   // bad fold — should be calling
+      return -1.6                       // terrible fold — clear value left on the table (AK preflop, etc.)
     }
     case 1: {  // check
       if (facing) return -1.0           // can't check facing a bet; if the engine remapped, still wrong intent

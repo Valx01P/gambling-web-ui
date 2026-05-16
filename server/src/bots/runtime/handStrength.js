@@ -25,6 +25,15 @@ export function preflopStrength(cards) {
 }
 
 // Postflop: evaluate the bot's best 5-card hand and bucket it.
+//
+// Rebalanced 2026-05: previously labeled any made-hand below pair as 'trash',
+// which made rule bots auto-fold every missed flop — including spots with
+// big draws or overcards. Now:
+//   • high-card defaults to 'weak' (was 'trash') so position / draws / cheap
+//     calls aren't forced into a fold by tier alone. Honest 'trash' only
+//     applies when we couldn't evaluate (bad input).
+//   • two-pair upgraded 'medium' → 'strong'. It's a strong made hand in
+//     most spots; downgrading it was overly cautious.
 export function postflopStrength(holeCards, communityCards) {
   if (!Array.isArray(holeCards) || holeCards.length < 2) return 'trash'
   if (!Array.isArray(communityCards) || communityCards.length === 0) {
@@ -37,9 +46,9 @@ export function postflopStrength(holeCards, communityCards) {
     if (r === 5) return 'strong' // flush
     if (r === 4) return 'strong' // straight
     if (r === 3) return 'strong' // three of a kind
-    if (r === 2) return 'medium' // two pair
+    if (r === 2) return 'strong' // two pair — almost always a value hand
     if (r === 1) return 'medium' // pair
-    return 'trash'               // high card
+    return 'weak'                // high card — playable in position, not auto-fold
   } catch {
     return 'trash'
   }

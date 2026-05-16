@@ -46,7 +46,15 @@ import RunItTwiceVote from '../components/RunItTwiceVote'
 import DailyChallengePanel from '../components/DailyChallengePanel'
 import SkinSelector from '../components/SkinSelector'
 import CryptoMarketPanel from '../components/CryptoMarketPanel'
-import FinancesPanel from '../components/FinancesPanel'
+import ItemsPanel from './components/ItemsPanel'
+import PeekRevealModal from './components/PeekRevealModal'
+import ScamPopupModal from './components/ScamPopupModal'
+import AssetsPanel from './components/AssetsPanel'
+import JobsPanel from './components/JobsPanel'
+import StocksPanel from './components/StocksPanel'
+import WorldPanel from './components/WorldPanel'
+import InvestmentHUD from './components/InvestmentHUD'
+import InfluencePanel from './components/InfluencePanel'
 import { resolveSkinCss } from '../lib/skinPresets'
 import { buildPokerStatistics, buildSpectatorStatistics, evaluateHand, formatCard, formatPercent, getHandName } from '../lib/pokerOdds'
 // Seat geometry lives in ./lib/seatLayout — shared by spectator view, the
@@ -70,6 +78,9 @@ const SIDE_BETS_VISIBLE_STORAGE_KEY = 'poker_side_bets_visible'
 // Same persistence model as chat / side-bets, just flipped polarity.
 const FINANCES_WIDGET_STORAGE_KEY = 'poker_finances_widget_open'
 const STATS_MODE_STORAGE_KEY = 'poker_stats_mode_on'
+// HUD defaults ON — it shipped always-rendered, so existing users keep it.
+// '0' = explicitly disabled. Anything else (including missing) = on.
+const HUD_ENABLED_STORAGE_KEY = 'poker_investment_hud_enabled'
 // Last blind level the user successfully applied to a table. Used as the
 // preferred default when they next create / propose at a table.
 const BLIND_LEVEL_PREF_STORAGE_KEY = 'poker_blind_level_pref'
@@ -84,24 +95,167 @@ const POKER_STARTING_CHIPS = 1000
 // One unique title per tier (no bucketing) so the highest stakes don't
 // keep saying the same "Mythic" tag.
 const BLIND_LEVELS = [
-  { id: '5_10',         small: 5,     big: 10,    label: 'Penny ante'         },
-  { id: '15_25',        small: 15,    big: 25,    label: 'Garage night'       },
-  { id: '25_50',        small: 25,    big: 50,    label: 'Coffee-shop reg'    },
-  { id: '50_100',       small: 50,    big: 100,   label: 'Weekend grinder'    },
-  { id: '100_200',      small: 100,   big: 200,   label: 'Local crusher'      },
-  { id: '250_500',      small: 250,   big: 500,   label: 'Backroom pro'       },
-  { id: '500_1000',     small: 500,   big: 1000,  label: 'High roller'        },
-  { id: '1000_2000',    small: 1000,  big: 2000,  label: 'Whale tank'         },
-  { id: '2000_4000',    small: 2000,  big: 4000,  label: 'Hedge fund energy'  },
-  { id: '4000_8000',    small: 4000,  big: 8000,  label: 'Family office'      },
-  { id: '8000_16000',   small: 8000,  big: 16000, label: 'Oligarch grade'     },
-  { id: '16000_32000',  small: 16000, big: 32000, label: 'Mythic'             }
+  { id: '5_10',           small: 5,         big: 10,         label: 'Penny ante'         },
+  { id: '15_25',          small: 15,        big: 25,         label: 'Garage night'       },
+  { id: '25_50',          small: 25,        big: 50,         label: 'Coffee-shop reg'    },
+  { id: '50_100',         small: 50,        big: 100,        label: 'Weekend grinder'    },
+  { id: '100_200',        small: 100,       big: 200,        label: 'Local crusher'      },
+  { id: '250_500',        small: 250,       big: 500,        label: 'Backroom pro'       },
+  { id: '500_1000',       small: 500,       big: 1000,       label: 'High roller'        },
+  { id: '1000_2000',      small: 1000,      big: 2000,       label: 'Whale tank'         },
+  { id: '2000_4000',      small: 2000,      big: 4000,       label: 'Hedge fund energy'  },
+  { id: '4000_8000',      small: 4000,      big: 8000,       label: 'Family office'      },
+  { id: '8000_16000',     small: 8000,      big: 16000,      label: 'Oligarch grade'     },
+  { id: '16000_32000',    small: 16000,     big: 32000,      label: 'Mythic'             },
+  // 2026-05: absurd-blind levels. Player feedback was that high-stakes
+  // peer pressure makes the game more interesting — these tiers escalate
+  // by ~3x each so the math (stacks, side bets, loans) starts to feel
+  // genuinely unreasonable. Labels lean into the bit.
+  { id: '50000_100000',   small: 50000,     big: 100000,     label: 'Sovereign wealth'   },
+  { id: '150000_300000',  small: 150000,    big: 300000,     label: 'Tax haven'          },
+  { id: '500000_1m',      small: 500000,    big: 1000000,    label: 'Private island'     },
+  { id: '1m_2m',          small: 1000000,   big: 2000000,    label: 'Cartel money'       },
+  { id: '5m_10m',         small: 5000000,   big: 10000000,   label: 'Russian oligarch'   },
+  { id: '50m_100m',       small: 50000000,  big: 100000000,  label: 'Fortune 500 CEO'    },
+  { id: '500m_1b',        small: 500000000,    big: 1000000000,    label: 'Ten-figure villain' },
+  // Trillion tier — for the late-game economy where players have built
+  // multi-asset portfolios and stocks/territories pay in billions/hand.
+  { id: '5b_10b',         small: 5000000000,    big: 10000000000,    label: 'Trillionaire warmup' },
+  { id: '50b_100b',       small: 50000000000,   big: 100000000000,   label: 'Apex predator' },
+  { id: '500b_1t',        small: 500000000000,  big: 1000000000000,  label: 'Trillion-dollar table' },
+  { id: '5t_10t',         small: 5000000000000, big: 10000000000000, label: 'Reality-warping stakes' }
 ]
+
+// Tools-menu LRU (Recents) tracking — persisted to localStorage so the
+// quick-access bar survives reloads. We store the last N opened panel
+// ids in mru-first order. Destructive panels (reset / big_yahu) are
+// blocked from the recents to avoid a one-click footgun.
+const TOOLS_LRU_KEY = 'gwu_tools_recents'
+const TOOLS_LRU_MAX = 5
+const TOOLS_LRU_BLOCKLIST = new Set(['reset', 'big_yahu'])
+// Set of panel ids the user has hidden from the Tools menu. Persisted
+// to localStorage. The HIDDEN panel is still REACHABLE via the Recents
+// bar or direct keyboard shortcuts — this just hides the button in
+// the normal menu listing.
+const TOOLS_HIDDEN_KEY = 'gwu_tools_hidden'
+// Display metadata for the LRU pills. Keeps labels + accents in one
+// place — the menu's own buttons each style themselves but the bar
+// at the top is a tighter pill row that needs centralized info.
+// Hover-tooltip copy for every tool-menu entry. Title attrs show on
+// desktop hover; mobile users see the label + emoji. Keep these short
+// — they live in the title attr, no markup support.
+const TOOLS_TOOLTIPS = {
+  help:     'Quick rules + how everything works',
+  hand:     'Current hand details — board, odds, action history',
+  session:  'Hands you\'ve played this session + P/L',
+  daily:    'Daily challenge progress + reward',
+  crypto:   'Trade base/meme coins, mint your own, rug it',
+  items:    'Peek, swap, scam, hack — 5-hand cooldowns',
+  assets:   'Buy fictional real estate; passive yield + appreciation',
+  jobs:     'Claim a gig each hand — works even if you\'re broke',
+  stocks:   'Trade stocks, sabotage competitors, ride earnings events',
+  world:    'Claim territories, paint the map your color, release pandemics',
+  influence:'Pay-to-manipulate-markets meta layer (fake news, scandals, crises)',
+  bank:     'Loans + credit score + payoff',
+  bots:     'Seat AI bots at the table',
+  blinds:   'Propose a different blind level',
+  contest:  'Auto-escalating blinds for a tournament feel',
+  arena:    'Bot Arena spectator controls',
+  skin:     'Customize your nameplate color',
+  profile:  'Edit your username / avatar',
+  reset:    'Wipe your bankroll back to starting chips',
+  big_yahu: 'Forgive all loans, reset P/L (one-use unlock)',
+}
+
+const TOOLS_LRU_META = {
+  help:     { label: 'Help',          accent: 'text-white' },
+  hand:     { label: 'Hand',          accent: 'text-white' },
+  session:  { label: 'Session',       accent: 'text-white' },
+  daily:    { label: 'Daily',         accent: 'text-amber-200' },
+  crypto:   { label: 'Crypto',        accent: 'text-fuchsia-200' },
+  items:    { label: 'Items',         accent: 'text-lime-200' },
+  assets:   { label: 'Real Estate',   accent: 'text-emerald-200' },
+  jobs:     { label: 'Jobs',          accent: 'text-orange-200' },
+  stocks:   { label: 'Stocks',        accent: 'text-sky-200' },
+  world:    { label: 'World',         accent: 'text-purple-200' },
+  influence:{ label: 'Influence',     accent: 'text-violet-200' },
+  bank:     { label: 'Bank',          accent: 'text-teal-200' },
+  bots:     { label: 'Bots',          accent: 'text-white' },
+  blinds:   { label: 'Blinds',        accent: 'text-white' },
+  contest:  { label: 'Contest',       accent: 'text-white' },
+  arena:    { label: 'Arena',         accent: 'text-amber-200' },
+  skin:     { label: 'Skin',          accent: 'text-white' },
+  profile:  { label: 'Profile',       accent: 'text-white' },
+}
+
+// Parse user-typed chip amounts. Accepts: bare numbers ("12500"), commas
+// ("12,500"), K/M/B/T shorthand ("5K", "1.5M", "2.4B", "0.5T"), and
+// optional leading `$`. Returns null on garbage so the caller can fall
+// back to the previous value. Critical for the trillion-scale economy
+// where players don't want to type "1,500,000,000,000" into the bet
+// input — "1.5T" should just work.
+function parseChipShorthand(raw) {
+  if (raw == null) return null
+  const s = String(raw).trim().replace(/^\$/, '').replace(/,/g, '').toUpperCase()
+  if (s.length === 0) return null
+  // Match `<number><optional suffix>`. Number can be decimal.
+  const m = s.match(/^([0-9]+(?:\.[0-9]+)?)\s*([KMBT]?)$/)
+  if (!m) return null
+  const n = parseFloat(m[1])
+  if (!Number.isFinite(n)) return null
+  const suffixMul = { '': 1, K: 1_000, M: 1_000_000, B: 1_000_000_000, T: 1_000_000_000_000 }
+  const mul = suffixMul[m[2]] ?? 1
+  return Math.floor(n * mul)
+}
+
+// Compact dollar formatting for tight chrome (2-col blind pickers, where a
+// 25-char `$500,000,000/$1,000,000,000` would overflow a 140px cell at
+// text-[11px]). Switches to K / M / B suffixes once the number exceeds 5
+// digits. The full toLocaleString form is kept everywhere there's room
+// (the main blind list, header pills, etc.) so users still see exact
+// totals where it matters.
+function formatChipsCompact(amount) {
+  const n = Number(amount) || 0
+  const abs = Math.abs(n)
+  // Scales: K (10K+) / M (1M+) / B (1B+) / T (1T+). The game economy
+  // intentionally tops out in the quadrillions; T coverage is what
+  // matters for the absurd-blind tournament feel. Anything above 999T
+  // falls back to scientific via toLocaleString.
+  if (abs >= 1_000_000_000_000) return `${(n / 1_000_000_000_000).toFixed(n % 1_000_000_000_000 === 0 ? 0 : 1)}T`
+  if (abs >= 1_000_000_000)     return `${(n / 1_000_000_000).toFixed(n % 1_000_000_000 === 0 ? 0 : 1)}B`
+  if (abs >= 1_000_000)         return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`
+  if (abs >= 10_000)            return `${Math.round(n / 1000)}K`
+  return n.toLocaleString()
+}
+
+// Format a chip amount as a multiple of big blinds. At absurd-blind levels
+// the chip totals get unreadable (5,000,000 chips means nothing), but
+// "50BB" is the unit poker players actually think in. Returns a short
+// label like "5BB", "12.5BB", "0.5BB" — caller wraps in parens / dim text.
+function formatBB(amount, bb) {
+  const num = Number(amount) || 0
+  const big = Number(bb) || 0
+  if (big <= 0) return ''
+  const bbs = num / big
+  // Whole + half steps only — anything finer is visual noise next to
+  // chip totals that are already shown precisely.
+  let rounded
+  if (bbs >= 100) rounded = Math.round(bbs)
+  else if (bbs >= 10) rounded = Math.round(bbs * 2) / 2
+  else rounded = Math.round(bbs * 4) / 4
+  return `${rounded}BB`
+}
 
 function formatProfit(value) {
   const amount = Number(value) || 0
-  if (amount === 0) return '+0'
-  return amount > 0 ? `+${amount}` : String(amount)
+  if (amount === 0) return '+$0'
+  // Absurd-blind tiers push P/L into the trillions; bare numbers there
+  // ("+1000000000000") are unreadable. formatChipsCompact handles K→T;
+  // we strip its leading `-` and reattach the sign + `$` ourselves so
+  // ordering is always `[+|-]$[body]`.
+  const abs = Math.abs(amount)
+  const body = abs >= 1_000_000 ? formatChipsCompact(amount).replace('-', '') : abs.toLocaleString()
+  return amount > 0 ? `+$${body}` : `-$${body}`
 }
 
 function profitClass(value) {
@@ -134,7 +288,9 @@ function ActionBadge({ action }) {
   
   let text = action.text || info.defaultText
   if (action.amount > 0 && action.action !== 'sb' && action.action !== 'bb') {
-    text += ` ${action.amount}`
+    // Compact at huge stakes — these badges float over seat avatars and
+    // would otherwise overflow the [120/140px] nameplate width.
+    text += ` ${action.amount >= 1_000_000 ? formatChipsCompact(action.amount) : action.amount.toLocaleString()}`
   }
 
   return (
@@ -390,6 +546,14 @@ export default function PokerPage() {
   // closing. Reset whenever the window closes.
   const [feedOpenedFromTools, setFeedOpenedFromTools] = useState(false)
   const [connected, setConnected] = useState(false)
+  // True while a reconnect attempt is in flight (WS closed unexpectedly,
+  // we're inside the server's grace window). Drives the "(reconnecting…)"
+  // banner so the user sees we haven't given up on their seat.
+  const [reconnecting, setReconnecting] = useState(false)
+  // Player IDs whose seats are currently disconnected-but-in-grace.
+  // Seats use this to render a "(reconnecting…)" tag without removing
+  // the player. Cleared via `player_reconnected` broadcasts.
+  const [disconnectedPlayerIds, setDisconnectedPlayerIds] = useState(() => new Set())
   const [playerId, setPlayerId] = useState('')
   // Seat-click popover state. We anchor the popover to the nameplate's
   // bounding rect captured at click-time — that decouples placement
@@ -556,6 +720,67 @@ export default function PokerPage() {
   // coin.history every couple seconds. Per-recipient — myPositions and
   // myCoinId only contain the local player's data.
   const [cryptoState, setCryptoState] = useState(null)
+  // Items engine state — per-player cooldown snapshot pushed by the server
+  // on hand-end + join. Shape: { items: [{ id, ready, cooldownHandsRemaining }], refreshHands }
+  const [itemsState, setItemsState] = useState({ items: [], refreshHands: 5 })
+  // Appreciating-assets engine state — per-player snapshot of the
+  // catalog with current prices + the player's own positions. Server
+  // pushes `assets:state` on join, hand-end, and after every trade.
+  const [assetsState, setAssetsState] = useState({ catalog: [], myPositions: [], marketMultiplier: 1 })
+  const [jobsState, setJobsState] = useState({ jobs: [], myClaimedThisHand: false })
+  const [stocksState, setStocksState] = useState({ stocks: [], myPositions: [] })
+  const [optionsState, setOptionsState] = useState({ chain: [], myPositions: [], expiryHands: 3, contractMultiplier: 100 })
+  const [worldState, setWorldState] = useState({ territories: [], pandemicActive: false, yieldMultiplier: 1 })
+  const [influenceState, setInfluenceState] = useState({ ops: [] })
+  // Tools-menu Recents bar. Lazy-initialized from localStorage so the
+  // last-used panels persist across reloads. The bumpToolsLRU helper
+  // moves the just-opened panel to the head of the list.
+  const [toolsLRU, setToolsLRU] = useState(() => {
+    if (typeof window === 'undefined') return []
+    try {
+      const raw = window.localStorage.getItem(TOOLS_LRU_KEY)
+      if (!raw) return []
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.filter(id => typeof id === 'string').slice(0, TOOLS_LRU_MAX) : []
+    } catch { return [] }
+  })
+  const bumpToolsLRU = (panel) => {
+    setToolsLRU(prev => {
+      const next = [panel, ...prev.filter(p => p !== panel)].slice(0, TOOLS_LRU_MAX)
+      try { window.localStorage.setItem(TOOLS_LRU_KEY, JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
+  // Customize-mode + hidden-set for the Tools menu. When customize
+  // mode is on, every tool button shows a checkmark badge — toggle it
+  // to hide / unhide. Hidden tools stay reachable via the Recents bar.
+  const [toolsCustomizing, setToolsCustomizing] = useState(false)
+  const [toolsHidden, setToolsHidden] = useState(() => {
+    if (typeof window === 'undefined') return new Set()
+    try {
+      const raw = window.localStorage.getItem(TOOLS_HIDDEN_KEY)
+      if (!raw) return new Set()
+      const parsed = JSON.parse(raw)
+      return new Set(Array.isArray(parsed) ? parsed.filter(p => typeof p === 'string') : [])
+    } catch { return new Set() }
+  })
+  const toggleToolHidden = (panel) => {
+    setToolsHidden(prev => {
+      const next = new Set(prev)
+      if (next.has(panel)) next.delete(panel)
+      else next.add(panel)
+      try { window.localStorage.setItem(TOOLS_HIDDEN_KEY, JSON.stringify([...next])) } catch {}
+      return next
+    })
+  }
+  // When peek returns, server replies with the target's hole cards. We stash
+  // the result here to render the reveal modal. Cleared when the user
+  // dismisses the modal.
+  const [itemPeekResult, setItemPeekResult] = useState(null)
+  // Active scam popup pushed at us by another player. Resolved by clicking
+  // Accept or Block (or letting the server's 30s expiry fire). Shape:
+  // { scamId, senderUsername, amount }
+  const [scamPopup, setScamPopup] = useState(null)
   // Persistent top-left finance widget. Once opened it stays visible across
   // hands so the player can keep an eye on unrealized P/L as side bets and
   // crypto prices move. Local-only UI state, never broadcast — but the
@@ -565,6 +790,14 @@ export default function PokerPage() {
     if (typeof window === 'undefined') return false
     try { return window.localStorage.getItem(FINANCES_WIDGET_STORAGE_KEY) === '1' }
     catch { return false }
+  })
+
+  // Investment HUD on/off — toggled from Tools → Widgets. Defaults ON
+  // (only '0' explicitly disables) so existing users keep their HUD.
+  const [hudEnabled, setHudEnabled] = useState(() => {
+    if (typeof window === 'undefined') return true
+    try { return window.localStorage.getItem(HUD_ENABLED_STORAGE_KEY) !== '0' }
+    catch { return true }
   })
 
   // Cross-tab sync for the two persisted UI toggles. Without this, opening
@@ -580,6 +813,8 @@ export default function PokerPage() {
         const on = e.newValue === '1'
         setStatsMode(on)
         if (!on) setStatsExpansion('minimized')
+      } else if (e.key === HUD_ENABLED_STORAGE_KEY) {
+        setHudEnabled(e.newValue !== '0')
       }
     }
     window.addEventListener('storage', onStorage)
@@ -841,6 +1076,13 @@ export default function PokerPage() {
         // Private create+join now share one tab.
         setJoinMode('private')
         setInputCode(codeParam.toUpperCase())
+        // 2026-05: force the profile picker open for invite-link entry.
+        // Previously a signed-in user clicking an invite would auto-use
+        // their saved profile and have no obvious way to set a per-table
+        // username/photo before joining. Switching to 'anon' surfaces
+        // the ProfileSelector + username input; they can still flip to
+        // 'self' in the lobby if they actually want to play as themselves.
+        setPlayMode('anon')
       }
     }
   }, [])
@@ -852,10 +1094,62 @@ export default function PokerPage() {
   }, [connected, joined, joinMode])
 
   useEffect(() => {
+    // 2026-05: WS now auto-reconnects with exponential backoff. The seat is
+    // held server-side for ~45s (RECONNECT_GRACE_MS) after WS close, so a
+    // reload or short network drop won't lose your stack, hole cards, or
+    // position. The flow:
+    //   1. First connect → server issues a `sessionToken` in the CONNECT
+    //      message; we save it to localStorage (gwu_ws_session).
+    //   2. WS closes (reload / kick / Wi-Fi flicker) → onclose schedules
+    //      reconnect; we keep `joined`/game state visible with a banner.
+    //   3. New WS opens → if we have a saved sessionToken, send
+    //      RECONNECT first. Server replies RECONNECT_OK + full snapshot
+    //      and rotates the token, or RECONNECT_FAIL if grace expired.
+    //   4. On RECONNECT_FAIL we clear the saved token and the user is
+    //      left at the lobby (their old game state stays rendered until
+    //      they JOIN_GAME again).
+    let cancelled = false
+    let retryTimer = null
+    let retryCount = 0
+    const WS_SESSION_KEY = 'gwu_ws_session'  // distinct from gwu_session_token (JWT)
+    const readWsToken = () => {
+      if (typeof window === 'undefined') return null
+      try { return window.localStorage.getItem(WS_SESSION_KEY) } catch { return null }
+    }
+    const writeWsToken = (token) => {
+      if (typeof window === 'undefined') return
+      try {
+        if (token) window.localStorage.setItem(WS_SESSION_KEY, token)
+        else window.localStorage.removeItem(WS_SESSION_KEY)
+      } catch {}
+    }
+    const scheduleReconnect = () => {
+      if (cancelled) return
+      // Exponential backoff capped at 8s — long enough that a misbehaving
+      // server doesn't get hammered, short enough that a brief Wi-Fi
+      // drop reconnects within a typical hand.
+      const delay = Math.min(8000, 500 * Math.pow(2, Math.min(retryCount, 4)))
+      retryCount += 1
+      retryTimer = setTimeout(() => {
+        retryTimer = null
+        if (!cancelled) connect()
+      }, delay)
+    }
+
+    function connect() {
     const ws = new WebSocket(WS_URL)
     wsRef.current = ws
     ws.onopen = () => {
       setConnected(true)
+      setReconnecting(false)
+      retryCount = 0
+      // Re-attach to the held seat if we have a token from before. This
+      // must be sent before auth_hello so the server can swap our socket
+      // onto the right Player before any other handler runs.
+      try {
+        const wsToken = readWsToken()
+        if (wsToken) ws.send(JSON.stringify({ type: 'reconnect', data: { sessionToken: wsToken } }))
+      } catch {}
       // Tell the server who we are if we have a session token. The server
       // uses this to gate features that require an account (Bot Arena, etc).
       try {
@@ -865,7 +1159,15 @@ export default function PokerPage() {
         if (token) ws.send(JSON.stringify({ type: 'auth_hello', data: { token } }))
       } catch {}
     }
-    ws.onclose = () => { setConnected(false); setJoined(false); setIsSpectator(false) }
+    ws.onclose = () => {
+      setConnected(false)
+      // KEY DIFFERENCE from the old onclose: we no longer clear `joined`
+      // / `isSpectator` / game state. The seat is being held server-side
+      // for the grace window; keeping the UI mounted means the table
+      // pops back to life on RECONNECT_OK without a re-mount round-trip.
+      setReconnecting(true)
+      scheduleReconnect()
+    }
     ws.onerror = () => setConnected(false)
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data)
@@ -873,6 +1175,174 @@ export default function PokerPage() {
         case 'connect':
           setPlayerId(msg.data.playerId)
           setUsername(prev => prev || msg.data.username)
+          if (msg.data.sessionToken) writeWsToken(msg.data.sessionToken)
+          break
+        case 'reconnect_ok': {
+          // Server re-attached us to the held seat. Save the rotated
+          // token and hydrate from the snapshot so the table renders
+          // mid-hand state — chips, hole cards, pot, action-on-who —
+          // without waiting for a fresh game_state broadcast.
+          if (msg.data?.sessionToken) writeWsToken(msg.data.sessionToken)
+          if (msg.data?.playerId) setPlayerId(msg.data.playerId)
+          const room = msg.data?.room
+          if (room) {
+            setJoined(true)
+            setCurrentRoomId(room.roomId || null)
+            setIsSpectator(!!(msg.data.isSpectator ?? room.isSpectator))
+            if (room.gameState) applyGameState(room.gameState)
+            setIsPrivate(room.isPrivate || false)
+            setInviteCode(room.inviteCode || null)
+            if (room.sideBets) setSideBetsState(room.sideBets)
+            if (room.crypto) setCryptoState(room.crypto)
+            if (room.contestMode) setContestMode(room.contestMode)
+            if (typeof room.isArena === 'boolean') setIsArena(room.isArena)
+            if (typeof room.arenaRunning === 'boolean') setArenaRunning(room.arenaRunning)
+            if (typeof room.arenaStartingChips === 'number') setArenaStartingChips(room.arenaStartingChips)
+            if (typeof room.arenaThinkDelayMs === 'number') setArenaThinkDelayMs(room.arenaThinkDelayMs)
+            // Seed disconnected-set from the snapshot so the returning
+            // player sees "·rejoining" tags on any OTHER seats that are
+            // currently mid-grace. The local player just reconnected, so
+            // their own id wouldn't be in this list.
+            setDisconnectedPlayerIds(new Set(
+              (room.players || []).filter(p => p && p.isConnected === false && !p.isBot).map(p => p.id)
+            ))
+          }
+          setReconnecting(false)
+          break
+        }
+        case 'reconnect_fail':
+          // Token unknown, grace expired, or seat already gone. Clear
+          // the dead token so the next session starts clean. We leave
+          // joined / game-state alone — the user sees the lobby UI
+          // because no JOIN_GAME has succeeded since reconnect.
+          writeWsToken(null)
+          setJoined(false)
+          setReconnecting(false)
+          break
+        case 'assets:state':
+          setAssetsState({
+            catalog: Array.isArray(msg.data?.catalog) ? msg.data.catalog : [],
+            myPositions: Array.isArray(msg.data?.myPositions) ? msg.data.myPositions : [],
+            marketMultiplier: msg.data?.marketMultiplier ?? 1
+          })
+          break
+        case 'jobs:state':
+          setJobsState({
+            jobs: Array.isArray(msg.data?.jobs) ? msg.data.jobs : [],
+            myClaimedThisHand: !!msg.data?.myClaimedThisHand
+          })
+          break
+        case 'stocks:state':
+          setStocksState({
+            stocks: Array.isArray(msg.data?.stocks) ? msg.data.stocks : [],
+            myPositions: Array.isArray(msg.data?.myPositions) ? msg.data.myPositions : []
+          })
+          break
+        case 'world:state':
+          setWorldState({
+            territories: Array.isArray(msg.data?.territories) ? msg.data.territories : [],
+            pandemicActive: !!msg.data?.pandemicActive,
+            pandemicEndsInHands: msg.data?.pandemicEndsInHands ?? 0,
+            yieldMultiplier: msg.data?.yieldMultiplier ?? 1,
+            myColor: msg.data?.myColor || null
+          })
+          break
+        case 'influence:state':
+          setInfluenceState({
+            ops: Array.isArray(msg.data?.ops) ? msg.data.ops : []
+          })
+          break
+        case 'options:state':
+          setOptionsState({
+            chain: Array.isArray(msg.data?.chain) ? msg.data.chain : [],
+            myPositions: Array.isArray(msg.data?.myPositions) ? msg.data.myPositions : [],
+            expiryHands: msg.data?.expiryHands ?? 3,
+            contractMultiplier: msg.data?.contractMultiplier ?? 100
+          })
+          break
+        case 'stocks:tick':
+          // Price-only update between full snapshots. Mutate the
+          // existing state by overlaying the new prices AND appending
+          // each new price to that stock's history array so the
+          // sparkline keeps growing tick-over-tick. Without the
+          // history append the chart looks like a frozen flat line —
+          // it only ever shows whatever snapshot the server sent at
+          // join time. Cap at the same HISTORY_LEN (60) the server
+          // uses so the buffer doesn't grow without bound.
+          setStocksState(prev => {
+            const prices = msg.data?.prices || {}
+            const HISTORY_CAP = 60
+            return {
+              ...prev,
+              stocks: prev.stocks.map(s => {
+                const next = prices[s.symbol]
+                if (next == null || next === s.price) return s
+                const prevHistory = Array.isArray(s.history) ? s.history : []
+                // Server pushes either bare numbers or {t,p} pairs;
+                // we always store as {t,p} so the sparkline picks
+                // either shape via its existing helper.
+                const newPoint = { t: msg.data?.ts || Date.now(), p: next }
+                const history = (prevHistory.length >= HISTORY_CAP
+                  ? prevHistory.slice(1)
+                  : prevHistory).concat(newPoint)
+                return { ...s, price: next, history }
+              })
+            }
+          })
+          break
+        case 'items:state':
+          // Per-player cooldown snapshot. The server pushes one on
+          // hand-end, on join, and right after every item use.
+          setItemsState({
+            items: Array.isArray(msg.data?.items) ? msg.data.items : [],
+            refreshHands: msg.data?.refreshHands ?? 5
+          })
+          break
+        case 'item:result':
+          // Generic ack for the item we just used. Peek returns cards
+          // we need to show in a modal; other items just need a toast
+          // and the cooldown tick (handled by items:state right after).
+          if (msg.data?.itemId === 'peek' && Array.isArray(msg.data?.cards)) {
+            setItemPeekResult({
+              targetUsername: msg.data.targetUsername,
+              cards: msg.data.cards
+            })
+          } else if (msg.data?.itemId === 'swap' && Array.isArray(msg.data?.newCards)) {
+            addSys(`Swapped your hole cards.`)
+          } else if (msg.data?.itemId === 'hack' && msg.data?.amount != null) {
+            addSys(`Hacked ${msg.data.targetUsername} for $${(msg.data.amount || 0).toLocaleString()}.`)
+          } else if (msg.data?.itemId === 'scam') {
+            addSys(`Scam sent — waiting for them to click…`)
+          }
+          break
+        case 'item:scam_popup':
+          // Someone is trying to scam us. Render the shifting-button
+          // modal. If we already have a popup pending, ignore the
+          // second (the server's cooldown should prevent this but
+          // defensive). Auto-clears on server-side 30s expiry.
+          if (msg.data?.scamId) {
+            setScamPopup({
+              scamId: msg.data.scamId,
+              senderUsername: msg.data.senderUsername || 'someone',
+              amount: msg.data.amount || 0
+            })
+          }
+          break
+        case 'player_disconnected':
+          if (msg.data?.playerId) {
+            setDisconnectedPlayerIds(prev => {
+              if (prev.has(msg.data.playerId)) return prev
+              const next = new Set(prev); next.add(msg.data.playerId); return next
+            })
+          }
+          break
+        case 'player_reconnected':
+          if (msg.data?.playerId) {
+            setDisconnectedPlayerIds(prev => {
+              if (!prev.has(msg.data.playerId)) return prev
+              const next = new Set(prev); next.delete(msg.data.playerId); return next
+            })
+          }
           break
         case 'join_game':
           setJoined(true)
@@ -966,6 +1436,13 @@ export default function PokerPage() {
             setStatsMode(false)
             setStatsExpansion('minimized')
           }
+          // Seed the disconnected-set from the snapshot — a fresh joiner
+          // arriving mid-grace for another player needs to see the
+          // "·rejoining" tag even though they didn't receive the
+          // player_disconnected broadcast that fired before they joined.
+          setDisconnectedPlayerIds(new Set(
+            (msg.data.players || []).filter(p => p && p.isConnected === false && !p.isBot).map(p => p.id)
+          ))
           setSpectatorVisibleIdSet(new Set()); setSpectatorRevealAll(false)
           setSpectatorHoveredPlayerId(null)
           clearChipThrows()
@@ -979,6 +1456,11 @@ export default function PokerPage() {
           setTableMenuOpen(false)
           setIsPrivate(false); setInviteCode(null)
           setIsSpectator(false)
+          // Clear stale entries — they belonged to seats at the table
+          // we just left and don't apply to whatever lobby/table comes
+          // next. Without this, stale IDs would briefly tag wrong seats
+          // until the next room snapshot overwrites the set.
+          setDisconnectedPlayerIds(new Set())
           setSpectatorVisibleIdSet(new Set()); setSpectatorRevealAll(false)
           setSpectatorHoveredPlayerId(null)
           setSpectatorBlindMode(false)
@@ -1047,6 +1529,17 @@ export default function PokerPage() {
           if (msg.data.isSpectator !== undefined) setIsSpectator(msg.data.isSpectator)
           if (msg.data.isPrivate !== undefined) setIsPrivate(msg.data.isPrivate)
           if (msg.data.inviteCode !== undefined) setInviteCode(msg.data.inviteCode)
+          // Authoritative refresh of the disconnected set: room_update
+          // carries the canonical isConnected flag for every seat, so
+          // recompute the set from it. This catches any drift between
+          // the player_disconnected/reconnected broadcasts and the seat
+          // state — e.g., if a broadcast was missed during a network
+          // glitch the next room_update repairs the set.
+          if (Array.isArray(msg.data.players)) {
+            setDisconnectedPlayerIds(new Set(
+              msg.data.players.filter(p => p && p.isConnected === false && !p.isBot).map(p => p.id)
+            ))
+          }
           break
         case 'chip_throw':
           addChipThrow(msg.data)
@@ -1114,7 +1607,7 @@ export default function PokerPage() {
               showSplitPotNotice(msg.data.winners, msg.data.potBreakdown)
               msg.data.winners.forEach(w => {
                 const name = w.username || w.playerId.substring(0, 6);
-                addSys(`Winner: ${name} (+${w.chips}) — ${w.handName}`)
+                addSys(`Winner: ${name} (+${(w.chips || 0).toLocaleString()}) — ${w.handName}`)
               })
             }
           }
@@ -1214,9 +1707,9 @@ export default function PokerPage() {
           if (msg.data && Array.isArray(msg.data.payouts)) {
             const mine = msg.data.payouts.filter(p => p.playerId === playerIdRef.current)
             for (const m of mine) {
-              if (m.result === 'win') addSys(`Side bet hit: ${msg.data.question} — +${m.credit} chips.`)
-              else if (m.result === 'loss') addSys(`Side bet lost: ${msg.data.question} — −${m.costPaid} chips.`)
-              else if (m.result === 'void') addSys(`Side bet void: ${msg.data.question} — ${m.credit} refunded.`)
+              if (m.result === 'win') addSys(`Side bet hit: ${msg.data.question} — +${(m.credit || 0).toLocaleString()} chips.`)
+              else if (m.result === 'loss') addSys(`Side bet lost: ${msg.data.question} — −${(m.costPaid || 0).toLocaleString()} chips.`)
+              else if (m.result === 'void') addSys(`Side bet void: ${msg.data.question} — ${(m.credit || 0).toLocaleString()} refunded.`)
             }
           }
           break
@@ -1274,17 +1767,29 @@ export default function PokerPage() {
           break
       }
     }
+    }  // end inner connect()
+    connect()
     return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
       clearChipThrows()
       clearEmotes()
       clearYells()
       clearSplitPotNotice()
-      ws.close()
+      try { wsRef.current?.close() } catch {}
     }
   }, [addSys, addChipThrow, addTableEmote, addTableYell, applyGameState, clearChipThrows, clearEmotes, clearYells, clearSplitPotNotice, showSplitPotNotice])
 
   function send(type, data = {}) {
-    wsRef.current?.send(JSON.stringify({ type, data }))
+    // Guard against WebSocket.send on a CLOSING/CLOSED socket, which
+    // throws InvalidStateError. With auto-reconnect, the WS can be
+    // mid-reconnect when a user clicks something (emote, chat, side
+    // bet, crypto, etc.) — silently drop the send rather than throwing
+    // into the React handler. The user sees the "Reconnecting…" banner
+    // and can retry once it clears.
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== 1 /* OPEN */) return
+    ws.send(JSON.stringify({ type, data }))
   }
 
   // Auto-join a specific table when the page is opened via a shared link
@@ -1661,6 +2166,22 @@ export default function PokerPage() {
   }
 
   function openPokerPanel(panel) {
+    // Customize-mode shortcut: clicks toggle hide-state instead of
+    // opening the panel. The menu stays open so the user can hide
+    // multiple tools in one session. Only the Recents bar bypasses
+    // this (Recents pills always open even in customize mode).
+    if (toolsCustomizing) {
+      toggleToolHidden(panel)
+      return
+    }
+    // 'finances' is no longer a popup panel — the inline Finances
+    // Widget is the only finances surface. Any legacy caller asking
+    // for the panel gets the widget toggled on instead.
+    if (panel === 'finances') {
+      setFinancesWidgetOpenPersist(true)
+      setTableMenuOpen(false)
+      return
+    }
     setActivePokerPanel(prev => prev === panel ? null : panel)
     setTableMenuOpen(false)
     if (panel === 'bots' || panel === 'arena') refreshBotRoster()
@@ -1670,6 +2191,9 @@ export default function PokerPage() {
     }
     if (panel === 'reset') setResetConfirmArmed(false)
     if (panel === 'big_yahu') setBigYahuArmed(false)
+    // Track in the Tools-menu Recents bar. We don't track everything —
+    // some panels (reset/big_yahu) are destructive and shouldn't shortcut.
+    if (panel && !TOOLS_LRU_BLOCKLIST.has(panel)) bumpToolsLRU(panel)
   }
 
   // Two-step Leave Table confirm — same pattern as All-In.
@@ -1735,9 +2259,10 @@ export default function PokerPage() {
         if (next) window.localStorage.removeItem(CHAT_VISIBLE_STORAGE_KEY)
         else window.localStorage.setItem(CHAT_VISIBLE_STORAGE_KEY, '0')
       } catch {}
-      // Arena spectator: only one of chat/sidebets at a time, both anchored
-      // to the same bottom-right slot. Turning chat on closes sidebets.
-      if (next && isArena) {
+      // Chat and Side Bets share the same bottom-right slot in every mode
+      // (seated, spectator, arena) — only one can be visible at a time so
+      // turning chat on closes side bets.
+      if (next) {
         setSideBetsDockVisible(false)
         try { window.localStorage.setItem(SIDE_BETS_VISIBLE_STORAGE_KEY, '0') } catch {}
       }
@@ -1758,9 +2283,9 @@ export default function PokerPage() {
         if (next) window.localStorage.removeItem(SIDE_BETS_VISIBLE_STORAGE_KEY)
         else window.localStorage.setItem(SIDE_BETS_VISIBLE_STORAGE_KEY, '0')
       } catch {}
-      // Arena: mutually exclude with chat. Both docks share the bottom-right
-      // slot, so turning sidebets on closes the chat dock.
-      if (next && isArena) {
+      // Mutually exclude with chat — both docks share the same bottom-right
+      // slot. Turning side bets on closes chat.
+      if (next) {
         setChatDockVisible(false)
         try { window.localStorage.setItem(CHAT_VISIBLE_STORAGE_KEY, '0') } catch {}
       }
@@ -1958,6 +2483,19 @@ export default function PokerPage() {
     })
   }
 
+  // Toggle the Investment HUD on/off. We persist only the "off" state
+  // ('0') — absence-of-key keeps the default ON behavior for new users.
+  function setHudEnabledPersist(next) {
+    setHudEnabled(prev => {
+      const value = typeof next === 'function' ? next(prev) : next
+      try {
+        if (value) window.localStorage.removeItem(HUD_ENABLED_STORAGE_KEY)
+        else window.localStorage.setItem(HUD_ENABLED_STORAGE_KEY, '0')
+      } catch {}
+      return value
+    })
+  }
+
   // Click outside the stats panel auto-minimizes it (instead of closing).
   // The panel stays mounted and visible — just shrinks to its compact pill.
   useEffect(() => {
@@ -2064,7 +2602,7 @@ export default function PokerPage() {
           onClick={toggleChatDock}
           aria-label="Close chat"
           title="Close chat"
-          className="-mr-1 rounded-md px-1.5 text-base leading-none text-zinc-400 transition-colors hover:bg-zinc-700/60 hover:text-zinc-100"
+          className="-mr-2 rounded-md px-1.5 text-base leading-none text-zinc-400 transition-colors hover:bg-zinc-700/60 hover:text-zinc-100"
         >
           ×
         </button>
@@ -2121,7 +2659,7 @@ export default function PokerPage() {
           {isArena && (
             <button
               type="button"
-              onClick={() => openPokerPanel('arena')}
+              onClick={() => openPokerPanel('arena')} title={TOOLS_TOOLTIPS.arena}
               title="Open arena controls"
               className={`text-xs sm:text-sm font-bold border px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg shadow-sm transition-transform active:scale-95 cursor-pointer ${arenaRunning ? 'bg-emerald-700/80 text-emerald-50 border-emerald-500/50 hover:bg-emerald-700/90' : 'bg-amber-700/70 text-amber-50 border-amber-500/50 hover:bg-amber-700/85'}`}
             >
@@ -2131,7 +2669,48 @@ export default function PokerPage() {
           {isSpectator && !isArena && (
             <span className="text-xs sm:text-sm font-bold bg-zinc-700/80 text-white border border-zinc-500/50 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg shadow-sm">Spectating</span>
           )}
+          {reconnecting && (
+            <span
+              title="Your seat is held while we reconnect — auto-checks/folds run for you until we're back."
+              className="text-xs sm:text-sm font-bold bg-amber-700/80 text-amber-50 border border-amber-500/50 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg shadow-sm animate-pulse whitespace-nowrap"
+            >
+              Reconnecting…
+            </span>
+          )}
           <PhaseLabel phase={phase} />
+          {/* Crypto portfolio quick-access pill. Visible whenever the
+              player holds any position; sums shares × current price
+              across all owned coins and shows the P/L vs cost basis.
+              One tap opens the Crypto Market panel — same destination
+              as the Tools menu entry, but always one click away. */}
+          {(() => {
+            const positions = cryptoState?.myPositions || []
+            if (positions.length === 0) return null
+            const coinIndex = new Map((cryptoState?.coins || []).map(c => [c.id, c]))
+            let value = 0
+            let cost = 0
+            for (const p of positions) {
+              const c = coinIndex.get(p.coinId)
+              if (!c) continue
+              value += (p.shares || 0) * (c.price || 0)
+              cost += p.costBasis || 0
+            }
+            const pl = Math.round(value - cost)
+            const plClass = pl >= 0 ? 'text-emerald-300' : 'text-red-300'
+            const sign = pl >= 0 ? '+' : '−'
+            return (
+              <button
+                type="button"
+                onClick={() => openPokerPanel('crypto')} title={TOOLS_TOOLTIPS.crypto}
+                title={`Open Crypto Market — ${positions.length} position${positions.length === 1 ? '' : 's'}`}
+                className="text-xs sm:text-sm font-bold bg-fuchsia-700/70 text-fuchsia-50 border border-fuchsia-500/50 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg shadow-sm hover:bg-fuchsia-700/90 active:scale-95 whitespace-nowrap flex items-center gap-1.5"
+              >
+                <span className="text-[10px] uppercase tracking-wider text-fuchsia-200">Crypto</span>
+                <span>${Math.round(value).toLocaleString()}</span>
+                <span className={plClass}>{sign}${Math.abs(pl).toLocaleString()}</span>
+              </button>
+            )
+          })()}
           {/* Spectator bankroll inline. Previously this badge floated at
               `fixed left-1/2 top-3` so it could sit above the felt
               regardless of header width — but on narrow viewports the
@@ -2181,12 +2760,7 @@ export default function PokerPage() {
               renders when toggled on via the Tools menu. */}
           {financesWidgetOpen && joined && (
             <div className="rounded-lg border border-zinc-600/60 bg-zinc-900/95 px-2 py-1 sm:px-3 sm:py-1.5 shadow-sm backdrop-blur-md flex items-center gap-2 text-[11px] sm:text-xs font-bold text-zinc-100 whitespace-nowrap">
-              <button
-                type="button"
-                onClick={() => openPokerPanel('finances')}
-                title="Open full finances breakdown"
-                className="flex items-center gap-2 hover:opacity-90"
-              >
+              <div className="flex items-center gap-2">
                 <span className="text-[9px] uppercase tracking-wider text-zinc-500">Net</span>
                 <span className="tabular-nums">${liquidatedSummary.liquidated.toLocaleString()}</span>
                 {(liquidatedSummary.cryptoValue > 0 || liquidatedSummary.cryptoCost > 0) && (
@@ -2197,7 +2771,7 @@ export default function PokerPage() {
                     </span>
                   </>
                 )}
-              </button>
+              </div>
               <button
                 type="button"
                 onClick={() => setFinancesWidgetOpenPersist(false)}
@@ -2245,6 +2819,49 @@ export default function PokerPage() {
               // rows visually line up across columns even when the
               // sections themselves contain different items.
               <div className="absolute right-0 top-full mt-2 z-[100] w-56 md:w-[28rem] max-w-[calc(100vw-1.5rem)] max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
+                {/* Customize toggle — when on, every tool button shows
+                    a × badge that toggles its hidden state. Persisted
+                    in localStorage so hides survive reloads. */}
+                <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-1.5">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Tools</span>
+                  <button
+                    type="button"
+                    onClick={() => setToolsCustomizing(v => !v)}
+                    className={`text-[9px] font-black uppercase tracking-widest rounded-md border px-2 py-0.5 ${
+                      toolsCustomizing
+                        ? 'border-amber-400/60 bg-amber-500/20 text-amber-200'
+                        : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    {toolsCustomizing ? 'Done' : 'Customize'}
+                  </button>
+                </div>
+                {/* Recents bar — last 5 panels you opened. Persists in
+                    localStorage so it's there next session too. Sits
+                    above the 2-column section grid as a single full-
+                    width row so a returning player can one-tap their
+                    most-used tool without scanning the whole menu. */}
+                {toolsLRU.length > 0 && (
+                  <div className="border-b border-zinc-800 px-3 pt-2 pb-2">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-1.5">Recents</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {toolsLRU.map(panelId => {
+                        const meta = TOOLS_LRU_META[panelId]
+                        if (!meta) return null
+                        return (
+                          <button
+                            key={panelId}
+                            type="button"
+                            onClick={() => openPokerPanel(panelId)}
+                            className={`rounded-md border border-zinc-600/60 bg-zinc-800 px-2 py-1 text-[10px] font-black uppercase tracking-widest hover:bg-zinc-700 ${meta.accent}`}
+                          >
+                            {meta.label}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-zinc-800">
                   {/* ════════ LEFT COLUMN: settings & info ════════ */}
                   <div className="flex flex-col">
@@ -2275,26 +2892,65 @@ export default function PokerPage() {
                       </div>
                     </div>
 
-                    {/* ── INFO ────────────────────────────────────── */}
-                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Info</div>
-                    <button type="button" onClick={() => openPokerPanel('help')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                      How to Play
-                    </button>
-                    <button type="button" onClick={() => openPokerPanel('hand')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                      Current Hand
-                    </button>
-                    <button type="button" onClick={() => openPokerPanel('session')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                      Session History
-                    </button>
-                    <button type="button" onClick={() => openPokerPanel('daily')} className="block w-full px-3 py-2 text-left text-xs font-bold text-amber-200 hover:bg-zinc-800">
-                      Daily Challenge
-                    </button>
-                    <button type="button" onClick={() => openPokerPanel('finances')} className="block w-full px-3 py-2 text-left text-xs font-bold text-emerald-200 hover:bg-zinc-800">
-                      Finances
-                    </button>
-                    <button type="button" onClick={() => openPokerPanel('crypto')} className="block w-full px-3 py-2 text-left text-xs font-bold text-fuchsia-200 hover:bg-zinc-800">
-                      ★ Crypto Market
-                    </button>
+                    {/* ── MARKETS ─────────────────────────────────── */}
+                    {/* Basic Info (How to Play, Current Hand, Session,
+                        Daily, Finances) lives in the right column under
+                        its own header below Big Yahu — keeps this column
+                        focused on the games-within-the-game. */}
+                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Markets</div>
+                    {(!toolsHidden.has('crypto') || toolsCustomizing) && (
+                      <button type="button" onClick={() => openPokerPanel('crypto')} title={TOOLS_TOOLTIPS.crypto} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-fuchsia-200 hover:bg-zinc-800 ${toolsHidden.has('crypto') ? 'opacity-40' : ''}`}>
+                        <span>★ Crypto Market</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('crypto') ? '+show' : '×hide'}</span>}
+                      </button>
+                    )}
+                    {(!toolsHidden.has('items') || toolsCustomizing) && (
+                      <button type="button" onClick={() => openPokerPanel('items')} title={TOOLS_TOOLTIPS.items} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-lime-200 hover:bg-zinc-800 ${toolsHidden.has('items') ? 'opacity-40' : ''}`}>
+                        <span>★ Items &amp; Powers</span>
+                        {toolsCustomizing ? (
+                          <span className="ml-auto text-[9px] text-zinc-400">{toolsHidden.has('items') ? '+show' : '×hide'}</span>
+                        ) : (() => {
+                          const ready = (itemsState?.items || []).filter(i => i.ready).length
+                          if (ready === 0) return null
+                          return (
+                            <span className="ml-auto rounded-md bg-lime-500/20 px-1.5 py-0.5 text-[10px] text-lime-300">
+                              {ready} ready
+                            </span>
+                          )
+                        })()}
+                      </button>
+                    )}
+                    {(!toolsHidden.has('assets') || toolsCustomizing) && (
+                      <button type="button" onClick={() => openPokerPanel('assets')} title={TOOLS_TOOLTIPS.assets} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-emerald-200 hover:bg-zinc-800 ${toolsHidden.has('assets') ? 'opacity-40' : ''}`}>
+                        <span>★ Real Estate</span>
+                        {toolsCustomizing ? (
+                          <span className="ml-auto text-[9px] text-zinc-400">{toolsHidden.has('assets') ? '+show' : '×hide'}</span>
+                        ) : (assetsState?.myPositions?.length > 0) && (
+                          <span className="ml-auto rounded-md bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-300">
+                            {assetsState.myPositions.length}
+                          </span>
+                        )}
+                      </button>
+                    )}
+                    {(!toolsHidden.has('jobs') || toolsCustomizing) && (
+                      <button type="button" onClick={() => openPokerPanel('jobs')} title={TOOLS_TOOLTIPS.jobs} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-orange-200 hover:bg-zinc-800 ${toolsHidden.has('jobs') ? 'opacity-40' : ''}`}>
+                        <span>★ Jobs Board</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('jobs') ? '+show' : '×hide'}</span>}
+                      </button>
+                    )}
+                    {(!toolsHidden.has('stocks') || toolsCustomizing) && (
+                      <button type="button" onClick={() => openPokerPanel('stocks')} title={TOOLS_TOOLTIPS.stocks} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-sky-200 hover:bg-zinc-800 ${toolsHidden.has('stocks') ? 'opacity-40' : ''}`}>
+                        <span>★ Stock Market</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('stocks') ? '+show' : '×hide'}</span>}
+                      </button>
+                    )}
+                    {(!toolsHidden.has('world') || toolsCustomizing) && (
+                      <button type="button" onClick={() => openPokerPanel('world')} title={TOOLS_TOOLTIPS.world} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-purple-200 hover:bg-zinc-800 ${toolsHidden.has('world') ? 'opacity-40' : ''}`}>
+                        <span>★ World Map</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('world') ? '+show' : '×hide'}</span>}
+                      </button>
+                    )}
+                    {(!toolsHidden.has('influence') || toolsCustomizing) && (
+                      <button type="button" onClick={() => openPokerPanel('influence')} title={TOOLS_TOOLTIPS.influence} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800 ${toolsHidden.has('influence') ? 'opacity-40' : ''}`}>
+                        <span>★ Influence Ops</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('influence') ? '+show' : '×hide'}</span>}
+                      </button>
+                    )}
                     {authUser && (
                       <button
                         type="button"
@@ -2334,6 +2990,20 @@ export default function PokerPage() {
                       <span className={`inline-block h-2 w-2 rounded-full ${financesWidgetOpen ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]' : 'bg-zinc-600'}`} />
                       Finances Widget {financesWidgetOpen ? 'On' : 'Off'}
                     </button>
+                    <button type="button" onClick={() => setHudEnabledPersist(prev => !prev)} title="Floating widget that summarizes every position across crypto, stocks, real estate, and territories" className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${hudEnabled ? 'text-amber-200' : 'text-zinc-400'}`}>
+                      <span className={`inline-block h-2 w-2 rounded-full ${hudEnabled ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.7)]' : 'bg-zinc-600'}`} />
+                      Investment HUD {hudEnabled ? 'On' : 'Off'}
+                    </button>
+
+                    {/* ── DAILY ───────────────────────────────────── */}
+                    {/* Own section under Widgets so the rotating daily
+                        prompt reads as its own thing — not buried with
+                        reference info. Amber accent matches the in-game
+                        challenge chip. */}
+                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Daily Challenge</div>
+                    <button type="button" onClick={() => openPokerPanel('daily')} title={TOOLS_TOOLTIPS.daily} className="block w-full px-3 py-2 text-left text-xs font-bold text-amber-200 hover:bg-zinc-800">
+                      ★ Today's Challenge
+                    </button>
                   </div>
 
                   {/* ════════ RIGHT COLUMN: actions & profile ════════ */}
@@ -2342,13 +3012,13 @@ export default function PokerPage() {
                       don't visually run together. On md+ the divide-x
                       handles separation. */}
                   <div className="flex flex-col border-t border-zinc-800 md:border-t-0">
-                    {/* ── TABLE ───────────────────────────────────── */}
-                    <div className="px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Table</div>
+                    {/* ── ACTIONS ─────────────────────────────────── */}
+                    <div className="px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Actions</div>
                     {/* Bank is open to spectators too — they can take loans and
                         place side bets on the runout even without a seat at the
                         table. Soft teal accent + ★ so it reads as a featured
                         destination, matching the auto-fill style below. */}
-                    <button type="button" onClick={() => openPokerPanel('bank')} className="block w-full px-3 py-2 text-left text-xs font-bold text-teal-200 hover:bg-zinc-800">
+                    <button type="button" onClick={() => openPokerPanel('bank')} title={TOOLS_TOOLTIPS.bank} className="block w-full px-3 py-2 text-left text-xs font-bold text-teal-200 hover:bg-zinc-800">
                       ★ Bank Account
                     </button>
                     {/* All five seat-claim tools (Invite Friend + four
@@ -2542,29 +3212,29 @@ export default function PokerPage() {
                       )
                     })()}
                     {(!isSpectator || isArena) && (
-                      <button type="button" onClick={() => openPokerPanel('bots')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      <button type="button" onClick={() => openPokerPanel('bots')} title={TOOLS_TOOLTIPS.bots} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                         Add Bots
                       </button>
                     )}
                     {(!isSpectator || isArena) && (
-                      <button type="button" onClick={() => openPokerPanel('blinds')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      <button type="button" onClick={() => openPokerPanel('blinds')} title={TOOLS_TOOLTIPS.blinds} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                         Change Blinds
                       </button>
                     )}
                     {(!isSpectator || isArena) && (
-                      <button type="button" onClick={() => openPokerPanel('contest')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      <button type="button" onClick={() => openPokerPanel('contest')} title={TOOLS_TOOLTIPS.contest} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                         Contest Mode {contestMode?.enabled ? '· On' : ''}
                       </button>
                     )}
                     {isArena && (
-                      <button type="button" onClick={() => openPokerPanel('arena')} className={`block w-full px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${arenaRunning ? 'text-emerald-200' : 'text-amber-200'}`}>
+                      <button type="button" onClick={() => openPokerPanel('arena')} title={TOOLS_TOOLTIPS.arena} className={`block w-full px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${arenaRunning ? 'text-emerald-200' : 'text-amber-200'}`}>
                         Arena · {arenaRunning ? 'Running' : 'Paused'}
                       </button>
                     )}
 
                     {/* ── PROFILE ─────────────────────────────────── */}
                     <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Profile</div>
-                    <button type="button" onClick={() => openPokerPanel('skin')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                    <button type="button" onClick={() => openPokerPanel('skin')} title={TOOLS_TOOLTIPS.skin} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                       Player Skin
                     </button>
                     <button type="button" onClick={() => openPokerPanel('profile')} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
@@ -2587,6 +3257,22 @@ export default function PokerPage() {
                         Call Big Yahu
                       </button>
                     )}
+
+                    {/* ── BASIC INFO ──────────────────────────────── */}
+                    {/* Pinned to the very bottom of the right column, after
+                        Big Yahu. The five reference panels — kept neutral
+                        white because they're always-available info, not
+                        actions or markets. */}
+                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Basic Info</div>
+                    <button type="button" onClick={() => openPokerPanel('help')} title={TOOLS_TOOLTIPS.help} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      How to Play
+                    </button>
+                    <button type="button" onClick={() => openPokerPanel('hand')} title={TOOLS_TOOLTIPS.hand} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      Current Hand
+                    </button>
+                    <button type="button" onClick={() => openPokerPanel('session')} title={TOOLS_TOOLTIPS.session} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      Session History
+                    </button>
                   </div>
                 </div>
               </div>
@@ -2652,7 +3338,12 @@ export default function PokerPage() {
                 : activePokerPanel === 'daily' ? 'Daily Challenge'
                 : activePokerPanel === 'skin' ? 'Player Skin'
                 : activePokerPanel === 'crypto' ? 'Crypto Market'
-                : activePokerPanel === 'finances' ? 'Finances'
+                : activePokerPanel === 'items' ? 'Items & Powers'
+                : activePokerPanel === 'assets' ? 'Real Estate'
+                : activePokerPanel === 'jobs' ? 'Jobs Board'
+                : activePokerPanel === 'stocks' ? 'Stock Market'
+                : activePokerPanel === 'world' ? 'World Map'
+                : activePokerPanel === 'influence' ? 'Influence Ops'
                 : 'Session'}
             </div>
             <div className="flex items-center gap-1.5">
@@ -2740,8 +3431,8 @@ export default function PokerPage() {
                   <span className="text-xs font-black text-amber-200">{currentHandName}</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs font-bold text-zinc-400">
-                  <div>Pot <span className="text-white">{gameState?.pot || 0}</span></div>
-                  <div>To call <span className="text-white">{Math.max(0, toCall)}</span></div>
+                  <div>Pot <span className="text-white">{(gameState?.pot || 0).toLocaleString()}</span></div>
+                  <div>To call <span className="text-white">{Math.max(0, toCall).toLocaleString()}</span></div>
                   <div>Phase <span className="text-white">{phase.toUpperCase()}</span></div>
                   <div>P/L <span className={profitClass(myPlayer?.profit || 0)}>{formatProfit(myPlayer?.profit || 0)}</span></div>
                 </div>
@@ -3167,10 +3858,11 @@ export default function PokerPage() {
                       : `${humansWithMe} humans at the table. Need ${needs}/${humansWithMe} approvals to change.`}
                   </div>
                 </div>
-                {/* Scroll wrap — the list now goes up to 16k/32k so cap
-                    height and let users scroll instead of pushing other
-                    tools panel content offscreen. overscroll-contain so
-                    flicks don't bubble into the page scroll. */}
+                {/* Scroll wrap — the list now goes up to absurd-blind
+                    tiers (last entry is 500M/1B) so cap height and let
+                    users scroll instead of pushing the rest of the
+                    tools panel offscreen. overscroll-contain so flicks
+                    don't bubble into the page scroll. */}
                 <div className="max-h-[60dvh] overflow-y-auto overscroll-contain space-y-1.5 pr-1">
                   {BLIND_LEVELS.map(level => {
                     const isCurrent = level.small === currentSmall && level.big === currentBig
@@ -3389,13 +4081,14 @@ export default function PokerPage() {
                           type="button"
                           disabled={isCurrent}
                           onClick={() => proposeBlinds(level)}
+                          title={`$${level.small.toLocaleString()} / $${level.big.toLocaleString()}`}
                           className={`rounded-md border px-2 py-1.5 text-[11px] font-black transition-colors ${
                             isCurrent
                               ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-100 cursor-default'
                               : 'border-zinc-600/60 bg-zinc-900 text-white hover:bg-zinc-800'
                           }`}
                         >
-                          ${level.small.toLocaleString()}/${level.big.toLocaleString()}
+                          ${formatChipsCompact(level.small)}/${formatChipsCompact(level.big)}
                         </button>
                       )
                     })}
@@ -3415,7 +4108,7 @@ export default function PokerPage() {
                       <div className="text-[10px] font-bold text-zinc-300 leading-snug">
                         Bumps every {cm.handsPerLevel ?? 10} hands.
                         {cm.nextLevel
-                          ? <> Next: <span className="text-amber-300">${cm.nextLevel.small}/${cm.nextLevel.big}</span> in <span className="text-amber-300">{cm.handsUntilNextLevel ?? '?'}</span> hand{cm.handsUntilNextLevel === 1 ? '' : 's'}.</>
+                          ? <> Next: <span className="text-amber-300">${cm.nextLevel.small.toLocaleString()}/${cm.nextLevel.big.toLocaleString()}</span> in <span className="text-amber-300">{cm.handsUntilNextLevel ?? '?'}</span> hand{cm.handsUntilNextLevel === 1 ? '' : 's'}.</>
                           : <> Max level reached.</>}
                       </div>
                       <button
@@ -3435,9 +4128,10 @@ export default function PokerPage() {
                             key={level.id}
                             type="button"
                             onClick={() => toggleContestMode(true, level.id)}
+                            title={`$${level.small.toLocaleString()} / $${level.big.toLocaleString()}`}
                             className="rounded-md border border-zinc-600/60 bg-zinc-900 px-2 py-1.5 text-[11px] font-black text-white hover:bg-zinc-800"
                           >
-                            ${level.small.toLocaleString()}/${level.big.toLocaleString()}
+                            ${formatChipsCompact(level.small)}/${formatChipsCompact(level.big)}
                           </button>
                         ))}
                       </div>
@@ -3497,10 +4191,11 @@ export default function PokerPage() {
                 {!cm.enabled && (
                   <div className="space-y-1.5">
                     <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Start at</div>
-                    {/* 12-row picker fits the tools-panel max-height
-                        budget on most viewports; cap + scroll keeps the
-                        big-stakes tiers reachable without pushing other
-                        controls offscreen. */}
+                    {/* List grew past 12 with the absurd-blind tiers
+                        (500M/1B at the bottom). Cap height + scroll keeps
+                        the big-stakes entries reachable without pushing
+                        other tools-panel controls offscreen. Single-col
+                        layout, so toLocaleString fits even at $1B. */}
                     <div className="max-h-[55dvh] overflow-y-auto overscroll-contain space-y-1.5 pr-1">
                       {BLIND_LEVELS.map(level => (
                         <button
@@ -3665,18 +4360,67 @@ export default function PokerPage() {
             />
           )}
 
-          {activePokerPanel === 'finances' && (
-            <FinancesPanel
+          {activePokerPanel === 'items' && (
+            <ItemsPanel
+              itemsState={itemsState}
+              players={gameState?.players || []}
               myPlayerId={playerId}
-              myChips={bankState.chips ?? 0}
-              loans={bankState.loans || []}
-              openSideBetStake={bankState.openSideBetStake ?? 0}
-              peerLoans={(gameState?.players?.find(p => p.id === playerId)?.peerLoans)
-                || (gameState?.spectators?.find?.(p => p.id === playerId)?.peerLoans)
-                || []}
-              crypto={cryptoState}
+              onUseItem={(itemId, targetId, picks) => send('item:use', { itemId, targetId, picks })}
             />
           )}
+
+          {activePokerPanel === 'assets' && (
+            <AssetsPanel
+              assetsState={assetsState}
+              myChips={bankState.chips ?? 0}
+              joined={joined}
+              onBuy={(assetId, units) => send('asset:buy', { assetId, units })}
+              onSell={(assetId, units) => send('asset:sell', { assetId, units })}
+            />
+          )}
+
+          {activePokerPanel === 'jobs' && (
+            <JobsPanel
+              jobsState={jobsState}
+              joined={joined || isSpectator}
+              onClaim={(id) => send('job:claim', { id })}
+            />
+          )}
+
+          {activePokerPanel === 'stocks' && (
+            <StocksPanel
+              stocksState={stocksState}
+              optionsState={optionsState}
+              myChips={bankState.chips ?? 0}
+              joined={joined}
+              onBuy={(symbol, amount) => send('stock:buy', { symbol, amount })}
+              onSell={(symbol) => send('stock:sell', { symbol })}
+              onSabotage={(symbol) => send('stock:sabotage', { symbol })}
+              onBuyOption={(payload) => send('options:buy', payload)}
+            />
+          )}
+
+          {activePokerPanel === 'world' && (
+            <WorldPanel
+              worldState={worldState}
+              myChips={bankState.chips ?? 0}
+              joined={joined}
+              myPlayerId={playerId}
+              onClaim={(territoryId) => send('world:claim', { territoryId })}
+              onPandemic={() => send('world:pandemic', {})}
+            />
+          )}
+
+          {activePokerPanel === 'influence' && (
+            <InfluencePanel
+              influenceState={influenceState}
+              stocksState={stocksState}
+              myChips={bankState.chips ?? 0}
+              joined={joined}
+              onRun={(opId, targetSymbol) => send('influence:run', { opId, targetSymbol })}
+            />
+          )}
+
         </div>
       )}
 
@@ -3780,7 +4524,12 @@ export default function PokerPage() {
           <div className="absolute top-[12%] sm:top-[10%] left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 z-0 max-w-[40vw] sm:max-w-none">
             <PotChips amount={gameState?.pot || 0} />
             <div className="text-[10px] sm:text-xs text-white/60 font-bold tracking-widest bg-black/30 px-2 py-0.5 rounded-md mt-1">POT</div>
-            <div className="font-black text-xl sm:text-3xl text-white drop-shadow-md tabular-nums">{gameState?.pot || 0}</div>
+            {/* Pot number — keep exact at sane stakes, compact (5B / 1.5B)
+                only past the M/B threshold where the comma-formatted
+                string would overflow the [40vw] cap on mobile. */}
+            <div className="font-black text-xl sm:text-3xl text-white drop-shadow-md tabular-nums">
+              {(gameState?.pot || 0) >= 1_000_000 ? formatChipsCompact(gameState?.pot || 0) : (gameState?.pot || 0).toLocaleString()}
+            </div>
           </div>
 
           {splitPotNotice.length > 0 && (
@@ -3920,6 +4669,7 @@ export default function PokerPage() {
                     ${!isMe ? 'cursor-pointer hover:border-zinc-300 focus:outline-none focus:ring-2 focus:ring-amber-300' : ''}
                     ${player.folded && !isPlayerWaiting ? 'opacity-50' : ''}
                     ${isPlayerWaiting ? 'opacity-60' : ''}
+                    ${disconnectedPlayerIds.has(player.id) ? 'opacity-70' : ''}
                     ${isHighlighted
                       ? isTurnWarning
                         ? 'ring-4 ring-red-400 border-red-400/80 shadow-[0_0_30px_rgba(239,68,68,0.85)] bg-red-950/70'
@@ -3938,6 +4688,19 @@ export default function PokerPage() {
                       {player.isBot && (
                         <span className="shrink-0 text-[8px] sm:text-[9px] font-black uppercase tracking-widest text-zinc-400">BOT</span>
                       )}
+                      {/* Tiny pulsing dot for disconnected-in-grace
+                          players. Stays out of the username row's
+                          length budget — the meta row below carries the
+                          "Reconnecting…" word, same way "Waiting..."
+                          works. Title prop gives the long form on
+                          hover for desktop. */}
+                      {disconnectedPlayerIds.has(player.id) && (
+                        <span
+                          title="Reconnecting — seat held"
+                          aria-label="Reconnecting"
+                          className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"
+                        />
+                      )}
                     </div>
                     <div className="mt-0.5 flex items-center justify-center gap-1.5 text-[9px] sm:text-xs text-zinc-200 font-medium whitespace-nowrap">
                       {/* Hide the avatar at showdown so the hand name
@@ -3955,12 +4718,23 @@ export default function PokerPage() {
                           className="h-5 w-5 sm:h-6 sm:w-6"
                         />
                       )}
-                      {isPlayerWaiting ? (
+                      {disconnectedPlayerIds.has(player.id) ? (
+                        // Same italic pattern as the "Waiting..." span
+                        // below — but in amber so it reads as transient
+                        // ("they'll be right back") rather than permanent
+                        // ("they're idle"). Pulsing dot in the username
+                        // row carries the same signal in compact form.
+                        <span className="text-amber-300 font-bold italic">Reconnecting…</span>
+                      ) : isPlayerWaiting ? (
                         <span className="text-zinc-400 font-bold italic">Waiting...</span>
                       ) : phase === 'showdown' && handName && !player.folded ? (
                         <span className="block max-w-full truncate text-amber-300 font-bold">{handName}</span>
                       ) : (
-                        `${player.chips} chips`
+                        // Compact at absurd-blind tiers — $5B/seat would
+                        // overflow the 120/140px nameplate width and force
+                        // truncation. formatChipsCompact returns "5B"
+                        // there, full toLocaleString below 10K.
+                        `${formatChipsCompact(player.chips)} chips`
                       )}
                     </div>
                     {/* Bot Remove button removed from the table nameplate — bots
@@ -4065,6 +4839,43 @@ export default function PokerPage() {
         fromDisplayName={authUser?.displayName || username}
       />
 
+      {/* Persistent investment HUD. Mini bottom-left widget showing
+          every position across crypto / stocks / real-estate / world
+          territories at a glance. One-tap rows open the matching
+          panel. Collapsed by default; remembers state in localStorage. */}
+      {/* InvestmentHUD now renders inside the chat/sidebets dock column
+          (see the IIFE below) so it sits above them in a fixed-but-not-
+          draggable slot on desktop, and joins the centered stack on
+          mobile. No longer a separate floating widget. */}
+
+      {/* Peek-hand reveal — only the local user sees this. Shows the
+          target's hole cards in a small modal. Tap anywhere to dismiss. */}
+      {itemPeekResult && (
+        <PeekRevealModal
+          targetUsername={itemPeekResult.targetUsername}
+          cards={itemPeekResult.cards}
+          onClose={() => setItemPeekResult(null)}
+        />
+      )}
+
+      {/* Scam popup — landed on us because another player used their
+          Scam item. Sea of Accept buttons + one Block; buttons reshuffle
+          every ~600ms so a hasty click can hit Accept. */}
+      {scamPopup && (
+        <ScamPopupModal
+          senderUsername={scamPopup.senderUsername}
+          amount={scamPopup.amount}
+          onAccept={() => {
+            send('item:scam_resolve', { scamId: scamPopup.scamId, accepted: true })
+            setScamPopup(null)
+          }}
+          onBlock={() => {
+            send('item:scam_resolve', { scamId: scamPopup.scamId, accepted: false })
+            setScamPopup(null)
+          }}
+        />
+      )}
+
       {/* Floating feed window — opened from the Tools menu. Movable,
           resizable, persisted position/size. Reuses PostCard + PostComposer
           so the in-table view matches /feed exactly. */}
@@ -4103,7 +4914,7 @@ export default function PokerPage() {
               {(runoutStepBanner.winners || []).length === 0
                 ? 'Split board'
                 : (runoutStepBanner.winners || [])
-                    .map(w => `${w.username} +${w.chips}`)
+                    .map(w => `${w.username} +${(w.chips || 0).toLocaleString()}`)
                     .join(' · ')}
             </div>
           </div>
@@ -4135,7 +4946,12 @@ export default function PokerPage() {
             of the layout doesn't shift between waiting and acting. */}
         {!isSpectator && (() => {
           const inHand = phase !== 'waiting' && phase !== 'showdown' && !myPlayer?.folded && !isWaitingNextHand
-          const canAct = inHand && isMyTurn
+          // Block actions while the WS is closed mid-reconnect. Without this
+          // a click would hit `ws.send` on a CLOSED socket and throw an
+          // InvalidStateError into the React handler. Server already
+          // auto-checks/folds for in-grace players, so the right UX is to
+          // grey the buttons + let the banner explain the wait.
+          const canAct = inHand && isMyTurn && connected
           const hasRaiseRoom = (myPlayer?.chips ?? 0) > minRaise
           const statusText = phase === 'waiting'
             ? ((gameState?.players?.length ?? 0) <= 1 ? 'Waiting for others to join…' : 'Waiting for players…')
@@ -4169,7 +4985,7 @@ export default function PokerPage() {
               <button
                 onClick={() => send('poker_fold')}
                 disabled={!canAct}
-                className="px-2 py-1 rounded-md text-xs font-bold transition-all bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-zinc-700"
+                className="px-2 py-1 rounded-md text-xs font-bold transition-all bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-zinc-700 flex items-center justify-center"
               >
                 Fold
               </button>
@@ -4177,19 +4993,24 @@ export default function PokerPage() {
                 <button
                   onClick={() => send('poker_check')}
                   disabled={!canAct}
-                  className="px-2 py-1 rounded-md text-xs font-bold transition-all bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-zinc-700"
+                  className="px-2 py-1 rounded-md text-xs font-bold transition-all bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-zinc-700 flex items-center justify-center"
                 >
                   Check
                 </button>
-              ) : (
-                <button
-                  onClick={() => send('poker_call')}
-                  disabled={!canAct}
-                  className="px-2 py-1 rounded-md text-xs font-bold transition-all bg-emerald-600 hover:bg-emerald-500 border border-emerald-400/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600"
-                >
-                  Call {Math.min(toCall, myPlayer?.chips || 0)}
-                </button>
-              )}
+              ) : (() => {
+                const callAmt = Math.min(toCall, myPlayer?.chips || 0)
+                return (
+                  <button
+                    onClick={() => send('poker_call')}
+                    disabled={!canAct}
+                    title={`Call ${callAmt.toLocaleString()} chips (${formatBB(callAmt, tableBigBlind)})`}
+                    className="px-2 py-1 rounded-md text-xs font-bold transition-all bg-emerald-600 hover:bg-emerald-500 border border-emerald-400/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600 leading-tight"
+                  >
+                    <div>Call {callAmt.toLocaleString()}</div>
+                    <div className="text-[9px] sm:text-[10px] opacity-70 font-normal">{formatBB(callAmt, tableBigBlind)}</div>
+                  </button>
+                )
+              })()}
               <button
                 onClick={clickAllIn}
                 disabled={!canAct}
@@ -4204,31 +5025,87 @@ export default function PokerPage() {
                     : 'bg-amber-600 hover:bg-amber-500 border-amber-400/50 disabled:hover:bg-amber-600'
                 }`}
               >
-                {allInArmed && canAct ? `Confirm All In · ${myPlayer?.chips || 0}` : 'All In'}
+                {allInArmed && canAct ? (
+                  <span className="block leading-tight">
+                    <span className="block">Confirm All In · {(myPlayer?.chips || 0).toLocaleString()}</span>
+                    <span className="block opacity-80 font-normal text-[9px] sm:text-[10px]">{formatBB(myPlayer?.chips || 0, tableBigBlind)}</span>
+                  </span>
+                ) : 'All In'}
               </button>
             </div>
 
-            {/* Always-rendered raise row — disabled when we can't act or stack
-                is too small to legally raise. Stays visible so the panel size
-                doesn't pop in/out between turns. */}
-            <div className={`flex items-center gap-2 w-full ${(!canAct || !hasRaiseRoom) ? 'opacity-40' : ''}`}>
+            {/* Raise UI — redesigned for trillion-scale economy.
+                The slider has log-scale resolution problems above $1M
+                (one pixel = $100K minimum); a player with $5T can't
+                use the slider to pick "$50B exactly". So we keep the
+                slider for casual incremental bumps + add:
+                  • a direct numeric input that accepts shorthand
+                    (5K, 1.5M, 2B, 0.5T)
+                  • four quick-bet buttons (¼ pot, ½ pot, pot, all-in)
+                The button shows the bet + BB and respects both inputs. */}
+            <div className={`flex flex-col gap-1.5 w-full ${(!canAct || !hasRaiseRoom) ? 'opacity-40' : ''}`}>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={raiseAmount > 0 ? safeRaise.toLocaleString() : ''}
+                  placeholder={`min ${formatChipsCompact(minRaise)}`}
+                  onChange={(e) => {
+                    const parsed = parseChipShorthand(e.target.value)
+                    if (parsed !== null) setRaiseAmount(parsed)
+                    else if (e.target.value.trim() === '') setRaiseAmount(0)
+                  }}
+                  disabled={!canAct || !hasRaiseRoom}
+                  className="flex-1 min-w-0 rounded-md border border-zinc-600 bg-zinc-900 px-2 py-1 text-xs font-bold text-white outline-none focus:border-zinc-300 disabled:cursor-not-allowed tabular-nums"
+                />
+                <button
+                  onClick={() => send('poker_raise', { amount: safeRaise })}
+                  disabled={!canAct || !hasRaiseRoom}
+                  title={`Raise ${safeRaise.toLocaleString()} chips (${formatBB(safeRaise, tableBigBlind)})`}
+                  className="shrink-0 px-2 py-1 rounded-md text-xs font-bold transition-all whitespace-nowrap bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:hover:bg-zinc-700 leading-tight"
+                >
+                  <div>Raise {formatChipsCompact(safeRaise)}</div>
+                  <div className="text-[9px] sm:text-[10px] opacity-70 font-normal">{formatBB(safeRaise, tableBigBlind)}</div>
+                </button>
+              </div>
+              {/* Quick-bet shortcuts. Pot-relative + all-in. All clamped
+                  to [minRaise, myChips] so they're always legal. */}
+              <div className="grid grid-cols-4 gap-1">
+                {(() => {
+                  const pot = gameState?.pot || 0
+                  const myChips = myPlayer?.chips || 0
+                  const clamp = (n) => Math.max(minRaise, Math.min(myChips, Math.floor(n)))
+                  const presets = [
+                    { label: '¼ pot', amount: clamp(pot * 0.25) },
+                    { label: '½ pot', amount: clamp(pot * 0.5) },
+                    { label: 'Pot',   amount: clamp(pot) },
+                    { label: 'Max',   amount: myChips },
+                  ]
+                  return presets.map(p => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => setRaiseAmount(p.amount)}
+                      disabled={!canAct || !hasRaiseRoom}
+                      title={`${p.label}: ${p.amount.toLocaleString()} chips`}
+                      className="rounded-md border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[10px] font-black uppercase tracking-wide text-zinc-300 hover:bg-zinc-800 hover:text-white disabled:opacity-50"
+                    >
+                      {p.label}
+                    </button>
+                  ))
+                })()}
+              </div>
               <input
                 type="range"
                 min={minRaise}
                 max={myPlayer?.chips || minRaise}
-                step={Math.max(5, Math.floor(tableBigBlind / 2))}
+                step={Math.max(1, Math.floor((myPlayer?.chips || minRaise) / 200))}
                 value={safeRaise}
                 onChange={e => setRaiseAmount(parseInt(e.target.value))}
                 disabled={!canAct || !hasRaiseRoom}
-                className="flex-1 accent-white h-1 bg-zinc-900 rounded-full disabled:cursor-not-allowed"
+                title="Drag to dial — for finer control, type in the box above"
+                className="w-full accent-white h-1 bg-zinc-900 rounded-full disabled:cursor-not-allowed"
               />
-              <button
-                onClick={() => send('poker_raise', { amount: safeRaise })}
-                disabled={!canAct || !hasRaiseRoom}
-                className="px-2 py-1 rounded-md text-xs font-bold transition-all whitespace-nowrap bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:hover:bg-zinc-700"
-              >
-                Raise {safeRaise}
-              </button>
             </div>
           </div>
           {canUseEmotes && (
@@ -4270,15 +5147,10 @@ export default function PokerPage() {
               </div>
             </>
           )}
-          {/* Chat dock — under the yell input on the left stack ONLY when
-              sidebets is also visible (its normal spot). When sidebets is
-              hidden, chat moves over to occupy sidebets' slot instead — see
-              the sidebets IIFE below for that rendering. */}
-          {chatDockVisible && sideBetsDockVisible && (
-            <div className="mt-1.5 flex flex-col h-40 lg:h-48 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden">
-              {chatBoxInner}
-            </div>
-          )}
+          {/* Chat dock used to render here on the left stack when both
+              chat AND sidebets were visible. That co-visible state is no
+              longer reachable (the toggles mutually exclude), so chat
+              always renders in the sidebets slot via the IIFE below. */}
         </div>
           )
         })()}
@@ -4303,7 +5175,7 @@ export default function PokerPage() {
                 // avatar.
                 className={`pointer-events-auto absolute top-0 ${authUser ? 'right-14 sm:right-16' : 'right-24 sm:right-28'} ${
                   statsExpansion === 'minimized'
-                    ? 'w-[180px]'
+                    ? 'w-[210px]'
                     : statsExpansion === 'detailed'
                       ? 'w-[calc(100vw-8rem)] max-w-[420px]'
                       : 'w-[calc(100vw-8rem)] max-w-[320px]'
@@ -4405,11 +5277,17 @@ export default function PokerPage() {
           //     where seated players use one or the other in this slot,
           //     not both (the inline chat under the yell input handles
           //     the always-on case for them).
+          // Chat + Side Bets are mutually exclusive — the toggles enforce
+          // it at write time, but a legacy localStorage state could still
+          // have both enabled, so we belt-and-brace it here too. Side bets
+          // wins the conflict (matches the toggle behavior).
           const showSidebets = sideBetsDockVisible
-          const showChat = isSpectator
-            ? chatDockVisible
-            : (!sideBetsDockVisible && chatDockVisible)
-          if (!showSidebets && !showChat) return null
+          const showChat = chatDockVisible && !sideBetsDockVisible
+          // Investment HUD sits ABOVE the dock in the same column. Render
+          // the parent column whenever any of the three (HUD, sidebets,
+          // chat) is on — otherwise nothing in the column.
+          const showHUD = hudEnabled
+          if (!showSidebets && !showChat && !showHUD) return null
           // Match the spectator panel's md+ lift so both sides of the
           // bottom-UI row visually align. KEEP THESE VALUES IN SYNC with
           // `md:-translate-y-20 md:-mb-20` on the spectator wrapper
@@ -4421,6 +5299,17 @@ export default function PokerPage() {
           const lift = isSpectator ? 'md:-translate-y-20 md:-mb-20' : ''
           return (
             <div className={`order-1 w-[92%] max-w-[360px] mx-auto md:order-2 md:absolute md:bottom-0 md:right-0 md:mx-0 md:w-auto md:max-w-none md:z-30 flex flex-col items-end gap-3 shrink-0 ${lift}`}>
+              {showHUD && (
+                <InvestmentHUD
+                  myChips={bankState.chips ?? 0}
+                  cryptoState={cryptoState}
+                  assetsState={assetsState}
+                  stocksState={stocksState}
+                  worldState={worldState}
+                  onOpenPanel={openPokerPanel}
+                  onClose={() => setHudEnabledPersist(false)}
+                />
+              )}
               {showSidebets && (
                 <div className={`w-full md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
                   <SideBetsPanel

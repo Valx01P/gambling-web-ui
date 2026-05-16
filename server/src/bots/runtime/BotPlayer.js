@@ -341,9 +341,28 @@ export class BotPlayer {
     }
 
     // No code, compile error, runtime error, or invalid return → safe default.
+    // 2026-05: changed from "fold whenever there's a bet to call" to a
+    // pot-odds-aware default so a silent bot doesn't reflexively dump every
+    // hand. Reasoning: most rule bots that fall through to null on a
+    // boundary case are still in a hand worth playing — autoFolding made
+    // them feel sniveling. A small call relative to the pot is almost
+    // always +EV with any equity, so default to call there.
     const myBet = game.playerBets.get(this.id) || 0
-    const toCall = game.currentBet - myBet
-    if (!action) action = toCall > 0 ? 'fold' : 'check'
+    const toCall = Math.max(0, game.currentBet - myBet)
+    if (!action) {
+      if (toCall <= 0) {
+        action = 'check'
+      } else {
+        const bb = game.bigBlind || 0
+        const pot = game.pot || 0
+        // "Cheap call" = small vs. pot or small vs. big blind. With any
+        // realistic hand, calling here is fine. Only fold when the price
+        // is meaningfully large.
+        const potOdds = pot > 0 ? toCall / (pot + toCall) : 1
+        const cheap = toCall <= Math.max(bb * 2, this.chips * 0.05) || potOdds <= 0.18
+        action = cheap && toCall < this.chips ? 'call' : 'fold'
+      }
+    }
 
     // Translate impossible combinations into the closest legal action.
     if (action === 'check' && toCall > 0) action = 'call'

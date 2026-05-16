@@ -15,6 +15,18 @@ export class Player {
   constructor(id, ws, username = null) {
     this.id = id
     this.ws = ws
+    // Issued on first connect and echoed back on every RECONNECT. The
+    // client persists it in localStorage; when a fresh WS opens after a
+    // reload/crash/temporary network drop, sending RECONNECT { sessionToken }
+    // re-attaches the new socket to this Player object — same playerId,
+    // same seat, same chips, same hole cards. Token rotates after each
+    // successful reconnect to limit replay if the storage is ever leaked.
+    this.sessionToken = null
+    // True iff this player is currently in the grace window (WS closed but
+    // we're holding their seat for `_graceExpiresAt`). MessageHandler skips
+    // them for new actions; PokerRoom auto-checks/folds in their turn.
+    this.disconnectedAt = null
+    this.graceExpiresAt = null
     this.username = username || `Player_${id.substring(0, 6)}`
     this.chips = POKER_CONFIG.STARTING_CHIPS
     this.pokerBuyIn = POKER_CONFIG.STARTING_CHIPS
@@ -318,18 +330,47 @@ export class Player {
   // configured CDN base so we don't broadcast an arbitrary attacker-
   // controlled image URL to every player at the table.
   //
+  // 2026-05: anon uploads were silently failing here because the strict
+  // hostname-equality check rejected any URL not exactly matching
+  // S3_PUBLIC_BASE_URL — including the bucket's direct regional host
+  // when the CDN base wasn't configured. The validation now accepts:
+  //   • The configured CloudFront/CDN base (S3_PUBLIC_BASE_URL)
+  //   • The bucket's regional S3 host (S3_BUCKET_NAME.s3*.amazonaws.com)
+  // and logs (not silently drops) any rejection so the failure surfaces
+  // in server logs. Still no arbitrary URLs allowed.
+  //
   // `avatarId` is cleared (set to null) so consumers know to render
   // straight from `avatarUrl` instead of looking up a preset.
   setCustomAvatarUrl(url) {
     if (typeof url !== 'string' || url.length === 0 || url.length > 512) return false
     let parsed
-    try { parsed = new URL(url) } catch { return false }
+    try { parsed = new URL(url) } catch {
+      console.warn('[avatar] setCustomAvatarUrl: unparseable URL')
+      return false
+    }
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false
+
+    const allowedHosts = new Set()
     const baseRaw = process.env.S3_PUBLIC_BASE_URL || ''
-    if (!baseRaw) return false
-    let baseHost
-    try { baseHost = new URL(baseRaw).hostname } catch { return false }
-    if (parsed.hostname !== baseHost) return false
+    if (baseRaw) {
+      try { allowedHosts.add(new URL(baseRaw).hostname) } catch {}
+    }
+    // Bucket-direct fallback. Covers cases where the presign issuer
+    // returns the regional S3 URL (e.g., dev without CloudFront) or
+    // the operator hasn't set S3_PUBLIC_BASE_URL. The pattern check
+    // also avoids accepting an arbitrary other bucket as our own.
+    const bucket = process.env.S3_BUCKET_NAME || ''
+    if (bucket && parsed.hostname.startsWith(`${bucket}.s3`) && parsed.hostname.endsWith('.amazonaws.com')) {
+      allowedHosts.add(parsed.hostname)
+    }
+    if (allowedHosts.size === 0) {
+      console.warn('[avatar] setCustomAvatarUrl: no S3_PUBLIC_BASE_URL or S3_BUCKET_NAME configured; rejecting all custom URLs')
+      return false
+    }
+    if (!allowedHosts.has(parsed.hostname)) {
+      console.warn('[avatar] setCustomAvatarUrl: host not allowed:', parsed.hostname, '(allowed:', [...allowedHosts].join(','), ')')
+      return false
+    }
     this.avatarId = null
     this.avatarUrl = url
     return true
@@ -399,14 +440,44 @@ export class Player {
   }
 }
 
+// Grace window between WS close and full player teardown. Long enough to
+// survive a page reload + cold start of the next WS connect (~5-15s in
+// practice), short enough that a player who quit doesn't tie up a seat
+// for a meaningful fraction of a hand. Tunable via env so we can dial it
+// down in arena/tournament rooms later without redeploying.
+const RECONNECT_GRACE_MS = Number(process.env.RECONNECT_GRACE_MS) || 45_000
+
 export class PlayerManager {
   constructor() {
     this.players = new Map()
+    // sessionToken → playerId. Indexed alongside `players` so a returning
+    // socket can be re-attached in O(1). Entries are cleared when the
+    // grace window expires or the player explicitly leaves.
+    this._tokensByPlayer = new Map()  // playerId → sessionToken
+    this._playerByToken = new Map()   // sessionToken → playerId
+    // playerId → { timer, expiresAt }. Holds the player object alive
+    // after WS close until the grace window elapses.
+    this._graceTimers = new Map()
+    // Optional callback fired when a grace timer fires without a
+    // reconnect — used by WebSocketServer to do the final cleanup
+    // (leaveGame, untrackPresence, deletePlayer). Plumbed via
+    // setOnGraceExpire so PlayerManager doesn't reach into networking.
+    this._onGraceExpire = null
   }
+
+  setOnGraceExpire(fn) { this._onGraceExpire = typeof fn === 'function' ? fn : null }
 
   addPlayer(id, ws, username = null) {
     const player = new Player(id, ws, username)
     this.players.set(id, player)
+    // Mint a fresh session token. Two layers of randomness because the
+    // playerId is also a UUID — a leaked playerId alone shouldn't be
+    // enough to hijack a seat. The token is stored client-side in
+    // localStorage and never broadcast.
+    const token = randomToken()
+    player.sessionToken = token
+    this._tokensByPlayer.set(id, token)
+    this._playerByToken.set(token, id)
     return player
   }
 
@@ -414,8 +485,86 @@ export class PlayerManager {
     return this.players.get(id)
   }
 
+  // Look up a player by their issued session token. Used by the RECONNECT
+  // handler to find the seat we held during the grace window.
+  getPlayerByToken(token) {
+    if (typeof token !== 'string' || token.length === 0) return null
+    const id = this._playerByToken.get(token)
+    if (!id) return null
+    return this.players.get(id) || null
+  }
+
   deletePlayer(id) {
+    const token = this._tokensByPlayer.get(id)
+    if (token) this._playerByToken.delete(token)
+    this._tokensByPlayer.delete(id)
+    this.clearGrace(id)
     this.players.delete(id)
+  }
+
+  // Begin the grace window for a player whose WS just closed. Doesn't
+  // remove them from any room — that's what the grace is for. If the
+  // window elapses without RECONNECT, `_onGraceExpire(playerId)` is
+  // fired so the network layer can tear them down properly.
+  beginGrace(id) {
+    const player = this.players.get(id)
+    if (!player) return
+    if (this._graceTimers.has(id)) return  // already in grace
+    const now = Date.now()
+    player.disconnectedAt = now
+    player.graceExpiresAt = now + RECONNECT_GRACE_MS
+    player.isConnected = false
+    const timer = setTimeout(() => {
+      this._graceTimers.delete(id)
+      const p = this.players.get(id)
+      if (!p) return
+      // Still disconnected at expiry → terminal teardown.
+      if (!p.isConnected) {
+        try { this._onGraceExpire?.(id) } catch (err) {
+          console.warn('[grace] onGraceExpire threw:', err.message)
+        }
+      }
+    }, RECONNECT_GRACE_MS)
+    // Don't keep the event loop alive just for the grace timer (node
+    // would block shutdown for up to RECONNECT_GRACE_MS otherwise).
+    if (typeof timer.unref === 'function') timer.unref()
+    this._graceTimers.set(id, { timer, expiresAt: player.graceExpiresAt })
+  }
+
+  // Cancel a pending grace timer — called when the client reconnects in
+  // time or explicitly leaves. Safe to call when no timer is active.
+  clearGrace(id) {
+    const entry = this._graceTimers.get(id)
+    if (entry) {
+      clearTimeout(entry.timer)
+      this._graceTimers.delete(id)
+    }
+    const p = this.players.get(id)
+    if (p) {
+      p.disconnectedAt = null
+      p.graceExpiresAt = null
+    }
+  }
+
+  isInGrace(id) { return this._graceTimers.has(id) }
+
+  // Swap a player's WS reference for a freshly-arrived one. Used by the
+  // RECONNECT handler: same Player object, same chips/cards/seat, new
+  // socket. Token rotates so the old token can't be reused.
+  attachSocket(id, ws) {
+    const player = this.players.get(id)
+    if (!player) return null
+    player.ws = ws
+    player.isConnected = true
+    this.clearGrace(id)
+    // Rotate the token. Old token is invalidated immediately.
+    const oldToken = this._tokensByPlayer.get(id)
+    if (oldToken) this._playerByToken.delete(oldToken)
+    const newToken = randomToken()
+    player.sessionToken = newToken
+    this._tokensByPlayer.set(id, newToken)
+    this._playerByToken.set(newToken, id)
+    return player
   }
 
   getConnectedPlayers() {
@@ -434,4 +583,17 @@ export class PlayerManager {
     }
     return out
   }
+}
+
+// 24-byte random token, URL-safe base64. crypto.randomUUID would be fine
+// security-wise but base64-of-randomBytes is shorter on the wire and
+// avoids confusion with the playerId (also a UUID).
+function randomToken() {
+  // Node 22 has webcrypto on globalThis.crypto. Falling back to
+  // Math.random would gut the security guarantee, so just import.
+  const buf = new Uint8Array(24)
+  globalThis.crypto.getRandomValues(buf)
+  // Base64-url: replace +/= with -_, drop padding. Output ≈ 32 chars.
+  return Buffer.from(buf).toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }

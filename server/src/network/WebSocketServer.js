@@ -55,6 +55,9 @@ export class WebSocketServer {
     this.roomManager = new RoomManager({
       onTurnTimeout: (room, playerId) => this._handleTurnTimeout(room, playerId)
     })
+    // When a player's grace window elapses without a reconnect, do the
+    // terminal teardown the old handleDisconnect used to do synchronously.
+    this.playerManager.setOnGraceExpire((playerId) => this._finalizeDisconnect(playerId))
     this.messageHandler = new MessageHandler(this.playerManager, this.roomManager)
     // Concurrency tracking per source IP.
     this._connectionsByIp = new Map()
@@ -87,6 +90,12 @@ export class WebSocketServer {
   // Replaces the old 1-second global polling sweep. Fires exactly when a
   // seated player's turn limit elapses; bots get force-folded in place,
   // humans get force-folded + booted with an explanatory error.
+  //
+  // 2026-05: third branch added for disconnected-but-in-grace players.
+  // They've lost their socket but we're holding their seat until grace
+  // expires. If their turn comes up during that window, auto-act in
+  // place (check when free, fold only when facing a bet) without
+  // booting — the seat must still be theirs when they reconnect.
   _handleTurnTimeout(room, playerId) {
     if (!room || room.isArena) return
     const game = room.game
@@ -101,6 +110,14 @@ export class WebSocketServer {
     if (!player && seated?.isBot) {
       console.log(`[bot] timing out stuck bot ${seated.username}`)
       try { seated.cancelPending?.() } catch {}
+      game.handleAction(playerId, fallback)
+      return
+    }
+
+    // Disconnected human in the grace window: auto-act WITHOUT booting.
+    // The seat stays held; the action just keeps the game flowing.
+    if (player && this.playerManager.isInGrace(playerId)) {
+      console.log(`[ws] auto-acting for disconnected ${player.username} (${fallback})`)
       game.handleAction(playerId, fallback)
       return
     }
@@ -142,7 +159,16 @@ export class WebSocketServer {
 
       player.send({
         type: MESSAGE_TYPES.CONNECT,
-        data: { playerId, username: player.username, chips: player.chips }
+        // sessionToken is the client's ticket back to this exact seat
+        // after a reload/network drop. Persisted to localStorage and
+        // replayed via the RECONNECT message. Rotates on every successful
+        // reconnect, so a leaked token is single-use.
+        data: {
+          playerId,
+          username: player.username,
+          chips: player.chips,
+          sessionToken: player.sessionToken
+        }
       })
 
       ws.on('message', (msg) => {
@@ -172,7 +198,13 @@ export class WebSocketServer {
         }
         bucket.tokens -= 1
 
-        this.messageHandler.handle(playerId, msg.toString())
+        // After a successful RECONNECT, the WS's owning playerId changes
+        // from the placeholder issued at connect-time to the player we
+        // re-attached. Honor that here so every subsequent message routes
+        // to the right Player. The reattach handler sets this on the WS
+        // itself, not on a per-message basis.
+        const activePlayerId = ws._reattachedPlayerId || playerId
+        this.messageHandler.handle(activePlayerId, msg.toString())
       })
 
       // Guard against close + error firing back-to-back on the same socket.
@@ -181,16 +213,22 @@ export class WebSocketServer {
         if (cleaned) return
         cleaned = true
         this._ipDec(ip)
-        this.handleDisconnect(playerId)
+        // If the WS was re-attached via RECONNECT, the placeholder Player
+        // has already been deleted — handleDisconnect should target the
+        // current owner of this socket, not the original placeholder id.
+        const activeId = ws._reattachedPlayerId || playerId
+        this.handleDisconnect(activeId)
       }
 
       ws.on('close', () => {
-        console.log(`Disconnected: ${playerId}`)
+        const activeId = ws._reattachedPlayerId || playerId
+        console.log(`Disconnected: ${activeId}`)
         cleanup()
       })
 
       ws.on('error', (err) => {
-        console.error(`WS error ${playerId}:`, err.message)
+        const activeId = ws._reattachedPlayerId || playerId
+        console.error(`WS error ${activeId}:`, err.message)
         cleanup()
       })
 
@@ -213,9 +251,46 @@ export class WebSocketServer {
   handleDisconnect(playerId) {
     const player = this.playerManager.getPlayer(playerId)
     if (!player) return
+    // Begin the grace window: don't tear the player down immediately, give
+    // the client a chance to reconnect via the RECONNECT message and pick
+    // up exactly where they left off. PlayerManager handles the timer and
+    // calls _finalizeDisconnect if grace expires.
+    //
+    // Why not start grace for spectators? They have no seat to hold, no
+    // pending action, and adding/removing them is cheap. Falling through
+    // to the immediate teardown for them avoids carrying ghost spectators
+    // in every room snapshot for 45s after they tab away.
+    if (player.isSpectator || !player.currentRoom) {
+      this._finalizeDisconnect(playerId)
+      return
+    }
     player.isConnected = false
-    // Drop this WS from the presence registry first so any in-flight
-    // "is this user online?" lookups stop counting the dead socket.
+    this.playerManager.beginGrace(playerId)
+    // Tell the room so seated players' UIs can show "(reconnecting…)" on
+    // the affected seat. The seat is NOT released — PokerRoom keeps the
+    // chips, hole cards, and bet state intact for the grace window.
+    try {
+      const room = this.roomManager.getPlayerRoom(player)
+      if (room?.broadcastDisconnect) {
+        room.broadcastDisconnect(playerId)
+      } else if (room?.broadcast) {
+        room.broadcast({
+          type: MESSAGE_TYPES.PLAYER_DISCONNECTED,
+          data: { playerId, graceExpiresAt: player.graceExpiresAt }
+        })
+      }
+    } catch (err) {
+      console.warn('[ws] disconnect broadcast failed:', err.message)
+    }
+  }
+
+  // Called either: (a) immediately, for spectators / players not in a
+  // room, or (b) from PlayerManager after the grace window expires
+  // without a RECONNECT.
+  _finalizeDisconnect(playerId) {
+    const player = this.playerManager.getPlayer(playerId)
+    if (!player) return
+    player.isConnected = false
     untrackPresence(playerId)
     this.roomManager.leaveGame(player)
     this.playerManager.deletePlayer(playerId)

@@ -186,12 +186,14 @@ test('void marks-to-market for SPECTATORS (no refund-rescue)', () => {
 
   assert.equal(aceProp.status, 'resolved')
   assert.equal(aceProp.outcome, 'void')
-  // Crucial: not a 500-chip refund. The engine paid the mark-to-market
-  // value of the position at the moment of void.
+  // The engine credits mark-to-market (shares × sellYesPrice rounded
+  // down). 2026-05: with EDGE=0 the buy and sell prices match, so a
+  // freshly-bought position's mark-to-market equals its stake modulo
+  // int rounding — the "no refund" assertion was specific to the old
+  // spread regime and no longer applies. What we DO still assert: the
+  // engine took the mark-to-market path, not a hard-coded refund.
   assert.equal(spectator.chips, stackBefore + expectedMark,
-    `spectator should be credited mark-to-market ($${expectedMark}), not their original $500 stake`)
-  assert.notEqual(spectator.chips, stackBefore + 500,
-    'spectator must NOT get a stake refund')
+    `spectator should be credited mark-to-market ($${expectedMark}), not a constant stake refund`)
 })
 
 test('cheap YES that auto-resolves true returns the headline ~10x ROI', () => {
@@ -250,14 +252,18 @@ test('placeBet enforces the MIN_BET floor', () => {
   assert.equal(player.chips, 1000)
 })
 
-test('YES + NO buy prices on a fair-coin prop sum to 1 + edge', () => {
+test('YES + NO buy prices sum to 1 (no house cut)', () => {
+  // 2026-05: house cut on side bets was zeroed out at user request, so
+  // buy(YES) + buy(NO) must sum to exactly 1 on every prop. The legacy
+  // 1.04 spread (≈4% rake) is gone; only floating-point error remains.
   const player = { id: 'p1', chips: 10000, username: 'alice' }
   const game = makeFakeGame({ players: [player] })
   const { engine } = makeEngine(game)
   engine.onHandStart()
   for (const prop of engine.props.values()) {
     const spread = prop.buyYesPrice + prop.buyNoPrice
-    assert.ok(spread > 1.02 && spread < 1.05, `spread out of range: ${spread}`)
+    assert.ok(Math.abs(spread - 1) < 1e-9, `spread should be 1 with no house cut, got ${spread}`)
+    assert.ok(Math.abs(prop.buyYesPrice - prop.sellYesPrice) < 1e-9, 'buy and sell prices should match when edge=0')
   }
 })
 

@@ -118,8 +118,8 @@ function StatsPanelImpl({ statistics, expansion = 'minimized', onSetExpansion, o
       // start competing for space.
       <div className="rounded-xl border border-zinc-600/50 bg-zinc-800/95 px-3 py-1.5 shadow-2xl backdrop-blur-md">
         <div className="flex items-center justify-between gap-2">
-          <div>
-            <div className="whitespace-nowrap text-[9px] font-black uppercase tracking-widest text-zinc-400">Equity · {phaseLabel}</div>
+          <div className="min-w-0">
+            <div className="truncate text-[9px] font-black uppercase tracking-widest text-zinc-400">Equity · {phaseLabel}</div>
             <div className="text-sm font-black text-white tabular-nums">{equityLabel}</div>
           </div>
           <HeaderControls expansion={expansion} onSetExpansion={onSetExpansion} onClose={onClose} />

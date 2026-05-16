@@ -133,12 +133,20 @@ test('rug pull: owner cashes out + extracts a cut of outsider cost', () => {
   const result = engine.rugPull(owner.id)
   assert.equal(result.success, true)
   // ownerProceeds = ~current price * owner's shares (very close to 800k
-  // chips since price hasn't moved much). Plus the 30% cut of (2000+3000).
-  assert.equal(result.rugBonus, Math.floor(5000 * 0.30))
+  // chips since price hasn't moved much). Plus the 60% cut of (2000+3000).
+  // 2026-05: bonus bumped 0.30 → 0.60 alongside the change that wipes
+  // every non-owner position on rug — see cryptoEngine.js RUG_KEEP_PERCENT.
+  assert.equal(result.rugBonus, Math.floor(5000 * 0.60))
   assert.ok(owner.chips > ownerChipsBeforeRug)
   const coin = engine.coins.get(coinId)
   assert.equal(coin.rugged, true)
-  // Outsiders' positions still exist but the coin is near-worthless.
+  // Outsiders' positions are now WIPED — they lose what they put in.
+  assert.equal(engine.holdings.get(a.id)?.get(coinId), undefined)
+  assert.equal(engine.holdings.get(b.id)?.get(coinId), undefined)
+  // The 2026-05 change reports drained holders on the result so the
+  // UI can show "you got rugged for $N" per victim.
+  assert.equal(Array.isArray(result.drainedHolders), true)
+  assert.equal(result.drainedHolders.length, 2)
   assert.ok(coin.price < 1)
   // Owner can't rug again.
   const again = engine.rugPull(owner.id)

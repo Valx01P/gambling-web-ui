@@ -187,16 +187,20 @@ export default function BotProfilePopover({
       </div>
 
       <div className="mt-3 flex gap-2">
-        {/* Owner can jump straight to the edit page. Non-owners get a
-            view-only link if the bot is public; private-bot non-owners
-            see nothing (the page would 404). */}
-        {(isOwner || seat.botIsPublic) && seat.botId && (
+        {/* 2026-05: Edit Bot was removed from this popover at the user's
+            request — editing live at the table was confusing (the bot's
+            seat doesn't pick up code changes until next hand, and the
+            recalc-stats flow has a stale-load race). Owners go through
+            /poker/bots to edit instead. The view-only link is kept for
+            public bots so anyone can inspect a bot's logic without
+            leaving the table flow. */}
+        {!isOwner && seat.botIsPublic && seat.botId && (
           <a
             href={`/poker/bots/${seat.botId}`}
             className="flex-1 rounded-md border border-zinc-500/60 bg-zinc-800 px-3 py-1.5 text-center text-xs font-black uppercase tracking-widest text-white hover:bg-zinc-700"
             onClick={(e) => e.stopPropagation()}
           >
-            {isOwner ? 'Edit bot →' : 'View bot →'}
+            View bot →
           </a>
         )}
       </div>

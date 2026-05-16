@@ -102,6 +102,13 @@ export class MessageHandler {
         case MESSAGE_TYPES.AUTH_HELLO:
           return this.handleAuthHello(player, data)
 
+        case MESSAGE_TYPES.RECONNECT:
+          // Special path: the WS that just connected has a brand-new
+          // playerId, but the client claims a sessionToken from a prior
+          // session. We need to swap the fresh shell out for the held
+          // seat (if any) before any other handler runs.
+          return this.handleReconnect(playerId, player, data)
+
         case MESSAGE_TYPES.UPDATE_PROFILE:
           return this.handleUpdateProfile(player, data)
 
@@ -137,6 +144,33 @@ export class MessageHandler {
         case 'crypto:create':
         case 'crypto:rug':
           return this.handleCrypto(player, type, data)
+
+        case MESSAGE_TYPES.ITEM_USE:
+          return this.handleItemUse(player, data)
+        case MESSAGE_TYPES.ITEM_SCAM_RESOLVE:
+          return this.handleItemScamResolve(player, data)
+
+        case 'asset:buy':
+        case 'asset:sell':
+          return this.handleAssetTrade(player, type, data)
+
+        case 'job:claim':
+          return this.handleJobClaim(player, data)
+
+        case 'stock:buy':
+        case 'stock:sell':
+        case 'stock:sabotage':
+          return this.handleStockAction(player, type, data)
+
+        case 'options:buy':
+          return this.handleOptionsBuy(player, data)
+
+        case 'world:claim':
+        case 'world:pandemic':
+          return this.handleWorldAction(player, type, data)
+
+        case 'influence:run':
+          return this.handleInfluenceRun(player, data)
 
         default:
           return this.error('Unknown message type', player)
@@ -180,7 +214,14 @@ export class MessageHandler {
       if (data?.avatarUrl && typeof player.setCustomAvatarUrl === 'function') {
         // Custom upload — must originate from our own S3+CloudFront stack.
         // setCustomAvatarUrl rejects URLs outside the configured CDN host.
-        player.setCustomAvatarUrl(data.avatarUrl)
+        // 2026-05: if it rejects, fall through to avatarId (or a sane
+        // preset default) so anon photo-upload failures don't land the
+        // player at the table with no avatar at all. The server log will
+        // have a [avatar] warning when this happens.
+        const ok = player.setCustomAvatarUrl(data.avatarUrl)
+        if (!ok && data?.avatarId && typeof player.setProfileAvatar === 'function') {
+          player.setProfileAvatar(data.avatarId)
+        }
       } else if (data?.avatarId && typeof player.setProfileAvatar === 'function') {
         player.setProfileAvatar(data.avatarId)
       }
@@ -270,6 +311,99 @@ export class MessageHandler {
       player.userId = null
       return { success: false }
     }
+  }
+
+  // Re-attach a fresh WS to the seat held during the grace window. Path:
+  //   1. The new WS connection got assigned a placeholder playerId + a
+  //      fresh Player shell (see WebSocketServer.init).
+  //   2. The client sees its saved sessionToken in localStorage and sends
+  //      RECONNECT { sessionToken } as its first non-auth message.
+  //   3. We look up the held Player by token. If found and still alive
+  //      (token rotates on success, grace not expired), we swap the new
+  //      socket onto the held Player and discard the placeholder.
+  //   4. We reply RECONNECT_OK with a complete room snapshot so the
+  //      client can render mid-hand state without a fresh join.
+  //
+  // Failure modes (all reply RECONNECT_FAIL with a reason the client can
+  // log; client falls back to a normal join flow):
+  //   • unknown_token       — never issued, or already rotated past
+  //   • grace_expired       — too long; the held player was torn down
+  //   • not_in_room         — the held seat already left the room
+  //   • same_player         — same WS asking to reconnect to itself
+  handleReconnect(placeholderId, placeholder, data) {
+    const token = data?.sessionToken
+    if (typeof token !== 'string' || token.length === 0) {
+      placeholder.send({ type: MESSAGE_TYPES.RECONNECT_FAIL, data: { reason: 'no_token' } })
+      return { success: false }
+    }
+    const held = this.playerManager.getPlayerByToken(token)
+    if (!held) {
+      placeholder.send({ type: MESSAGE_TYPES.RECONNECT_FAIL, data: { reason: 'unknown_token' } })
+      return { success: false }
+    }
+    if (held.id === placeholderId) {
+      // Replayed RECONNECT on an already-active socket. No-op.
+      placeholder.send({ type: MESSAGE_TYPES.RECONNECT_FAIL, data: { reason: 'same_player' } })
+      return { success: false }
+    }
+    // Re-attach the fresh socket to the held seat. attachSocket also
+    // rotates the token and clears the grace timer.
+    const newWs = placeholder.ws
+    const reattached = this.playerManager.attachSocket(held.id, newWs)
+    if (!reattached) {
+      placeholder.send({ type: MESSAGE_TYPES.RECONNECT_FAIL, data: { reason: 'attach_failed' } })
+      return { success: false }
+    }
+    // Drop the placeholder Player object now that its socket is owned by
+    // the held player. The WS itself stays open — we just stop tracking
+    // the throwaway playerId, including unbinding its message handler's
+    // implicit playerId binding by rewriting the closure key.
+    this.playerManager.deletePlayer(placeholderId)
+    // The ws.on('message') closure was created with the placeholder id
+    // captured. Tag the WS so the dispatcher knows which Player to look
+    // up on subsequent messages — WebSocketServer reads this on each
+    // inbound frame.
+    newWs._reattachedPlayerId = reattached.id
+
+    // Build the room snapshot the client needs to re-render. If the
+    // player wasn't in a room (rare — grace usually only starts when
+    // seated), still reply OK so the client can drop into the lobby.
+    const room = this.roomManager.getPlayerRoom(reattached)
+    const snapshot = room ? room.getRoomData(reattached.id) : null
+    reattached.send({
+      type: MESSAGE_TYPES.RECONNECT_OK,
+      data: {
+        playerId: reattached.id,
+        sessionToken: reattached.sessionToken,
+        username: reattached.username,
+        // Full room snapshot — same shape as JOIN_GAME success — so the
+        // client can render hole cards, pot, community, action-on-who
+        // without a separate fetch.
+        room: snapshot,
+        isSpectator: reattached.isSpectator
+      }
+    })
+    // Push fresh per-player engine snapshots so all the side-economy
+    // panels (items, real-estate, jobs, stocks, world) repopulate on
+    // reconnect instead of staying empty until the next hand-end. The
+    // RECONNECT_OK room snapshot doesn't carry these — each engine
+    // owns its own state outside the room payload.
+    if (room) {
+      try { room.itemEngine?.sendSnapshotTo(reattached) } catch {}
+      try { room.assetEngine?.sendSnapshotTo(reattached) } catch {}
+      try { room.jobEngine?.sendSnapshotTo(reattached) } catch {}
+      try { room.stockEngine?.sendSnapshotTo(reattached) } catch {}
+      try { room.worldEngine?.sendSnapshotTo(reattached) } catch {}
+    }
+    // Tell the table that the player is back so other clients can drop
+    // the "(reconnecting…)" tag from the seat.
+    if (room?.broadcast) {
+      room.broadcast({
+        type: MESSAGE_TYPES.PLAYER_RECONNECTED,
+        data: { playerId: reattached.id }
+      })
+    }
+    return { success: true }
   }
 
   handleChat(player, data) {
@@ -862,6 +996,205 @@ export class MessageHandler {
     return result
   }
 
+  // ─── Items (peek / swap / scam / hack) ───────────────────────────────
+  // The cooldown engine lives at server/src/items/itemEngine.js. Bots
+  // can't use or be targeted by items; scam responses come back via
+  // a separate handleItemScamResolve handler.
+  handleItemUse(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker' || !room.itemEngine) {
+      return this.error('Items are only usable at a poker table.', player)
+    }
+    if (player.isSpectator) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Spectators cannot use items.' } })
+      return { success: false }
+    }
+    const itemId = typeof data?.itemId === 'string' ? data.itemId : null
+    const targetId = typeof data?.targetId === 'string' ? data.targetId : null
+    let result
+    switch (itemId) {
+      case 'peek': result = room.itemEngine.peek(player.id, targetId); break
+      case 'swap': result = room.itemEngine.swap(player.id, data?.picks); break
+      case 'scam': result = room.itemEngine.initiateScam(player.id, targetId); break
+      case 'hack': result = room.itemEngine.hack(player.id, targetId); break
+      default:
+        player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Unknown item.' } })
+        return { success: false }
+    }
+    if (!result?.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeItemError(result?.error) } })
+      // Still broadcast the fresh snapshot so the badge doesn't get
+      // stuck in an optimistic "Using…" state.
+      room.itemEngine.sendSnapshotTo(player)
+      return result
+    }
+    // Reply privately for peek (cards), generically for others.
+    player.send({
+      type: MESSAGE_TYPES.ITEM_RESULT,
+      data: { itemId, ...result }
+    })
+    // Refresh the user's own cooldown snapshot — peek/swap/scam/hack
+    // all just consumed a slot.
+    room.itemEngine.sendSnapshotTo(player)
+    // Swap mutates hole cards — push fresh game state so the user's
+    // card view updates immediately.
+    if (itemId === 'swap' && typeof room.broadcastGameState === 'function') {
+      room.broadcastGameState()
+    }
+    // Hack / accepted scam moved chips — broadcast room_update so
+    // every bankroll display picks up the new balances.
+    if ((itemId === 'hack' || (itemId === 'scam' && result.transferred))
+        && typeof room.broadcastRoomUpdate === 'function') {
+      room.broadcastRoomUpdate()
+    }
+    return result
+  }
+
+  handleItemScamResolve(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || !room.itemEngine) return { success: false }
+    const scamId = typeof data?.scamId === 'string' ? data.scamId : null
+    const accepted = !!data?.accepted
+    if (!scamId) return { success: false }
+    const result = room.itemEngine.resolveScam(player.id, scamId, accepted)
+    // Either path may have moved chips (accept) — push room_update so
+    // bankrolls stay in sync. Block path is a no-op chip-wise.
+    if (result?.success && result.transferred && typeof room.broadcastRoomUpdate === 'function') {
+      room.broadcastRoomUpdate()
+    }
+    return result
+  }
+
+  handleInfluenceRun(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || !room.influenceEngine) {
+      return this.error('Influence Ops are unavailable here.', player)
+    }
+    const opId = typeof data?.opId === 'string' ? data.opId : null
+    const targetSymbol = typeof data?.targetSymbol === 'string' ? data.targetSymbol : null
+    const result = room.influenceEngine.run(player.id, { opId, targetSymbol }, room.game?.handIndex || 0)
+    if (!result?.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeInfluenceError(result?.error, result) } })
+      return result
+    }
+    if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    return result
+  }
+
+  handleOptionsBuy(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || !room.optionsEngine) {
+      return this.error('Options trading is unavailable here.', player)
+    }
+    const result = room.optionsEngine.buy(player.id, {
+      symbol: data?.symbol,
+      type: data?.type,
+      strike: data?.strike,
+      contracts: data?.contracts,
+      handIndex: room.game?.handIndex || 0,
+    })
+    if (!result?.success) {
+      const msg = result?.error === 'insufficient_chips' && result?.cost
+        ? `Need $${result.cost.toLocaleString()} for that contract.`
+        : result?.error === 'invalid_type' ? 'Pick call or put.'
+        : result?.error === 'unknown_symbol' ? 'No such ticker.'
+        : result?.error === 'invalid_strike' ? 'Invalid strike.'
+        : result?.error ? `Options buy failed: ${result.error}`
+        : 'Options buy failed.'
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: msg } })
+      return result
+    }
+    if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    return result
+  }
+
+  handleWorldAction(player, type, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || !room.worldEngine) {
+      return this.error('World map is unavailable here.', player)
+    }
+    let result
+    if (type === 'world:claim') {
+      result = room.worldEngine.claim(player.id, data || {})
+    } else if (type === 'world:pandemic') {
+      result = room.worldEngine.releasePandemic(player.id, { handIndex: room.game?.handIndex || 0 })
+    }
+    if (result && !result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeWorldError(result.error, result) } })
+      return result
+    }
+    if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    return result
+  }
+
+  handleStockAction(player, type, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || !room.stockEngine) {
+      return this.error('Stock market is unavailable here.', player)
+    }
+    let result
+    if (type === 'stock:buy') result = room.stockEngine.buy(player.id, data || {})
+    else if (type === 'stock:sell') result = room.stockEngine.sell(player.id, data || {})
+    else if (type === 'stock:sabotage') {
+      result = room.stockEngine.sabotage(player.id, {
+        ...(data || {}),
+        handIndex: room.game?.handIndex || 0
+      })
+    }
+    if (result && !result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeStockError(result.error, result) } })
+      return result
+    }
+    if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    return result
+  }
+
+  handleJobClaim(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || !room.jobEngine) {
+      return this.error('Jobs board is unavailable here.', player)
+    }
+    const instanceId = typeof data?.id === 'string' ? data.id : null
+    if (!instanceId) return this.error('Missing job id', player)
+    const result = room.jobEngine.claim(player.id, instanceId)
+    if (!result?.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeJobError(result?.error) } })
+      return result
+    }
+    // jobs are now luck-rolled — success/failure both report success:true
+    // (the application went through), but `succeeded` differs.
+    if (result.succeeded) {
+      player.send({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `💼 Pulled off "${result.title}" — +$${result.reward.toLocaleString()}.` }
+      })
+    } else {
+      player.send({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `❌ Flopped "${result.title}" — gig burned for the hand.` }
+      })
+    }
+    if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    return result
+  }
+
+  handleAssetTrade(player, type, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || !room.assetEngine) {
+      return this.error('Asset market is unavailable here.', player)
+    }
+    let result
+    if (type === 'asset:buy') result = room.assetEngine.buy(player.id, data || {})
+    else if (type === 'asset:sell') result = room.assetEngine.sell(player.id, data || {})
+    else return this.error('Unknown asset action', player)
+    if (result && !result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeAssetError(result.error) } })
+      return result
+    }
+    if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    return result
+  }
+
   handleRunoutVoteSubmit(player, data) {
     const room = this.roomManager.getPlayerRoom(player)
     if (!room || room.roomType !== 'poker' || !room.game) {
@@ -915,5 +1248,87 @@ function humanizeSideBetError(code) {
     case 'no_position': return 'You don\'t hold a position on that market.'
     case 'invalid_shares': return 'Invalid share count.'
     default: return code
+  }
+}
+
+function humanizeInfluenceError(code, ctx) {
+  switch (code) {
+    case 'unknown_op': return 'Unknown influence op.'
+    case 'not_at_table': return 'Sit down first.'
+    case 'bots_cannot_run_ops': return 'Bots don\'t do politics.'
+    case 'insufficient_chips': return ctx?.cost ? `Costs $${ctx.cost.toLocaleString()}. Not enough chips.` : 'Not enough chips.'
+    case 'cooldown': return ctx?.remaining ? `On cooldown — ${ctx.remaining} more hands.` : 'On cooldown.'
+    case 'target_required': return 'Pick a stock target first.'
+    case 'unknown_symbol': return 'No such ticker.'
+    default: return code ? `Op failed: ${code}` : 'Op failed.'
+  }
+}
+
+function humanizeWorldError(code, ctx) {
+  switch (code) {
+    case 'not_at_table': return 'Sit down first.'
+    case 'bots_cannot_claim': return 'Bots can\'t claim territory.'
+    case 'bots_cannot_release': return 'Bots can\'t release pandemics.'
+    case 'unknown_territory': return 'No such territory.'
+    case 'already_owned': return 'You already own it.'
+    case 'already_active': return 'A pandemic is already in progress.'
+    case 'cooldown': return ctx?.cooldownRemaining ? `Pandemic cooldown: ${ctx.cooldownRemaining} hands.` : 'Pandemic is on cooldown.'
+    case 'insufficient_chips': return ctx?.cost ? `Need $${ctx.cost.toLocaleString()}.` : 'Not enough chips.'
+    default: return code ? `World action failed: ${code}` : 'World action failed.'
+  }
+}
+
+function humanizeStockError(code, ctx) {
+  switch (code) {
+    case 'not_at_table': return 'Sit down or spectate first.'
+    case 'bots_cannot_trade': return 'Bots can\'t trade stocks.'
+    case 'bots_cannot_sabotage': return 'Bots can\'t sabotage.'
+    case 'unknown_symbol': return 'No such ticker.'
+    case 'insufficient_chips': return ctx?.cost ? `Need $${ctx.cost.toLocaleString()} to sabotage.` : 'Not enough chips.'
+    case 'no_position': return 'You don\'t hold that stock.'
+    case 'too_small': return 'Buy amount too small.'
+    case 'cooldown': return ctx?.cooldownRemaining ? `Sabotage cooldown: ${ctx.cooldownRemaining} hands.` : 'Sabotage is on cooldown.'
+    default: return code ? `Stock action failed: ${code}` : 'Stock action failed.'
+  }
+}
+
+function humanizeJobError(code) {
+  switch (code) {
+    case 'not_at_table': return 'Sit down or spectate first.'
+    case 'bots_cannot_claim': return 'Bots don\'t need jobs.'
+    case 'already_claimed_this_hand': return 'You already took a gig this hand. Wait for next hand.'
+    case 'job_gone': return 'That job just expired.'
+    case 'already_taken': return 'Someone beat you to it.'
+    default: return code ? `Job claim failed: ${code}` : 'Job claim failed.'
+  }
+}
+
+function humanizeAssetError(code) {
+  switch (code) {
+    case 'not_at_table': return 'Sit down or spectate first.'
+    case 'bots_cannot_trade': return 'Bots can\'t hold assets.'
+    case 'unknown_asset': return 'No such asset.'
+    case 'insufficient_chips': return 'Not enough chips for that buy.'
+    case 'insufficient_units': return 'You don\'t hold that many units.'
+    default: return code ? `Asset trade failed: ${code}` : 'Asset trade failed.'
+  }
+}
+
+function humanizeItemError(code) {
+  switch (code) {
+    case 'cooldown': return 'Item is still on cooldown.'
+    case 'cant_target_self': return 'You can\'t target yourself.'
+    case 'cant_peek_self': return 'You can\'t peek your own cards.'
+    case 'cant_target_bots': return 'Bots are immune to items.'
+    case 'bots_cant_use_items': return 'Bots can\'t use items.'
+    case 'target_not_at_table': return 'That player isn\'t at the table.'
+    case 'target_broke': return 'That target has no chips to take.'
+    case 'target_offline': return 'That player is offline right now.'
+    case 'no_hand_dealt': return 'No hand is in progress.'
+    case 'not_in_hand': return 'You can only swap mid-hand.'
+    case 'no_deck': return 'Deck is unavailable.'
+    case 'not_at_table': return 'Sit down first.'
+    case 'unknown_scam': return 'That scam offer has expired.'
+    default: return code ? `Item failed: ${code}` : 'Item failed.'
   }
 }

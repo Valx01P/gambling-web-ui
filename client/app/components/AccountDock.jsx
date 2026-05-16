@@ -29,7 +29,12 @@ export default function AccountDock() {
       // enables pointer-events via the button itself. z-[120] keeps the
       // dock above page-level chrome (z-50 header rows etc.) without
       // racing the very-top modal layer (z-200+).
-      className="pointer-events-none fixed right-3 top-3 z-[120] flex flex-col items-end gap-2 sm:right-4 sm:top-4"
+      // The `right` offset is `max(<mobile-offset>, calc((100vw - 80rem) / 2 + <mobile-offset>))`
+      // so on viewports wider than the `max-w-7xl` (80rem = 1280px) content
+      // band, the dock tracks the content's right edge instead of drifting
+      // to the viewport edge. Below 80rem it stays at the original 12/16px
+      // viewport gutter. Mirrors the RouteNavCluster offset math.
+      className="pointer-events-none fixed top-3 z-[120] flex flex-col items-end gap-2 sm:top-4 right-[max(0.75rem,calc((100vw-80rem)/2+0.75rem))] sm:right-[max(1rem,calc((100vw-80rem)/2+1rem))]"
     >
       <div className="pointer-events-auto"><AccountMenu /></div>
       <div className="pointer-events-auto"><DmsPopup /></div>

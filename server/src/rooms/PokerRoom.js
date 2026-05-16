@@ -34,6 +34,13 @@ import { SideBetEngine } from '../sidebets/sideBetEngine.js'
 import { scoreHandForPlayer } from '../dailies/dailyEngine.js'
 import { PeerLoanEngine } from '../peerLoans/peerLoanEngine.js'
 import { CryptoMarketEngine } from '../crypto/cryptoEngine.js'
+import { ItemEngine } from '../items/itemEngine.js'
+import { AssetEngine } from '../assets/assetsEngine.js'
+import { JobEngine } from '../jobs/jobsEngine.js'
+import { StockEngine } from '../stocks/stockEngine.js'
+import { OptionsEngine } from '../stocks/optionsEngine.js'
+import { WorldEngine } from '../world/worldEngine.js'
+import { InfluenceEngine } from '../influence/influenceEngine.js'
 
 // Default rating to assume for any seat that isn't a bot when calculating
 // per-hand ELO updates. Aligned with the new STARTING_RATING so a bot
@@ -161,6 +168,31 @@ export class PokerRoom {
           } catch (err) {
             console.error('[sidebets] hand-end hook failed:', err.message)
           }
+          // Tick the items cooldown snapshots so every connected player
+          // sees their badges update without needing a panel re-open.
+          try { this.itemEngine?.onHandEnd() }
+          catch (err) { console.error('[items] hand-end hook failed:', err.message) }
+          // Asset yields + appreciation tick. Pays passive income to
+          // every holder and ticks appreciation forward.
+          try { this.assetEngine?.onHandEnd() }
+          catch (err) { console.error('[assets] hand-end hook failed:', err.message) }
+          try { this.jobEngine?.onHandEnd() }
+          catch (err) { console.error('[jobs] hand-end hook failed:', err.message) }
+          try { this.stockEngine?.onHandEnd(this.game?.handIndex || 0) }
+          catch (err) { console.error('[stocks] hand-end hook failed:', err.message) }
+          try { this.optionsEngine?.onHandEnd(this.game?.handIndex || 0) }
+          catch (err) { console.error('[options] hand-end hook failed:', err.message) }
+          try { this.worldEngine?.onHandEnd(this.game?.handIndex || 0) }
+          catch (err) { console.error('[world] hand-end hook failed:', err.message) }
+          try { this.influenceEngine?.onHandEnd(this.game?.handIndex || 0) }
+          catch (err) { console.error('[influence] hand-end hook failed:', err.message) }
+          // 2026-05: side-economy yields (asset rent, world territory
+          // yields, etc.) mutate player.chips at hand-end but don't
+          // route through the normal action path that would emit a
+          // room_update. Without this push, bankroll widgets stay
+          // stale until the next gameState fires (next hand start).
+          try { this.broadcastRoomUpdate() }
+          catch (err) { console.error('[room] post-hand-end room_update failed:', err.message) }
           this._recordBotHandResults(msg.data).catch(err =>
             console.error('[bot-elo] hand result update failed:', err.message)
           )
@@ -200,6 +232,62 @@ export class PokerRoom {
       broadcast: (msg) => this.broadcast(msg)
     })
     this.cryptoEngine.start()
+    // Item griefing engine (peek/swap/scam/hack). Each player gets a
+    // 5-hand-cooldown set of 4 items. Bot players can't use or be
+    // targeted. The engine pushes per-player cooldown snapshots over
+    // `items:state` on hand-end and join.
+    this.itemEngine = new ItemEngine({
+      room: this,
+      game: this.game,
+      broadcast: (msg) => this.broadcast(msg)
+    })
+    // Real-estate / appreciating-assets engine. Players buy from a
+    // fixed catalog of fictional landmark properties that pay passive
+    // yield every hand and appreciate at ~0.3-0.6%/hand. Independent
+    // of crypto so a coin rug doesn't tank the entire portfolio.
+    this.assetEngine = new AssetEngine({
+      room: this,
+      broadcast: (msg) => this.broadcast(msg)
+    })
+    // Jobs board — rotating gigs every hand for chips. The "you can
+    // always make money even if you bust" floor. Independent of game
+    // state; even spectators can claim.
+    this.jobEngine = new JobEngine({
+      room: this,
+      broadcast: (msg) => this.broadcast(msg)
+    })
+    // Stock-market sim with pay-to-sabotage. Wall-clock ticking so
+    // prices move even between hands. Independent from crypto so a
+    // rug doesn't move the whole portfolio.
+    this.stockEngine = new StockEngine({
+      room: this,
+      broadcast: (msg) => this.broadcast(msg)
+    })
+    this.stockEngine.start()
+    // Short-dated stock options — WSB-style 3-hand calls/puts on
+    // any ticker. Sits on top of the stock engine; it's read-only
+    // on prices but writes contracts + chip settlements.
+    this.optionsEngine = new OptionsEngine({
+      room: this,
+      broadcast: (msg) => this.broadcast(msg),
+      stockEngine: this.stockEngine
+    })
+    // World-tycoon layer — fictional Risk-style territory ownership
+    // with passive yields, hostile takeovers, and a pay-to-release
+    // pandemic event that crashes worldwide yields + the real-estate
+    // market multiplier.
+    this.worldEngine = new WorldEngine({
+      room: this,
+      broadcast: (msg) => this.broadcast(msg)
+    })
+    // Influence Ops — pay-to-manipulate-markets meta layer. Fake
+    // news, CEO scandals, engineered crises, pandemics. Lets a
+    // late-game whale who's outgrown crypto-whaling move to the next
+    // tier: bending the entire stock market with chip-priced events.
+    this.influenceEngine = new InfluenceEngine({
+      room: this,
+      broadcast: (msg) => this.broadcast(msg)
+    })
     this._lastBroadcastPhase = GAME_PHASES.WAITING
     this._cleanupGuard = false
     this.blindsProposal = null
@@ -1190,6 +1278,16 @@ export class PokerRoom {
     player.isSpectator = false
     this._cancelEmptyRoomCleanup()
     this.broadcastRoomUpdate()
+    // Send the fresh seat their items snapshot so the Items panel
+    // shows correct cooldown state immediately (otherwise they'd see
+    // all "Ready" until the next hand-end broadcast).
+    try { this.itemEngine?.sendSnapshotTo(player) } catch {}
+    try { this.assetEngine?.sendSnapshotTo(player) } catch {}
+    try { this.jobEngine?.sendSnapshotTo(player) } catch {}
+    try { this.stockEngine?.sendSnapshotTo(player) } catch {}
+    try { this.optionsEngine?.sendSnapshotTo(player) } catch {}
+    try { this.worldEngine?.sendSnapshotTo(player) } catch {}
+    try { this.influenceEngine?.sendSnapshotTo(player, this.game?.handIndex || 0) } catch {}
 
     // Auto-start when we have enough players
     this.scheduleStartHand()
@@ -1218,6 +1316,19 @@ export class PokerRoom {
         message: options.message || 'Table is full. Watching as spectator until a seat opens.'
       }
     })
+    // Send fresh snapshots for every per-player engine so the
+    // spectator's panels populate immediately rather than waiting on
+    // the next hand-end. Items get sent too (cooldown UI), even though
+    // spectators can't USE them — the panel renders correctly. Bot
+    // arenas: this is the only path most users hit (no seat), so
+    // these snapshots are critical for the tools menu to be useful.
+    try { this.itemEngine?.sendSnapshotTo(player) } catch {}
+    try { this.assetEngine?.sendSnapshotTo(player) } catch {}
+    try { this.jobEngine?.sendSnapshotTo(player) } catch {}
+    try { this.stockEngine?.sendSnapshotTo(player) } catch {}
+    try { this.optionsEngine?.sendSnapshotTo(player) } catch {}
+    try { this.worldEngine?.sendSnapshotTo(player) } catch {}
+    try { this.influenceEngine?.sendSnapshotTo(player, this.game?.handIndex || 0) } catch {}
 
     this.broadcastRoomUpdate()
 
@@ -1239,6 +1350,16 @@ export class PokerRoom {
       // reads chips from the seated player object.
       try { this.cryptoEngine?.handlePlayerLeave(playerId) }
       catch (err) { console.error('[crypto] leave settle failed:', err.message) }
+      // Liquidate asset holdings at market — value flows back into
+      // the player's chips before they leave.
+      try { this.assetEngine?.handlePlayerLeave(playerId) }
+      catch (err) { console.error('[assets] leave settle failed:', err.message) }
+      try { this.stockEngine?.handlePlayerLeave(playerId) }
+      catch (err) { console.error('[stocks] leave settle failed:', err.message) }
+      try { this.optionsEngine?.handlePlayerLeave(playerId) }
+      catch (err) { console.error('[options] leave settle failed:', err.message) }
+      try { this.worldEngine?.handlePlayerLeave(playerId) }
+      catch (err) { console.error('[world] leave settle failed:', err.message) }
       this.players.delete(playerId)
       if (player) player.isSpectator = false
       this.game.removePlayer(playerId)
@@ -1745,6 +1866,11 @@ export class PokerRoom {
     }
     try { this.cryptoEngine?.stop() }
     catch (err) { console.error('[crypto] shutdown failed:', err.message) }
+    // 2026-05: stockEngine runs a wall-clock setInterval too — must
+    // stop it on room destroy or the timer leaks past the Map removal
+    // and keeps ticking into the void.
+    try { this.stockEngine?.stop() }
+    catch (err) { console.error('[stocks] shutdown failed:', err.message) }
   }
 
   getRoomData(forPlayerId = null) {

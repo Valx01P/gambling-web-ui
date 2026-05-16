@@ -186,27 +186,22 @@ export class PokerGame {
     }
   }
 
-  // Heads-up and 3-handed games are slower by nature — fewer players means
-  // each one faces more decisions per orbit, and a tight 60s cap makes the
-  // table feel like a chess clock when really only one other person is
-  // waiting. Scale the per-turn cap to the seated human count:
-  //   2 humans → 180s (heads-up, lots of room to think)
-  //   3 humans → 120s
-  //   4+      → POKER_CONFIG.TURN_LIMIT_MS (default 60s — keeps full
-  //              tables moving)
-  // Bots don't count: a bot waiting on a human doesn't care about pace, and
-  // a human waiting on a bot has _scheduleTurnTimeout's bot-only path that
-  // fires for stuck-fold safety regardless. Same timing surface drives
-  // both the auto-fold timer AND the client's countdown ring (via
-  // activeTurnExpiresAt + activeTurnLimitMs in the broadcast envelope).
+  // 2026-05: flat 5-minute turn cap, with heads-up exemption.
+  //   • 3+ humans: 5-minute cap (long enough to grab a drink, short
+  //     enough that an AFK doesn't pin the whole table)
+  //   • 2 humans (heads-up): no timeout at all. With only one other
+  //     person waiting on you, mutual patience is fine — and the
+  //     pace of heads-up means thinking turns are part of the game.
+  // Same timing surface drives both the auto-fold timer AND the
+  // client's countdown ring (activeTurnExpiresAt + activeTurnLimitMs
+  // in the broadcast envelope). Returning null disables the timer.
   _currentTurnLimitMs() {
     let humans = 0
     for (const p of this.players) {
       if (p && !p.isBot && p.isConnected) humans++
     }
-    if (humans <= 2) return 180_000
-    if (humans === 3) return 120_000
-    return POKER_CONFIG.TURN_LIMIT_MS
+    if (humans <= 2) return null
+    return 5 * 60 * 1000
   }
 
   _scheduleTurnTimeout() {
@@ -217,6 +212,10 @@ export class PokerGame {
     const player = this.players[this.activeIndex]
     if (!player) return
     const playerId = player.id
+    const limitMs = this._currentTurnLimitMs()
+    // null limit = heads-up exemption — don't arm any timer; the
+    // broadcast envelope already nulls out the countdown ring fields.
+    if (limitMs == null || limitMs <= 0) return
     this._turnTimeoutHandle = setTimeout(() => {
       this._turnTimeoutHandle = null
       // Stale check — only fire if it's still this player's turn.
@@ -240,7 +239,7 @@ export class PokerGame {
       try { this.onTurnTimeout(playerId) } catch (err) {
         console.error('[poker] turn timeout cb:', err)
       }
-    }, this._currentTurnLimitMs())
+    }, limitMs)
   }
 
   ensurePokerBankroll(player) {
@@ -1389,11 +1388,20 @@ export class PokerGame {
         activePlayerId,
         activeTurnStartedAt: turnStartedAt,
         // Use the headcount-scaled limit so the client's countdown ring
-        // matches what the server will actually enforce. Without this the
-        // 2-handed UI would still show a 60s warning at 50s in even though
-        // the auto-fold won't fire for 170s.
-        activeTurnExpiresAt: hasTimedActiveTurn ? this.lastTurnChange + this._currentTurnLimitMs() : null,
-        activeTurnLimitMs: this._currentTurnLimitMs(),
+        // matches what the server will actually enforce.
+        // 2026-05: _currentTurnLimitMs() can return null for heads-up
+        // (no timer). In that case BOTH expiresAt and limitMs must be
+        // null on the wire — otherwise `lastTurnChange + null` coerces
+        // to `lastTurnChange + 0` and the client interprets the turn
+        // as already expired, immediately ringing the seat red.
+        ...(() => {
+          const limitMs = this._currentTurnLimitMs()
+          const timed = hasTimedActiveTurn && typeof limitMs === 'number' && limitMs > 0
+          return {
+            activeTurnExpiresAt: timed ? this.lastTurnChange + limitMs : null,
+            activeTurnLimitMs: timed ? limitMs : null,
+          }
+        })(),
         activeTurnWarningMs: POKER_CONFIG.TURN_WARNING_MS
       }
     }

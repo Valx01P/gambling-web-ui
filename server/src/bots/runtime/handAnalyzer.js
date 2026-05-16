@@ -84,18 +84,22 @@ const HAND_SCORES = (() => {
 
   function rateUnpaired(high, low, suited) {
     // Base score: average of normalized ranks, weighted heavily toward high.
-    let s = (high * 0.7 + low * 0.3) / 14 * 0.55
+    // Bumped base multiplier (0.55 → 0.60) so the overall distribution
+    // shifts up — fewer hands get auto-trashed.
+    let s = (high * 0.7 + low * 0.3) / 14 * 0.60
     const gap = high - low
-    if (suited) s += 0.07
-    // Connector / gapper bonuses (mostly for suited).
-    if (gap === 1) s += suited ? 0.05 : 0.025
-    else if (gap === 2) s += suited ? 0.025 : 0.010
-    else if (gap === 3) s += suited ? 0.010 : 0.000
-    else if (gap >= 5) s -= 0.05
+    if (suited) s += 0.08
+    // Connector / gapper bonuses (mostly for suited). Slightly bumped vs.
+    // the old curve — suited connectors and one-gappers have great
+    // postflop equity and shouldn't be sitting in the 'trash' tier.
+    if (gap === 1) s += suited ? 0.07 : 0.035
+    else if (gap === 2) s += suited ? 0.035 : 0.015
+    else if (gap === 3) s += suited ? 0.015 : 0.000
+    else if (gap >= 5) s -= 0.04
     // Ace and king bonuses — they make top pair top kicker postflop.
-    if (high === 14) s += 0.06
-    if (high === 13) s += 0.03
-    if (high === 12 && suited) s += 0.01
+    if (high === 14) s += 0.07
+    if (high === 13) s += 0.035
+    if (high === 12 && suited) s += 0.015
     return Math.max(0, Math.min(0.93, s))
   }
 
@@ -149,11 +153,20 @@ export function preflopScore(c1, c2) {
 // Coarse tier name from the numeric score. 5-tier scheme is backward-
 // compatible with existing rule schemas:
 //   trash < weak < medium < strong < premium
+//
+// Loosened again 2026-05: bots were still folding too much, so each
+// non-premium threshold was nudged down by ~0.04. Combined with the
+// POSTFLOP_BASE bump, the practical effect is "any made hand, even a
+// weak pair, will usually call a reasonable bet". Tests pin the boundary
+// values 0.85 / 0.70 / 0.55 / 0.40 / 0.20 so the new thresholds stay
+// inside those windows.
 export function tierFromScore(score) {
   if (score >= 0.85) return 'premium'
-  if (score >= 0.70) return 'strong'
-  if (score >= 0.55) return 'medium'
-  if (score >= 0.40) return 'weak'
+  if (score >= 0.60) return 'strong'
+  if (score >= 0.42) return 'medium'
+  // Weak floor stays at 0.25 — 83o (~0.24) and other junk offsuit hands
+  // must still classify as 'trash' so `neverOpen` keeps them out of pots.
+  if (score >= 0.25) return 'weak'
   return 'trash'
 }
 
@@ -190,20 +203,28 @@ export function analyzePreflop(c1, c2) {
     isOffsuitAce: !suited && high === 14,
     isSuitedConnector: suited && gap === 1 && low >= 4,
     isSuitedGapper: suited && gap === 2 && low >= 4,
-    // Hard rules to gate decision branches. "neverFold" is the AK fix —
-    // bots that branch on this will never fold AK preflop.
-    neverFoldPreflop: tier === 'premium',
-    // Should rarely open from any position.
+    // Hard rules to gate decision branches. "neverFold" tracks the
+    // 'strong' tier breakpoint (see tierFromScore) — anything ≥ 0.60
+    // (KQs, AJs, ATs, KJs, 88-77, AQo, KQo, etc.) never folds preflop.
+    // Same intent as 'strong-tier-or-better is non-folding'.
+    neverFoldPreflop: score >= 0.60,
+    // Should rarely open from any position — only true offsuit junk.
+    // With the looser 'trash' breakpoint (< 0.25 vs. old < 0.40) this
+    // covers a much smaller slice than before, while still flagging
+    // hands like 83o / 72o for "always fold preflop unsuited."
     neverOpen: tier === 'trash' && !suited,
     // Open ranges by position — bot can map directly to action.
-    playableUTG: tier === 'premium' || tier === 'strong',
-    playableMP: score >= 0.62,
-    playableCO: score >= 0.45,
-    // BTN opens wider — small suited connectors and one-gappers qualify as
-    // steals, so the cutoff sits around the top 55% of hands.
-    playableBTN: score >= 0.30,
-    threeBetWorthy: score >= 0.75,    // 3-bet for value
-    threeBetBluffCandidate: score >= 0.40 && score < 0.62 && suited
+    // Loosened across the board so bots actually enter pots:
+    //   UTG  was 'premium||strong' (top 10%)  →  now top ~22%
+    //   MP   was score >= 0.62                →  now 0.50  (top ~30%)
+    //   CO   was score >= 0.45                →  now 0.35  (top ~50%)
+    //   BTN  was score >= 0.30                →  now 0.20  (top ~70%)
+    playableUTG: score >= 0.62,
+    playableMP: score >= 0.50,
+    playableCO: score >= 0.35,
+    playableBTN: score >= 0.20,
+    threeBetWorthy: score >= 0.68,    // 3-bet for value (was 0.75)
+    threeBetBluffCandidate: score >= 0.30 && score < 0.55 && suited
   }
 }
 
@@ -212,15 +233,25 @@ export function analyzePreflop(c1, c2) {
 // Maps the 5-card hand-evaluator rank to a baseline strength score. Bots
 // rarely need to remember the exact rank → name mapping; this gives them
 // a number on the same 0..1 scale as the preflop score.
+//
+// CALIBRATION (2026-05): every baseline bumped to read more optimistic.
+// Most rule-bot templates branch on `handStrengthScore` thresholds like
+// `>= 0.55` → call. The old values had a one-pair hand at 0.30 — even
+// with a board-adjustment bump for top-pair-top-kicker (+0.05) it sat
+// at 0.35, well below the call threshold, so bots folded too much. The
+// new floors push high-card + pair into the "consider calling" range,
+// and two-pair / sets near the "happy to call" range, without changing
+// the rank ordering. The bots aren't smarter — they're just less likely
+// to fold a hand that has any showdown value.
 const POSTFLOP_BASE = {
-  0: 0.12, // high card
-  1: 0.30, // pair
-  2: 0.50, // two pair
-  3: 0.66, // three of a kind
-  4: 0.78, // straight
-  5: 0.83, // flush
-  6: 0.92, // full house
-  7: 0.97, // four of a kind
+  0: 0.22, // high card           (was 0.12)
+  1: 0.45, // pair                (was 0.30) — now usually clears 'medium' threshold
+  2: 0.62, // two pair            (was 0.50) — now usually clears 'strong' threshold
+  3: 0.74, // three of a kind     (was 0.66)
+  4: 0.82, // straight            (was 0.78)
+  5: 0.86, // flush               (was 0.83)
+  6: 0.94, // full house          (was 0.92)
+  7: 0.98, // four of a kind      (was 0.97)
   8: 0.99, // straight flush
   9: 0.995 // royal
 }

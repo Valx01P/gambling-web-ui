@@ -1,4 +1,8 @@
-// Hand rankings (higher = better)
+// Hand rankings (higher = better). 5/6/7-of-a-kind sit above Royal Flush
+// — they're only reachable via the Swap item (which can deal duplicate
+// cards from outside the normal 52-card constraint), so they're the
+// joke-tier "meme" hands. Without swap, the evaluator never produces
+// rank >= 10; with swap, they're real and beat everything else.
 const HAND_RANK = {
   HIGH_CARD: 0,
   PAIR: 1,
@@ -9,7 +13,10 @@ const HAND_RANK = {
   FULL_HOUSE: 6,
   FOUR_OF_A_KIND: 7,
   STRAIGHT_FLUSH: 8,
-  ROYAL_FLUSH: 9
+  ROYAL_FLUSH: 9,
+  FIVE_OF_A_KIND: 10,
+  SIX_OF_A_KIND: 11,
+  SEVEN_OF_A_KIND: 12,
 }
 
 const RANK_VALUES = {
@@ -27,7 +34,10 @@ const HAND_NAMES = {
   6: 'Full House',
   7: 'Four of a Kind',
   8: 'Straight Flush',
-  9: 'Royal Flush'
+  9: 'Royal Flush',
+  10: 'Five of a Kind',
+  11: 'Six of a Kind',
+  12: 'Seven of a Kind',
 }
 
 function rankValue(rank) {
@@ -138,9 +148,46 @@ function evaluateFive(cards) {
   return result
 }
 
-// Evaluate best 5-card hand from up to 7 cards
+// Evaluate best 5-card hand from up to 7 cards.
+//
+// 2026-05: before the standard 5-of-7 enumeration we short-circuit on
+// >=5 cards of the same rank. The Swap item can hand a player two
+// cards already on the board (the deck picker doesn't enforce
+// uniqueness), so 5/6/7-of-a-kind are reachable. They sit above
+// Royal Flush in HAND_RANK.
 export function evaluateHand(cards) {
   if (cards.length <= 5) return evaluateFive(cards)
+
+  // Mega-hand detection — count rank occurrences across the full set.
+  // If any rank appears 5+ times we return the mega-hand directly.
+  const rankCount = new Map()
+  for (const c of cards) {
+    const v = rankValue(c.rank)
+    rankCount.set(v, (rankCount.get(v) || 0) + 1)
+  }
+  let megaVal = 0
+  let megaCount = 0
+  for (const [val, count] of rankCount) {
+    if (count >= 5 && count > megaCount) { megaVal = val; megaCount = count }
+  }
+  if (megaCount >= 5) {
+    const matching = cards.filter(c => rankValue(c.rank) === megaVal).slice(0, megaCount)
+    const rank = megaCount >= 7 ? HAND_RANK.SEVEN_OF_A_KIND
+              : megaCount === 6 ? HAND_RANK.SIX_OF_A_KIND
+              : HAND_RANK.FIVE_OF_A_KIND
+    // Kickers: the mega rank itself (for tie-break) + any other top
+    // values from the remainder (irrelevant in practice — a 5oaK
+    // already dominates everything below it).
+    const others = cards
+      .filter(c => rankValue(c.rank) !== megaVal)
+      .map(c => rankValue(c.rank))
+      .sort((a, b) => b - a)
+    return {
+      rank,
+      kickers: [megaVal, ...others.slice(0, 2)],
+      bestCards: matching,
+    }
+  }
 
   let best = null
   for (const combo of combinations(cards, 5)) {
@@ -182,6 +229,9 @@ export function getHandName(evaluation) {
     case 7: return `Four of a Kind, ${main}s`;
     case 8: return `Straight Flush, ${main} High`;
     case 9: return `Royal Flush`;
+    case 10: return `Five of a Kind, ${main}s`;
+    case 11: return `Six of a Kind, ${main}s`;
+    case 12: return `Seven of a Kind, ${main}s`;
     default: return baseName;
   }
 }
