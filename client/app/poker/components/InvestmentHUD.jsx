@@ -52,14 +52,16 @@ export default function InvestmentHUD({ myChips, cryptoState, assetsState, stock
   const totalLiquidValue = (myChips || 0) + cryptoValue + assetsValue + stocksValue
   const passiveIncome = assetsYield + worldYield
 
-  const Row = ({ label, value, accent, onClick }) => (
+  // Tile cell — small, label on top, value below. Three of these fit
+  // per row so the HUD stays compact vertically.
+  const Tile = ({ label, value, accent, onClick }) => (
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left text-[10px] font-bold hover:bg-zinc-800"
+      className="min-w-0 flex flex-col items-start rounded-md px-1.5 py-1 text-left hover:bg-zinc-800"
     >
-      <span className="text-zinc-400">{label}</span>
-      <span className={accent || 'text-white'}>${value}</span>
+      <span className="text-[8px] font-black uppercase tracking-widest text-zinc-500 leading-none">{label}</span>
+      <span className={`mt-0.5 text-[11px] font-black tabular-nums truncate w-full ${accent || 'text-white'}`}>{value}</span>
     </button>
   )
 
@@ -67,7 +69,7 @@ export default function InvestmentHUD({ myChips, cryptoState, assetsState, stock
     // Width tracks the dock items (sidebets / chat are `md:w-[320px]`,
     // mobile w-full) so the HUD aligns with whatever's sitting under it.
     <div className="w-full md:w-[320px] overflow-hidden rounded-xl border border-zinc-600/50 bg-zinc-800/95 shadow-2xl backdrop-blur-md shrink-0">
-      <div className="flex shrink-0 items-center justify-between border-b border-zinc-700/60 bg-zinc-900/60 px-3 py-1.5">
+      <div className="flex shrink-0 items-center justify-between border-b border-zinc-700/60 bg-zinc-900/60 px-3 py-1">
         <span className="text-[10px] font-black uppercase tracking-widest text-amber-300">
           Investment HUD
         </span>
@@ -83,23 +85,29 @@ export default function InvestmentHUD({ myChips, cryptoState, assetsState, stock
           </button>
         )}
       </div>
-      <div className="p-2">
-        <Row label="Chips" value={fmtCompact(myChips)} accent="text-white" onClick={() => onOpenPanel('bank')} />
-        <Row label="Crypto" value={fmtCompact(cryptoValue)} accent={cryptoValue >= cryptoCost ? 'text-emerald-300' : 'text-red-300'} onClick={() => onOpenPanel('crypto')} />
-        <Row label="Stocks" value={fmtCompact(stocksValue)} accent={stocksValue >= stocksCost ? 'text-emerald-300' : 'text-red-300'} onClick={() => onOpenPanel('stocks')} />
-        <Row label="Real estate" value={fmtCompact(assetsValue)} accent="text-emerald-200" onClick={() => onOpenPanel('assets')} />
-        <Row label="Territories" value={territories.length} accent="text-purple-300" onClick={() => onOpenPanel('world')} />
-        <div className="my-1 border-t border-zinc-800" />
-        <Row label="Net worth" value={fmtCompact(totalLiquidValue)} accent="text-amber-300 font-black" onClick={() => onOpenPanel('finances')} />
-        {passiveIncome > 0 && (
-          <Row label="Passive / hand" value={`+${fmtCompact(passiveIncome)}`} accent="text-emerald-300" onClick={() => onOpenPanel('assets')} />
-        )}
-        {worldState?.pandemicActive && (
-          <div className="mt-1 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-red-200">
-            ☣️ Pandemic active
-          </div>
-        )}
+      {/* 3-column tile grid keeps the widget short. Net worth + Passive
+          income sit on their own row in larger emphasis. */}
+      <div className="grid grid-cols-3 gap-px bg-zinc-800/60 p-1">
+        <Tile label="Chips" value={`$${fmtCompact(myChips)}`} accent="text-white" onClick={() => onOpenPanel('bank')} />
+        <Tile label="Crypto" value={`$${fmtCompact(cryptoValue)}`} accent={cryptoValue >= cryptoCost ? 'text-emerald-300' : 'text-red-300'} onClick={() => onOpenPanel('crypto')} />
+        <Tile label="Stocks" value={`$${fmtCompact(stocksValue)}`} accent={stocksValue >= stocksCost ? 'text-emerald-300' : 'text-red-300'} onClick={() => onOpenPanel('stocks')} />
+        <Tile label="Real est." value={`$${fmtCompact(assetsValue)}`} accent="text-emerald-200" onClick={() => onOpenPanel('assets')} />
+        <Tile label="Territories" value={territories.length} accent="text-purple-300" onClick={() => onOpenPanel('world')} />
+        <Tile label="Passive / h" value={passiveIncome > 0 ? `+$${fmtCompact(passiveIncome)}` : '$0'} accent="text-emerald-300" onClick={() => onOpenPanel('assets')} />
       </div>
+      <button
+        type="button"
+        onClick={() => onOpenPanel('finances')}
+        className="flex w-full items-center justify-between border-t border-zinc-700/60 bg-zinc-900/40 px-3 py-1 text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800"
+      >
+        <span className="text-zinc-400">Net worth</span>
+        <span className="text-amber-300 tabular-nums">${fmtCompact(totalLiquidValue)}</span>
+      </button>
+      {worldState?.pandemicActive && (
+        <div className="border-t border-red-500/40 bg-red-500/10 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-red-200 text-center">
+          ☣️ Pandemic active
+        </div>
+      )}
     </div>
   )
 }

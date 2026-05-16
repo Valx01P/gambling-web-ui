@@ -149,7 +149,7 @@ export default function WorldMapView({ territories, myChips, joined, yieldMultip
             <button
               type="button"
               onClick={() => onClaim(tile.id)}
-              disabled={!joined || tile.isMine || (myChips || 0) < tile.currentCost}
+              disabled={!joined || tile.isMine}
               className={`shrink-0 rounded-md border px-3 py-2 text-xs font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed ${
                 tile.ownerId
                   ? 'border-red-400/60 bg-red-500/15 text-red-100 hover:bg-red-500/25'

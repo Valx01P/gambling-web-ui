@@ -162,6 +162,9 @@ export const MESSAGE_TYPES = {
   // a full bot table can clear seats in one click instead of fanning
   // out N separate REMOVE_BOT messages.
   POKER_KICK_ALL_BOTS: 'poker_kick_all_bots',
+  // Vote-to-kick a human seat. data: { targetId }. Server tallies votes
+  // per 3-min window; thresholds: 3-4 players → 2 votes, 5 → 3.
+  POKER_KICK_VOTE: 'poker_kick_vote',
 
   // Auth handshake — client sends a JWT after connect so the server knows
   // which signed-in user this socket belongs to (needed for arena creation).

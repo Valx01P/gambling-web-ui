@@ -439,6 +439,120 @@ export class PokerRoom {
     return n
   }
 
+  // --- Kick-vote mechanic -------------------------------------------------
+  // Players can vote to kick another human seat. Thresholds by table size:
+  //   2 humans → not allowed (heads-up has no vote majority)
+  //   3 or 4 humans → 2 votes needed
+  //   5 humans → 3 votes needed
+  // Votes accumulate per (target) with a 3-minute TTL — once that window
+  // passes without hitting threshold the slate resets. A player can only
+  // count once per active window.
+  //
+  // Bot seats are NOT kickable through this mechanic — there's a separate
+  // kick-all-bots and per-bot remove for that.
+  static KICK_WINDOW_MS = 3 * 60 * 1000
+
+  _kickThresholdFor(humanCount) {
+    if (humanCount <= 2) return Infinity     // can't kick at heads-up
+    if (humanCount <= 4) return 2
+    return 3
+  }
+
+  _gcKickVotes(now = Date.now()) {
+    if (!this._kickVotes) return
+    for (const [tid, entry] of this._kickVotes) {
+      if (entry.expiresAt <= now) this._kickVotes.delete(tid)
+    }
+  }
+
+  voteToKick(voterId, targetId) {
+    const voter = this.players.get(voterId) || this.spectators?.get?.(voterId)
+    const target = this.players.get(targetId)
+    if (!voter || !target) return { success: false, error: 'invalid_target' }
+    if (voter.isBot) return { success: false, error: 'bots_cant_vote' }
+    if (target.isBot) return { success: false, error: 'bots_use_other_kick' }
+    if (voterId === targetId) return { success: false, error: 'no_self_kick' }
+    // Only seated humans get a vote — spectators can watch but not influence.
+    if (!this.players.has(voterId)) return { success: false, error: 'must_be_seated' }
+    const humanCount = this.countSeatedHumans()
+    const threshold = this._kickThresholdFor(humanCount)
+    if (!Number.isFinite(threshold)) {
+      return { success: false, error: 'heads_up_no_kick' }
+    }
+
+    this._kickVotes ||= new Map()
+    const now = Date.now()
+    this._gcKickVotes(now)
+    let entry = this._kickVotes.get(targetId)
+    if (!entry) {
+      entry = { voters: new Set(), expiresAt: now + PokerRoom.KICK_WINDOW_MS }
+      this._kickVotes.set(targetId, entry)
+    }
+    entry.voters.add(voterId)
+
+    if (entry.voters.size >= threshold) {
+      this._kickVotes.delete(targetId)
+      const kickedName = target.username
+      // Eject from the seat. Engines settle through the normal leave path.
+      this.removePlayer(targetId)
+      try {
+        target.send?.({
+          type: 'kicked_from_table',
+          data: { reason: 'vote', votes: threshold }
+        })
+      } catch {}
+      this.broadcast({
+        type: 'system_message',
+        data: { message: `🚪 ${kickedName} was voted off the table (${threshold} votes).` }
+      })
+      this._broadcastKickState()
+      return { success: true, kicked: true, target: kickedName }
+    }
+    this.broadcast({
+      type: 'system_message',
+      data: { message: `🗳 ${voter.username} voted to kick ${target.username} (${entry.voters.size}/${threshold}).` }
+    })
+    this._broadcastKickState()
+    return { success: true, kicked: false, votes: entry.voters.size, threshold }
+  }
+
+  // Snapshot of active kick polls. Clients render per-target progress
+  // bars in the player popover.
+  buildKickSnapshot() {
+    const now = Date.now()
+    this._gcKickVotes(now)
+    const humanCount = this.countSeatedHumans()
+    const threshold = this._kickThresholdFor(humanCount)
+    const polls = {}
+    if (this._kickVotes) {
+      for (const [tid, entry] of this._kickVotes) {
+        polls[tid] = {
+          votes: entry.voters.size,
+          expiresAt: entry.expiresAt,
+        }
+      }
+    }
+    return {
+      threshold: Number.isFinite(threshold) ? threshold : null,
+      humanCount,
+      polls,
+    }
+  }
+
+  _broadcastKickState() {
+    const snap = this.buildKickSnapshot()
+    for (const p of this.players.values()) {
+      if (p.isBot || !p.isConnected) continue
+      p.send?.({ type: 'kick:state', data: snap })
+    }
+    if (this.spectators) {
+      for (const s of this.spectators.values()) {
+        if (!s.isConnected) continue
+        s.send?.({ type: 'kick:state', data: snap })
+      }
+    }
+  }
+
   proposeBlinds(playerId, small, big) {
     // Arena spectators can change blinds directly without the proposal/vote
     // dance — the arena is theirs to configure.
@@ -1288,6 +1402,9 @@ export class PokerRoom {
     try { this.optionsEngine?.sendSnapshotTo(player) } catch {}
     try { this.worldEngine?.sendSnapshotTo(player) } catch {}
     try { this.influenceEngine?.sendSnapshotTo(player, this.game?.handIndex || 0) } catch {}
+    // Kick state — threshold changes with table size, so re-broadcast on
+    // every seat change so all clients see the new threshold immediately.
+    try { this._broadcastKickState() } catch {}
 
     // Auto-start when we have enough players
     this.scheduleStartHand()
@@ -1329,6 +1446,7 @@ export class PokerRoom {
     try { this.optionsEngine?.sendSnapshotTo(player) } catch {}
     try { this.worldEngine?.sendSnapshotTo(player) } catch {}
     try { this.influenceEngine?.sendSnapshotTo(player, this.game?.handIndex || 0) } catch {}
+    try { player.send({ type: 'kick:state', data: this.buildKickSnapshot() }) } catch {}
 
     this.broadcastRoomUpdate()
 
@@ -1412,6 +1530,9 @@ export class PokerRoom {
     }
 
     this.broadcastRoomUpdate()
+    // Threshold for kick votes depends on # seated humans — re-broadcast
+    // so everyone sees the new threshold after a seat change.
+    try { this._broadcastKickState() } catch {}
     this.scheduleStartHand()
     // After everything settles, schedule a 30s cleanup if all humans are gone
     // and bots are still seated. The countSeatedHumansAndSpectators check

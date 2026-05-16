@@ -70,6 +70,10 @@ export default function PlayerProfilePopover({
   negotiations,
   onPeerLoanSend,
   viewerIsSpectator = false,
+  // Kick-vote: `kickState` is the server snapshot ({ threshold, humanCount,
+  // polls }); `onKickVote(targetId)` dispatches the vote message.
+  kickState = null,
+  onKickVote = null,
 }) {
   const { user: viewer } = useAuth()
   const [info, setInfo] = useState(null)
@@ -334,6 +338,46 @@ export default function PlayerProfilePopover({
           onSend={onPeerLoanSend}
         />
       )}
+
+      {/* Vote-to-kick. Visible to seated humans only, when the target is
+          another human seat. Thresholds scale with table size — server
+          rejects if below 3 humans, so we just hide the button there. */}
+      {onKickVote && !viewerIsSpectator && seat?.id !== myId && !seat?.isBot && (() => {
+        const threshold = kickState?.threshold
+        const poll = kickState?.polls?.[seat.id]
+        const votes = poll?.votes || 0
+        const canKick = Number.isFinite(threshold) && threshold > 0
+        return (
+          <div className="mt-3 rounded-md border border-red-500/30 bg-red-950/30 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[10px] font-black uppercase tracking-widest text-red-300">Vote to kick</div>
+                <div className="text-[10px] font-bold text-zinc-400 leading-snug">
+                  {canKick
+                    ? `${votes}/${threshold} votes · resets every 3 min`
+                    : 'Need 3+ players at the table'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onKickVote(seat.id)}
+                disabled={!canKick}
+                className="shrink-0 rounded-md border border-red-400/60 bg-red-500/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-red-100 hover:bg-red-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Kick
+              </button>
+            </div>
+            {canKick && (
+              <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-zinc-800">
+                <div
+                  className="h-full rounded-full bg-red-400 transition-all"
+                  style={{ width: `${Math.min(100, (votes / threshold) * 100)}%` }}
+                />
+              </div>
+            )}
+          </div>
+        )
+      })()}
     </div>,
     document.body
   )

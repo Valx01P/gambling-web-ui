@@ -101,8 +101,8 @@ export default function AssetsPanel({ assetsState, myChips, onBuy, onSell, joine
                   <button
                     type="button"
                     onClick={() => onBuy(entry.id, 1)}
-                    disabled={!joined || !canAfford}
-                    title={!canAfford ? 'Not enough chips' : `Buy 1 × ${entry.name} for $${entry.price.toLocaleString()}`}
+                    disabled={!joined}
+                    title={!canAfford ? `Costs $${entry.price.toLocaleString()} — click for affordability check` : `Buy 1 × ${entry.name} for $${entry.price.toLocaleString()}`}
                     className="shrink-0 rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-2 text-xs font-black uppercase tracking-widest text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     Buy

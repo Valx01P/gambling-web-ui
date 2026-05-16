@@ -99,6 +99,9 @@ export class MessageHandler {
         case MESSAGE_TYPES.POKER_KICK_ALL_BOTS:
           return this.handleKickAllBots(player)
 
+        case MESSAGE_TYPES.POKER_KICK_VOTE:
+          return this.handleKickVote(player, data)
+
         case MESSAGE_TYPES.AUTH_HELLO:
           return this.handleAuthHello(player, data)
 
@@ -775,6 +778,27 @@ export class MessageHandler {
       }
     }
     return { success: true, removed: botIds.length }
+  }
+
+  handleKickVote(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') {
+      return this.error('Not at a poker table', player)
+    }
+    const targetId = typeof data?.targetId === 'string' ? data.targetId : null
+    if (!targetId) return this.error('Missing target', player)
+    const result = room.voteToKick(player.id, targetId)
+    if (!result?.success) {
+      const errs = {
+        heads_up_no_kick: 'Need at least 3 players to vote kick.',
+        no_self_kick: 'Can\'t kick yourself.',
+        bots_use_other_kick: 'Use the bot kick menu for bots.',
+        must_be_seated: 'You have to be seated to vote.',
+        invalid_target: 'That seat is no longer at the table.',
+      }
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: errs[result?.error] || 'Kick failed.' } })
+    }
+    return result
   }
 
   handleToggleContestMode(player, data) {

@@ -732,6 +732,9 @@ export default function PokerPage() {
   const [optionsState, setOptionsState] = useState({ chain: [], myPositions: [], expiryHands: 3, contractMultiplier: 100 })
   const [worldState, setWorldState] = useState({ territories: [], pandemicActive: false, yieldMultiplier: 1 })
   const [influenceState, setInfluenceState] = useState({ ops: [] })
+  // Kick-vote state from server. `threshold` = votes needed to kick (null
+  // when below 3 humans). `polls` is keyed by targetId → { votes, expiresAt }.
+  const [kickState, setKickState] = useState({ threshold: null, humanCount: 0, polls: {} })
   // Tools-menu Recents bar. Lazy-initialized from localStorage so the
   // last-used panels persist across reloads. The bumpToolsLRU helper
   // moves the just-opened panel to the head of the list.
@@ -851,9 +854,30 @@ export default function PokerPage() {
   const [isPrivate, setIsPrivate] = useState(false)
   const [inviteCode, setInviteCode] = useState(null)
 
+  // Pending purchase confirmation. `requestPurchase({ title, body, cost, onConfirm })`
+  // sets this; the modal at the bottom of the page reads it. If the player
+  // can't afford the cost we skip the modal and push a system toast instead.
+  const [pendingPurchase, setPendingPurchase] = useState(null)
+
   const addSys = useCallback((msg) => {
     setSysMessages(prev => [...prev.slice(-30), msg])
   }, [])
+
+  // Gate every buy action through this. Cheap-to-afford → confirm modal.
+  // Too poor → toast in the chat sys log. Saves wiring an affordability
+  // check + "are you sure?" flow into every panel manually.
+  const fmtCostDollars = (n) => {
+    const v = Number(n) || 0
+    return v.toLocaleString()
+  }
+  const requestPurchase = useCallback(({ title, body, cost, onConfirm }) => {
+    const chips = bankState?.chips ?? 0
+    if (chips < cost) {
+      addSys(`💸 Not enough chips for ${title} — costs $${fmtCostDollars(cost)}, you have $${fmtCostDollars(chips)}.`)
+      return
+    }
+    setPendingPurchase({ title, body, cost, onConfirm })
+  }, [bankState?.chips, addSys])
 
   const applyGameState = useCallback((nextGameState) => {
     gameStateRef.current = nextGameState
@@ -1251,6 +1275,20 @@ export default function PokerPage() {
           setInfluenceState({
             ops: Array.isArray(msg.data?.ops) ? msg.data.ops : []
           })
+          break
+        case 'kick:state':
+          setKickState({
+            threshold: msg.data?.threshold ?? null,
+            humanCount: msg.data?.humanCount ?? 0,
+            polls: msg.data?.polls && typeof msg.data.polls === 'object' ? msg.data.polls : {},
+          })
+          break
+        case 'kicked_from_table':
+          addSys(`🚪 You were voted off the table.`)
+          // Drop our local seat state — server has already removed us.
+          setActivePokerPanel(null)
+          setPopoverSeat(null)
+          setPopoverSeatId(null)
           break
         case 'options:state':
           setOptionsState({
@@ -4374,7 +4412,17 @@ export default function PokerPage() {
               assetsState={assetsState}
               myChips={bankState.chips ?? 0}
               joined={joined}
-              onBuy={(assetId, units) => send('asset:buy', { assetId, units })}
+              onBuy={(assetId, units) => {
+                const entry = (assetsState?.catalog || []).find(c => c.id === assetId)
+                if (!entry) return
+                const cost = (entry.price || 0) * (units || 1)
+                requestPurchase({
+                  title: entry.name,
+                  body: `Buy ${units || 1} × ${entry.name} for $${(cost).toLocaleString()}? Yields +$${(entry.yieldPerHand || 0).toLocaleString()}/hand.`,
+                  cost,
+                  onConfirm: () => send('asset:buy', { assetId, units }),
+                })
+              }}
               onSell={(assetId, units) => send('asset:sell', { assetId, units })}
             />
           )}
@@ -4406,7 +4454,19 @@ export default function PokerPage() {
               myChips={bankState.chips ?? 0}
               joined={joined}
               myPlayerId={playerId}
-              onClaim={(territoryId) => send('world:claim', { territoryId })}
+              onClaim={(territoryId) => {
+                const t = (worldState?.territories || []).find(tt => tt.id === territoryId)
+                if (!t) return
+                if (t.isMine) return
+                requestPurchase({
+                  title: t.name,
+                  body: t.ownerId
+                    ? `Hostile takeover of ${t.name} from ${t.ownerName}. Cost $${(t.currentCost || 0).toLocaleString()}. They get 70% back.`
+                    : `Claim ${t.name} for $${(t.currentCost || 0).toLocaleString()}? Yields +$${(t.yieldBase || 0).toLocaleString()}/hand.`,
+                  cost: t.currentCost || 0,
+                  onConfirm: () => send('world:claim', { territoryId }),
+                })
+              }}
               onPandemic={() => send('world:pandemic', {})}
             />
           )}
@@ -4819,6 +4879,11 @@ export default function PokerPage() {
         negotiations={peerNegotiations}
         onPeerLoanSend={(type, data) => send(type, data)}
         viewerIsSpectator={isSpectator}
+        // Kick-vote: only seated humans can vote, and only against other
+        // seated humans. Disabled when the table has <3 humans (heads-up
+        // is uninteresting to kick from). Threshold scales with table.
+        kickState={kickState}
+        onKickVote={(targetId) => send('poker_kick_vote', { targetId })}
       />
 
       <BotProfilePopover
@@ -4847,6 +4912,51 @@ export default function PokerPage() {
           (see the IIFE below) so it sits above them in a fixed-but-not-
           draggable slot on desktop, and joins the centered stack on
           mobile. No longer a separate floating widget. */}
+
+      {/* Confirm-purchase modal. Asset / territory / (future) other buy
+          buttons all route their click through `requestPurchase`. If
+          the player can't afford the price they get a toast in the sys
+          log and this modal never opens. Confirm = dispatch action. */}
+      {pendingPurchase && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setPendingPurchase(null)}>
+          <div
+            className="w-[calc(100vw-2rem)] max-w-[400px] rounded-xl border border-zinc-600/60 bg-zinc-900 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b border-zinc-800 px-4 py-2.5">
+              <div className="text-[10px] font-black uppercase tracking-widest text-amber-300">Confirm purchase</div>
+              <div className="text-base font-black text-white truncate">{pendingPurchase.title}</div>
+            </div>
+            <div className="px-4 py-3 text-[12px] font-bold text-zinc-300 leading-snug">
+              {pendingPurchase.body}
+            </div>
+            <div className="flex items-center justify-between gap-2 border-t border-zinc-800 bg-zinc-950/40 px-4 py-2.5">
+              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+                Cost <span className="ml-1 text-white">${(pendingPurchase.cost || 0).toLocaleString()}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPendingPurchase(null)}
+                  className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-zinc-300 hover:bg-zinc-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    pendingPurchase.onConfirm?.()
+                    setPendingPurchase(null)
+                  }}
+                  className="rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-emerald-100 hover:bg-emerald-500/25"
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Peek-hand reveal — only the local user sees this. Shows the
           target's hole cards in a small modal. Tap anywhere to dismiss. */}
