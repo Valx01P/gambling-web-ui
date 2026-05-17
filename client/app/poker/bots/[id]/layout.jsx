@@ -10,7 +10,7 @@ import JsonLd, { breadcrumbJsonLd } from '../../../components/JsonLd'
 const BASE = process.env.NEXT_PUBLIC_SITE_URL || 'https://pokerxyz.io'
 
 export const metadata = {
-  title: 'Bot editor — pokerxyz',
+  title: 'Bot Editor — PokerXYZ',
   robots: { index: false, follow: false, googleBot: { index: false, follow: false } },
 }
 

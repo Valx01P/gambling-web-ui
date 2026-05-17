@@ -9,23 +9,23 @@ const BASE = process.env.NEXT_PUBLIC_SITE_URL || 'https://pokerxyz.io'
 export const metadata = {
   title: 'Feed · Hands, Bots, Strategy',
   description:
-    "Social feed for the pokerxyz community — share hands, post bot strategy, " +
-    "comment on other players' lines. The pulse of the open lobby.",
+    "Social feed for the PokerXYZ community — share hands, post poker bot strategy, " +
+    "comment on other developers' lines. The pulse of the open lobby.",
   alternates: { canonical: '/feed' },
   keywords: [
     'poker feed', 'poker hands', 'poker community', 'share poker hand',
-    'poker strategy posts', 'poker bot discussion',
+    'poker bot discussion', 'poker bot developers', 'poker strategy posts',
   ],
   openGraph: {
-    title: "Feed · pokerxyz",
-    description: "Share hands, post bot strategy, comment on lines. The pulse of the open lobby.",
+    title: "Feed · PokerXYZ",
+    description: "Share hands, post poker bot strategy, comment on lines. The pulse of the open lobby.",
     url: '/feed',
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
-    title: "Feed · pokerxyz",
-    description: "Share hands, post bot strategy. The pulse of the open lobby.",
+    title: "Feed · PokerXYZ",
+    description: "Share hands, post poker bot strategy. The pulse of the open lobby.",
   },
 }
 

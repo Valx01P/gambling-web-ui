@@ -60,10 +60,12 @@ const SITE_JSONLD = {
       '@type': 'WebSite',
       '@id': 'https://pokerxyz.io#site',
       url: 'https://pokerxyz.io',
-      name: 'pokerxyz',
+      name: 'PokerXYZ',
+      alternateName: ['PokerXYZ — Poker Bot Developer & Multiplayer Hold\'em', 'pokerxyz'],
       description:
-        "Free no-limit Texas hold'em with friends, fake chips, and JavaScript poker bots " +
-        "you can program yourself. Bot-vs-bot arenas, ELO rankings, no downloads.",
+        "Poker bot developer's sandbox: write your own bot in JavaScript, train a neural net " +
+        "against the public library, and sit it at a real no-limit hold'em table. Multiplayer " +
+        "tables, bot-vs-bot arenas, ELO rankings, fake chips, no downloads.",
       inLanguage: 'en',
       potentialAction: {
         '@type': 'SearchAction',
@@ -74,13 +76,13 @@ const SITE_JSONLD = {
     {
       '@type': 'VideoGame',
       '@id': 'https://pokerxyz.io#game',
-      name: 'pokerxyz',
+      name: 'PokerXYZ',
       description:
-        "Multiplayer no-limit Texas hold'em with programmable JavaScript bots, " +
-        "bot-vs-bot arenas, ELO rankings, and a full banking system. " +
-        "Fake chips, real strategy, open lobby — no real-money gambling.",
+        "Build poker bots in JavaScript, train neural nets, watch bot-vs-bot arenas, and " +
+        "play live multiplayer no-limit hold'em. Full banking system, ELO ladder, fake chips. " +
+        "A developer-first poker sandbox with no real-money gambling.",
       url: 'https://pokerxyz.io',
-      genre: ['Card Game', 'Poker', 'Strategy'],
+      genre: ['Card Game', 'Poker', 'Strategy', 'Programming Game'],
       playMode: ['MultiPlayer', 'SinglePlayer'],
       gamePlatform: 'Web browser',
       applicationCategory: 'GameApplication',
@@ -91,11 +93,12 @@ const SITE_JSONLD = {
       // doesn't render this as a rich result, but the keywords feed
       // entity-extraction ("can I play poker bots online" matches).
       featureList: [
-        "Play no-limit Texas hold'em with friends",
-        'Build and edit JavaScript poker bots in-browser',
-        'Bot-vs-bot arenas with spectator controls',
-        'ELO rankings across every hand',
-        'Banking system + side bets + peer loans',
+        'Develop poker bots in JavaScript with a documented decision context',
+        'Train neural-net bots: REINFORCE, REINFORCE+baseline, MLP, Q-learning',
+        'Bot-vs-bot arenas with spectator controls and ELO tracking',
+        "Live multiplayer no-limit Texas hold'em with friends",
+        'Public bot library — fork, clone, or duel any bot by ELO',
+        'Banking system + side bets + peer loans + crypto + stocks',
         'Free, no download, no real money',
       ],
     },
@@ -112,35 +115,30 @@ const SITE_JSONLD = {
       mainEntity: [
         {
           '@type': 'Question',
-          name: 'Can I play poker with friends for free?',
+          name: 'How do I build a poker bot on PokerXYZ?',
           acceptedAnswer: {
             '@type': 'Answer',
             text:
-              "Yes — pokerxyz is a free in-browser no-limit Texas hold'em lobby. " +
-              "Sit at a 5-seat table, share a link with friends, and play with fake chips. " +
-              "No download, no real money, no signup required for a quick game.",
+              "Open the bot editor in your browser and write a JavaScript `decide(ctx)` " +
+              "function. The ctx is a documented decision context (hand strength, equity " +
+              "vs ranges, opponent action patterns, board texture, position, stack sizes, " +
+              "betting history). Hit save and your bot can sit at any table — yours, a public " +
+              "one, or a bot-vs-bot arena. Four bot kinds are supported: rule-based code bots, " +
+              "rule + transition super-bots, neural nets (REINFORCE, REINFORCE+baseline, MLP, " +
+              "Q-learning), and an omniscient Oracle slot.",
           },
         },
         {
           '@type': 'Question',
-          name: 'Can I build my own poker bot on pokerxyz?',
+          name: 'Can I train a neural-net poker bot?',
           acceptedAnswer: {
             '@type': 'Answer',
             text:
-              "Yes. The bot editor lets you write a JavaScript strategy directly in the browser, " +
-              "test it against a public bot library, and sit it at a real table. " +
-              "Neural-net bots, rule-based super-bots, and an omniscient Oracle slot are all supported.",
-          },
-        },
-        {
-          '@type': 'Question',
-          name: 'Is pokerxyz real-money poker or gambling?',
-          acceptedAnswer: {
-            '@type': 'Answer',
-            text:
-              "No — pokerxyz uses fake chips only. There's no deposit, no withdrawal, " +
-              "no real-money gambling. The banking system, side bets, and ELO are all " +
-              "strategy mechanics, not financial transactions.",
+              "Yes — PokerXYZ ships four neural baselines you can train against the public " +
+              "library or your own roster: REINFORCE, REINFORCE with a baseline, a 1×8 MLP " +
+              "policy net, and a Q-learning agent. Weights persist per-bot in the database, " +
+              "every hand is a training step, and ELO + bluff stats let you tell whether the " +
+              "bot is actually getting better.",
           },
         },
         {
@@ -149,9 +147,32 @@ const SITE_JSONLD = {
           acceptedAnswer: {
             '@type': 'Answer',
             text:
-              "A spectator-controlled room where only bots play. You add up to five bots from " +
-              "your roster or the public library, hit Start, and watch them duel hand after hand " +
-              "with full ELO tracking. Useful for evaluating a strategy without sitting down yourself.",
+              "A spectator-controlled room where humans never sit. Add up to five bots from " +
+              "your roster or the public library, set the think-delay slider, hit Start, and " +
+              "watch them duel hand after hand with full ELO tracking. The fastest way to " +
+              "evaluate a strategy without sitting down yourself.",
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Can I play poker with friends for free on PokerXYZ?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text:
+              "Yes — PokerXYZ is a free in-browser no-limit Texas hold'em lobby. " +
+              "Sit at a 5-seat table, share a link with friends, and play with fake chips. " +
+              "No download, no real money, no signup required for a quick game.",
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Is PokerXYZ real-money poker or gambling?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text:
+              "No — PokerXYZ uses fake chips only. There's no deposit, no withdrawal, " +
+              "no real-money gambling. The banking system, side bets, and ELO are all " +
+              "strategy mechanics, not financial transactions.",
           },
         },
       ],
@@ -228,7 +249,7 @@ export default function Home() {
             Fills the first viewport. Min-height instead of fixed
             height so an in-page anchor jump (or a tall mobile UI bar)
             doesn't clip the wordmark. */}
-        <section className="relative flex min-h-[100dvh] flex-col items-center justify-center px-4 pb-12 pt-20 text-center sm:pt-24">
+        <section className="relative flex min-h-dvh flex-col items-center justify-center px-4 pb-12 pt-20 text-center sm:pt-24">
           {/* Suit banner */}
           <div className="mb-6 flex items-center gap-3 text-zinc-400">
             <SuitDiamond className="h-5 w-5 text-red-400" />
@@ -238,19 +259,27 @@ export default function Home() {
             <SuitDiamond className="h-5 w-5 text-red-400" />
           </div>
 
-          {/* Wordmark */}
+          {/* Wordmark — capitalized for the SEO rebrand. The split
+              keeps the amber accent and matches the OG image. */}
           <h1 className="text-5xl sm:text-7xl font-black tracking-tight text-white">
-            poker<span className="text-amber-300">xyz</span>
+            Poker<span className="text-amber-300">XYZ</span>
           </h1>
 
-          {/* Tagline — rewritten to lead with the two headline
-              activities (play with friends + build bots) before the
-              spectator mode. Same character budget as before. */}
-          <p className="mt-4 max-w-xl text-sm leading-relaxed text-zinc-300 sm:text-base">
-            Play free no-limit hold&apos;em with friends, build your own
-            poker bots in JavaScript, or sit back and watch them duel
-            in bot-vs-bot arenas. Fake chips, real strategy, all in
-            your browser.
+          {/* Subheadline — short, keyword-dense, leads with the
+              bot-developer angle (the niche we want to own) and lands
+              the multiplayer cue right after. */}
+          <p className="mt-3 text-[11px] sm:text-xs font-black uppercase tracking-[0.3em] text-amber-200/90">
+            Poker Bot Developer · Multiplayer Hold&apos;em
+          </p>
+
+          {/* Tagline — bot-developer pitch leads. `text-balance` lets
+              the browser pick break points so the wrap reads as two
+              evenly-weighted lines on desktop instead of dangling a
+              single word ("browser.") on its own row. */}
+          <p className="mt-4 max-w-md text-balance text-sm leading-relaxed text-zinc-300 sm:max-w-xl sm:text-base">
+            Code your own poker bot in JavaScript and sit it at a real
+            no-limit hold&apos;em table. Play multiplayer or run
+            bot-vs-bot arenas, all in your browser.
           </p>
 
           {/* CTAs */}
@@ -294,13 +323,14 @@ export default function Home() {
             entries in SITE_JSONLD above. */}
         <div className="mx-auto max-w-3xl space-y-4 px-4 pb-20 sm:space-y-5 sm:px-6 sm:pb-28">
           <section id="what-is-pokerxyz" className="scroll-mt-20 pt-8 sm:pt-12">
-            <h2 className="text-xl font-black text-white sm:text-2xl">What is pokerxyz?</h2>
+            <h2 className="text-xl font-black text-white sm:text-2xl">What is PokerXYZ?</h2>
             <p className="mt-3 text-sm leading-relaxed text-zinc-300 sm:text-[15px]">
-              pokerxyz is a free, in-browser no-limit Texas hold&apos;em lobby
-              with a twist: every empty seat at the table can be filled
-              with a programmable JavaScript bot. Sit at a 5-seat
-              table with friends and fake chips, sit alone and grind
-              against a roster of public bots, or boot up a
+              PokerXYZ is a poker bot developer&apos;s sandbox wrapped
+              around a free, in-browser no-limit Texas hold&apos;em
+              lobby. Write a <code className="rounded bg-zinc-800/80 px-1 py-0.5 font-mono text-[12px] text-amber-200">decide(ctx)</code> function
+              in JavaScript, train a neural net, or build a rule-driven
+              super-bot — then sit it at a 5-seat table with friends,
+              grind it against a roster of public bots, or boot up a
               spectator-only arena and watch two strategies fight to
               the river. There&apos;s no real-money gambling, no deposits,
               no withdrawals — just the game, the math, and whatever
@@ -389,7 +419,7 @@ export default function Home() {
             anchor="not-gambling"
             icon="🛡️"
             title="Fake chips, not gambling"
-            blurb="pokerxyz uses fake chips only. There's no deposit, no withdrawal, no real-money gambling. The banking system, side bets, and ELO are all strategy mechanics, not financial transactions. SafeSearch-friendly, no age gate — it's a card game and a programming sandbox."
+            blurb="PokerXYZ uses fake chips only. There's no deposit, no withdrawal, no real-money gambling. The banking system, side bets, and ELO are all strategy mechanics, not financial transactions. SafeSearch-friendly, no age gate — it's a card game and a programming sandbox."
           />
 
           {/* Final CTA — matches the hero buttons so a user who scrolled
@@ -414,8 +444,22 @@ export default function Home() {
         </div>
       </main>
 
-      <footer className="px-4 pb-6 text-center text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-300/80">
-        pokerxyz.io
+      <footer className="flex flex-col items-center gap-2 px-4 pb-6 text-center text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-300/80">
+        <div>pokerxyz.io</div>
+        {/* Author credit — same size + tracking as the brand line above
+            so the footer reads as one consistent row. Diamond suit per
+            the brand's card-suit palette. Opens LinkedIn in a new tab
+            with rel="noopener" so the linked tab can't reach back into
+            this window. */}
+        <a
+          href="https://www.linkedin.com/in/pablovaldes01/"
+          target="_blank"
+          rel="noopener noreferrer me author"
+          className="inline-flex items-center gap-1.5 text-zinc-300/80 transition-colors hover:text-amber-200"
+        >
+          Made by Pablo Valdes
+          <span aria-hidden="true" className="text-red-400">♦</span>
+        </a>
       </footer>
     </div>
   )

@@ -20,55 +20,63 @@ export const googleSansCode = localFont({
 export const metadata = {
   metadataBase: new URL('https://pokerxyz.io'),
   title: {
-    // Headline keyword stack at the front, brand last. Search results
-    // truncate around 60 chars — this lands at ~58 so nothing important
-    // gets clipped on Google or Bing SERPs.
-    default: "Play Poker with Friends & Build Poker Bots · pokerxyz",
-    template: '%s · pokerxyz',
+    // Brand-forward; "Poker Bot Developer" is the SEO anchor (the
+    // niche we want to own) and "Multiplayer" picks up the broader
+    // hold'em audience. Lands around ~52 chars so SERPs don't clip
+    // either half. Template appends "PokerXYZ" to every child route.
+    default: 'PokerXYZ — Poker Bot Developer & Multiplayer Hold\'em',
+    template: '%s · PokerXYZ',
   },
   description:
-    "Play free no-limit Texas hold'em with friends using fake chips, " +
-    "or write your own JavaScript poker bots and watch them duel in bot-vs-bot arenas. " +
-    "Live tables, programmable AI, ELO rankings, and a full banking system — all in the browser, no downloads, no real money.",
-  applicationName: 'pokerxyz',
+    "PokerXYZ is the poker bot developer's sandbox: write your own bot in JavaScript " +
+    "and sit it at a real no-limit hold'em table. " +
+    "Live multiplayer tables, bot-vs-bot arenas, ELO rankings, fake chips, no downloads.",
+  applicationName: 'PokerXYZ',
   // Keyword list seeds Bing + a handful of vertical search engines. Less
   // load-bearing than the title/description, but cheap to keep current
-  // and useful for our long-tail queries (bot builder / fake chips / etc.).
+  // and useful for our long-tail queries — the bot-developer angle leads
+  // because that's the niche we want to own.
   keywords: [
-    // Core poker terms
+    // Headline niche — bot developer / programmer
+    'poker bot developer', 'poker bot programming', 'build poker bot',
+    'javascript poker bot', 'programmable poker bot', 'poker bot builder',
+    'poker bot tutorial', 'poker bot framework', 'poker AI development',
+    'poker bot sandbox', 'open source poker bot',
+    // Bot-vs-bot + ML angle
+    'poker bot arena', 'bot vs bot poker', 'poker neural net',
+    'poker reinforcement learning', 'poker ELO ladder',
+    // Multiplayer poker — broader audience
     'play poker online', 'play poker with friends', 'free poker',
-    "no-limit hold'em", "texas hold'em", 'multiplayer poker', 'browser poker',
-    'online poker free', 'poker with fake chips', 'poker no real money',
-    // The platform's defining feature
-    'poker bot builder', 'build poker bot', 'javascript poker bot',
-    'programmable poker bot', 'poker AI', 'poker bot arena', 'bot vs bot poker',
+    "no-limit hold'em", "texas hold'em online", 'multiplayer poker',
+    'browser poker', 'online poker free', 'poker with fake chips',
+    'poker no real money',
     // Game features
-    'poker ELO', 'poker leaderboard', 'poker training', 'poker simulator',
+    'poker simulator', 'poker training', 'poker leaderboard',
     'open lobby poker', 'free poker tables', 'no download poker',
   ],
-  authors: [{ name: 'pokerxyz' }],
-  creator: 'pokerxyz',
-  publisher: 'pokerxyz',
+  authors: [{ name: 'Pablo Valdes', url: 'https://www.linkedin.com/in/pablovaldes01/' }],
+  creator: 'Pablo Valdes',
+  publisher: 'PokerXYZ',
   alternates: { canonical: '/' },
   manifest: '/manifest.webmanifest',
   formatDetection: { telephone: false, email: false, address: false },
   openGraph: {
-    title: "Play Poker with Friends & Build Poker Bots · pokerxyz",
+    title: 'PokerXYZ — Poker Bot Developer & Multiplayer Hold\'em',
     description:
-      "Free no-limit hold'em with friends, fake chips, and JavaScript bots you can " +
-      "program yourself. Bot-vs-bot arenas, ELO rankings, no downloads.",
+      "Write your own poker bot in JavaScript, train a neural net, sit it at a real table. " +
+      "Multiplayer no-limit hold'em, bot-vs-bot arenas, ELO rankings, fake chips, no downloads.",
     url: 'https://pokerxyz.io',
-    siteName: 'pokerxyz',
+    siteName: 'PokerXYZ',
     type: 'website',
     locale: 'en_US',
     // og:image is auto-attached by Next.js from app/opengraph-image.js.
   },
   twitter: {
     card: 'summary_large_image',
-    title: "Play Poker with Friends & Build Poker Bots · pokerxyz",
+    title: 'PokerXYZ — Poker Bot Developer & Multiplayer Hold\'em',
     description:
-      "Free no-limit hold'em with friends. Program your own poker bots in JavaScript. " +
-      "Bot-vs-bot arenas, ELO, fake chips, real strategy.",
+      "Build poker bots in JavaScript, train neural nets, watch bot-vs-bot arenas. " +
+      "Free multiplayer no-limit hold'em with ELO and fake chips. No downloads.",
     // twitter:image is auto-attached by Next.js from app/twitter-image.js.
   },
   robots: {

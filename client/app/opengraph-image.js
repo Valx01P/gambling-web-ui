@@ -8,7 +8,7 @@
 
 import { ImageResponse } from 'next/og'
 
-export const alt = "pokerxyz — No-limit hold'em with bots you can program"
+export const alt = "PokerXYZ — Poker Bot Developer & Multiplayer Hold'em"
 export const size = { width: 1200, height: 630 }
 export const contentType = 'image/png'
 
@@ -36,10 +36,13 @@ export default async function Image() {
           <span style={{ color: '#f87171' }}>♥</span>
         </div>
         <div style={{ display: 'flex', fontSize: 132, fontWeight: 900, letterSpacing: -3, lineHeight: 1 }}>
-          <span>poker</span><span style={{ color: '#fcd34d' }}>xyz</span>
+          <span>Poker</span><span style={{ color: '#fcd34d' }}>XYZ</span>
         </div>
-        <div style={{ marginTop: 28, fontSize: 32, fontWeight: 600, color: '#d4d4d8', textAlign: 'center', maxWidth: 900 }}>
-          No-limit hold&apos;em. JavaScript bots. Bot-vs-bot arenas.
+        <div style={{ marginTop: 18, fontSize: 22, fontWeight: 800, letterSpacing: 6, textTransform: 'uppercase', color: '#fcd34d' }}>
+          Poker Bot Developer · Multiplayer Hold&apos;em
+        </div>
+        <div style={{ marginTop: 22, fontSize: 30, fontWeight: 600, color: '#d4d4d8', textAlign: 'center', maxWidth: 900 }}>
+          Build bots in JavaScript. Train neural nets. Sit them at a real table.
         </div>
         <div style={{
           marginTop: 48,

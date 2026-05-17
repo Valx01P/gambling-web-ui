@@ -4,11 +4,11 @@
 
 export default function manifest() {
   return {
-    name: "Play Poker with Friends & Build Poker Bots · pokerxyz",
-    short_name: 'pokerxyz',
+    name: "PokerXYZ — Poker Bot Developer & Multiplayer Hold'em",
+    short_name: 'PokerXYZ',
     description:
-      "Free no-limit Texas hold'em with friends and programmable JavaScript poker bots. " +
-      "Open lobby, fake chips, bot-vs-bot arenas, ELO rankings — all in the browser.",
+      "Build poker bots in JavaScript, train neural nets, sit them at no-limit hold'em tables. " +
+      "Free multiplayer with friends, bot-vs-bot arenas, ELO rankings — all in the browser.",
     start_url: '/',
     display: 'standalone',
     background_color: '#020617',
