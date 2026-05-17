@@ -1,36 +1,18 @@
 'use client'
 
-import { useEffect, useRef, useSyncExternalStore } from 'react'
+import { useEffect, useRef } from 'react'
+import { useFeltColor } from '../lib/feltColor'
 
-// Module-level pub/sub for the active felt tint. The poker page sets a
-// `[r, g, b]` base when its table-color state changes, and clears it on
-// unmount. FuzzyBackground subscribes here and re-renders its static
-// noise around that base. Lives outside React state so the background
-// — which is mounted at the root layout — can respond to a deep child
-// (the poker page) without prop-drilling or context.
-let _feltRgb = null
-const _listeners = new Set()
-export function setBackgroundFelt(rgb) {
-  // Accept either [r, g, b] or null (reset to default).
-  if (!rgb || !Array.isArray(rgb) || rgb.length < 3) _feltRgb = null
-  else _feltRgb = [Number(rgb[0]) || 0, Number(rgb[1]) || 0, Number(rgb[2]) || 0]
-  for (const l of _listeners) l()
-}
-function _subscribe(listener) {
-  _listeners.add(listener)
-  return () => _listeners.delete(listener)
-}
-function _get() { return _feltRgb }
-function _getServer() { return null }
-
-// Default base — same emerald-tinted noise the page originally shipped.
-// Kept in sync with TABLE_COLOR_PALETTES.emerald.bgRgb in poker/page.jsx
-// so the felt and background match when the user never picks a color.
-const DEFAULT_RGB = [31, 94, 64]
+// Renders the noise canvas that sits behind every page. Reads the
+// site-wide felt color directly from feltColor.js — the same store the
+// poker felt-picker writes to and that the layout's FeltBootstrap
+// hydrates from localStorage + /auth/me. That means switching colors
+// from inside the Tools menu on /poker tints every other route too.
 
 export default function FuzzyBackground() {
   const canvasRef = useRef(null)
-  const rgb = useSyncExternalStore(_subscribe, _get, _getServer) || DEFAULT_RGB
+  const { palette } = useFeltColor()
+  const rgb = palette.bgRgb
 
   useEffect(() => {
     const canvas = canvasRef.current

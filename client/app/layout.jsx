@@ -1,6 +1,7 @@
 import localFont from "next/font/local"
 import AccountDock from "./components/AccountDock"
 import FuzzyBackground from "./components/FuzzyBackground"
+import FeltBootstrap from "./components/FeltBootstrap"
 import ZoomLayer from "./components/ZoomLayer"
 import "./globals.css"
 
@@ -123,6 +124,11 @@ export default function RootLayout({ children }) {
         {/* Skip-link for keyboard users. Hidden until focused (see globals.css).
             Lighthouse a11y "bypass blocks" audit looks for this. */}
         <a href="#main-content" className="skip-link">Skip to main content</a>
+        {/* Hydrates the shared felt-color store from localStorage on
+            first paint and from /auth/me when auth resolves. Mounted
+            here so every route inherits the user's site-wide pick
+            without each page wiring it up. Renders nothing. */}
+        <FeltBootstrap />
         <FuzzyBackground />
         <ZoomLayer>{children}</ZoomLayer>
         {/* Global account dock — profile / DMs / notifications stacked

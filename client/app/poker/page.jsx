@@ -7,7 +7,6 @@ import { BetChips, PotChips } from '../components/ChipStack'
 import { EMOTE_OPTIONS, EmoteIcon, SeatEmotes, SeatYells, getEmoteOptions } from '../components/PokerEmotes'
 import ProfileSelector, { getProfileAvatar, ProfileAvatar } from '../components/ProfileSelector'
 import HomeBackLink from '../components/HomeBackLink'
-import { setBackgroundFelt } from '../components/FuzzyBackground'
 import RouteNavCluster from '../components/RouteNavCluster'
 // AccountMenu (profile + DMs + notifications) is mounted globally via
 // AccountDock in the root layout. The table header keeps the Tools and
@@ -63,6 +62,20 @@ import { buildPokerStatistics, buildSpectatorStatistics, evaluateHand, formatCar
 // table render, and the chip-throw animation. Pure data + helpers, no state.
 import { SEATS, getBetPosClasses, getChipThrowOrigin } from './lib/seatLayout'
 import LobbyView from './components/LobbyView'
+import {
+  TOGGLEABLE_TOOL_IDS,
+  loadPrivateRoomDisabledTools,
+  savePrivateRoomDisabledTools,
+} from '../lib/privateRoomTools'
+import {
+  TABLE_COLOR_PALETTES,
+  TABLE_CUSTOM_SLOTS,
+  TABLE_CUSTOM_PREFIX,
+  DEFAULT_TABLE_COLOR_ID,
+  useFeltColor,
+  setTableColorId as setSharedTableColorId,
+  setCustomColors as setSharedCustomColors,
+} from '../lib/feltColor'
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001'
 const USERNAME_STORAGE_KEY = 'poker_username'
@@ -96,81 +109,10 @@ if (typeof window !== 'undefined') {
   try { window.localStorage.removeItem(BLIND_LEVEL_PREF_STORAGE_KEY) } catch {}
 }
 
-// User-selected felt color id. Defaults to 'emerald' (the original look).
-// The id maps to TABLE_COLOR_PALETTES below — never trust this value
-// blindly; resolve through the lookup map so bad localStorage payloads
-// silently revert to the default.
-const TABLE_COLOR_STORAGE_KEY = 'poker_table_felt_color'
-
-// Felt color palette. Five built-in options + up to five user-defined
-// custom slots (see TABLE_CUSTOM_COLORS_KEY). Each entry is a single
-// deep base color rendered as a radial shade (lighter center, darker
-// edges). The `bgRgb` triple is what FuzzyBackground tints its static
-// noise toward when this color is active — picks a base noticeably
-// darker than the felt itself so the page reads as one consistent
-// tone without looking flat. PER-PLAYER, persisted via localStorage;
-// the server doesn't know about table color at all.
-const TABLE_COLOR_PALETTES = [
-  { id: 'emerald',  label: 'Emerald',  swatch: '#14472c', center: '#1a5c3a', mid: '#14472c', edge: '#0f3521', vignette: '#0a2a18', border: 'rgba(6, 78, 59, 0.4)',   bgRgb: [31, 94, 64] },
-  { id: 'forest',   label: 'Forest',   swatch: '#0a3d2a', center: '#0f4d35', mid: '#0a3d2a', edge: '#062a1d', vignette: '#031711', border: 'rgba(10, 61, 42, 0.45)', bgRgb: [14, 60, 40] },
-  { id: 'sapphire', label: 'Sapphire', swatch: '#1e3a8a', center: '#2845b3', mid: '#1e3a8a', edge: '#172a66', vignette: '#0c1838', border: 'rgba(30, 58, 138, 0.4)', bgRgb: [22, 38, 96] },
-  { id: 'crimson',  label: 'Crimson',  swatch: '#7a1d1d', center: '#a31d1d', mid: '#7a1d1d', edge: '#591212', vignette: '#3a0a0a', border: 'rgba(127, 29, 29, 0.4)', bgRgb: [92, 22, 22] },
-  { id: 'royal',    label: 'Royal',    swatch: '#4c1d95', center: '#6324b8', mid: '#4c1d95', edge: '#371565', vignette: '#1f0a3d', border: 'rgba(76, 29, 149, 0.4)', bgRgb: [60, 23, 110] },
-]
-const DEFAULT_TABLE_COLOR_ID = 'emerald'
-const TABLE_CUSTOM_COLORS_KEY = 'poker_table_custom_colors'
-const TABLE_CUSTOM_SLOTS = 5
-const TABLE_CUSTOM_PREFIX = 'custom-'
-
-// Build the gradient stops + bg tint from a single user-picked hex.
-// Center = brighter than the base, edge/vignette = progressively
-// darker — mirrors the hand-tuned built-ins (e.g. emerald's center is
-// ~1.18x its mid). bgRgb sits a touch darker than the base so the
-// FuzzyBackground noise reads as the "off-table" environment, not a
-// flat clone of the felt.
-function hexToRgb(hex) {
-  const m = /^#?([a-f0-9]{6})$/i.exec(hex || '')
-  if (!m) return [20, 71, 44]
-  const v = parseInt(m[1], 16)
-  return [(v >> 16) & 255, (v >> 8) & 255, v & 255]
-}
-function rgbToHex(r, g, b) {
-  const clamp = (n) => Math.max(0, Math.min(255, Math.round(n)))
-  return '#' + [r, g, b].map(n => clamp(n).toString(16).padStart(2, '0')).join('')
-}
-function scaleRgb(rgb, factor) {
-  return rgb.map(c => Math.max(0, Math.min(255, c * factor)))
-}
-function derivePaletteFromHex(hex, id, label) {
-  const rgb = hexToRgb(hex)
-  const center = scaleRgb(rgb, 1.18)
-  const mid = rgb
-  const edge = scaleRgb(rgb, 0.72)
-  const vignette = scaleRgb(rgb, 0.45)
-  const bg = scaleRgb(rgb, 0.72).map(Math.round)
-  return {
-    id, label: label || 'Custom',
-    swatch: rgbToHex(...mid),
-    center: rgbToHex(...center),
-    mid: rgbToHex(...mid),
-    edge: rgbToHex(...edge),
-    vignette: rgbToHex(...vignette),
-    border: `rgba(${rgb.join(', ')}, 0.4)`,
-    bgRgb: bg,
-  }
-}
-// Resolve any id (built-in or custom-N) to a fully-derived palette.
-// Unknown ids fall back to the default emerald palette so a stale
-// localStorage payload can't dead-end the page.
-function tableColorPalette(id, customColors) {
-  if (typeof id === 'string' && id.startsWith(TABLE_CUSTOM_PREFIX)) {
-    const idx = parseInt(id.slice(TABLE_CUSTOM_PREFIX.length), 10)
-    const entry = Array.isArray(customColors) ? customColors[idx] : null
-    if (entry?.hex) return derivePaletteFromHex(entry.hex, id, entry.label || `Custom ${idx + 1}`)
-    return TABLE_COLOR_PALETTES[0]
-  }
-  return TABLE_COLOR_PALETTES.find(p => p.id === id) || TABLE_COLOR_PALETTES[0]
-}
+// Felt color: palette + state live in client/app/lib/feltColor.js so
+// every page tints with the user's choice. Keep TABLE_COLOR_PALETTES
+// + helpers imported above; the local felt-color state used to live
+// here and was bound to /poker's lifecycle.
 // Zoom-related constants come from useZoom — single source of truth.
 const POKER_STARTING_CHIPS = 1000
 
@@ -696,65 +638,17 @@ export default function PokerPage() {
     try { return window.localStorage.getItem(STATS_MODE_STORAGE_KEY) === '1' }
     catch { return false }
   })
-  // Felt color is PER-PLAYER, not shared. Persisted via localStorage so
-  // the same player's pick follows them across tables, arenas, and
-  // private rooms. Two keys: the active color id and the array of up
-  // to 5 user-defined custom colors. Custom slot ids look like
-  // 'custom-0' … 'custom-4'; if a slot is empty (no hex), selecting
-  // it falls back to the default emerald.
-  const [customColors, setCustomColorsRaw] = useState(() => {
-    if (typeof window === 'undefined') return []
-    try {
-      const raw = window.localStorage.getItem(TABLE_CUSTOM_COLORS_KEY)
-      const parsed = raw ? JSON.parse(raw) : null
-      if (!Array.isArray(parsed)) return []
-      // Sanitize: keep only entries with a valid 6-digit hex; cap at 5.
-      return parsed
-        .filter(e => e && typeof e.hex === 'string' && /^#?[a-f0-9]{6}$/i.test(e.hex))
-        .slice(0, TABLE_CUSTOM_SLOTS)
-        .map((e, i) => ({ hex: e.hex.startsWith('#') ? e.hex : `#${e.hex}`, label: e.label || `Custom ${i + 1}` }))
-    } catch { return [] }
-  })
-  const setCustomColors = (next) => {
-    setCustomColorsRaw(next)
-    if (typeof window === 'undefined') return
-    try { window.localStorage.setItem(TABLE_CUSTOM_COLORS_KEY, JSON.stringify(next)) } catch {}
-  }
-  const [tableColorId, setTableColorIdRaw] = useState(() => {
-    if (typeof window === 'undefined') return DEFAULT_TABLE_COLOR_ID
-    try {
-      const saved = window.localStorage.getItem(TABLE_COLOR_STORAGE_KEY)
-      if (!saved) return DEFAULT_TABLE_COLOR_ID
-      if (TABLE_COLOR_PALETTES.some(p => p.id === saved)) return saved
-      // Custom slot is valid only if its localStorage entry exists.
-      if (saved.startsWith(TABLE_CUSTOM_PREFIX)) return saved
-      return DEFAULT_TABLE_COLOR_ID
-    } catch { return DEFAULT_TABLE_COLOR_ID }
-  })
-  const setTableColorId = (id) => {
-    if (TABLE_COLOR_PALETTES.some(p => p.id === id)) {
-      setTableColorIdRaw(id)
-    } else if (typeof id === 'string' && id.startsWith(TABLE_CUSTOM_PREFIX)) {
-      setTableColorIdRaw(id)
-    }
-  }
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    try { window.localStorage.setItem(TABLE_COLOR_STORAGE_KEY, tableColorId) } catch {}
-  }, [tableColorId])
-  const tablePalette = useMemo(
-    () => tableColorPalette(tableColorId, customColors),
-    [tableColorId, customColors]
-  )
-
-  // Push the active felt color out to FuzzyBackground (mounted at the
-  // root layout, outside this page tree) via a module-level pub/sub.
-  // Cleanup on unmount resets it to default so the background goes
-  // back to the original tone when the user leaves /poker.
-  useEffect(() => {
-    setBackgroundFelt(tablePalette.bgRgb)
-    return () => setBackgroundFelt(null)
-  }, [tablePalette.bgRgb])
+  // Felt color is SITE-WIDE — promoted out of /poker so the user's
+  // pick tints every page (home, feed, /poker/bots, etc.) and persists
+  // server-side for signed-in users. The Tools-menu felt picker reads
+  // and writes through the same hook, which in turn drives
+  // FuzzyBackground at the root layout.
+  const { tableColorId, customColors, palette: tablePalette } = useFeltColor()
+  // Stable callable handles for the felt picker's onClick/onChange
+  // wiring below. Renames keep the existing JSX (`setTableColorId`,
+  // `setCustomColors`) working with no further changes.
+  const setTableColorId = setSharedTableColorId
+  const setCustomColors = setSharedCustomColors
 
   // (Removed: "Check in the dark" client-side action queue. Any auto-
   // fire pre-action path is gone; the user must click their own action
@@ -780,7 +674,12 @@ export default function PokerPage() {
       : kind === 'nudge'
         ? `${fromName} is nudging you — it's your turn`
         : `${fromName} sent you a ${kind}`
-    setSessionNotifs(prev => [...prev.slice(-4), { id, kind, fromName, body, createdAt: payload.createdAt || Date.now() }])
+    // Keep the originating player's id + the negotiation id so clickable
+    // notifs (currently loan offers / counters) can deep-link into the
+    // right popover without re-querying.
+    const fromId = typeof payload.fromId === 'string' ? payload.fromId : null
+    const negotiationId = typeof payload.negotiationId === 'string' ? payload.negotiationId : null
+    setSessionNotifs(prev => [...prev.slice(-4), { id, kind, fromName, body, fromId, negotiationId, createdAt: payload.createdAt || Date.now() }])
     const t = setTimeout(() => {
       setSessionNotifs(prev => prev.filter(n => n.id !== id))
       sessionNotifTimersRef.current.delete(id)
@@ -809,6 +708,29 @@ export default function PokerPage() {
   const [spectatorRevealAll, setSpectatorRevealAll] = useState(false)
   const [spectatorHoveredPlayerId, setSpectatorHoveredPlayerId] = useState(null)
   const [tableMenuOpen, setTableMenuOpen] = useState(false)
+  // Two-step confirm for the custom-felt × buttons. First click sets
+  // this to the slot index (turning that × red); a second click on the
+  // SAME × actually clears the slot. Any other × click reassigns the
+  // armed slot (so you can't accidentally delete the previously-armed
+  // one). Auto-disarms after a few seconds via the timer ref below so a
+  // forgotten click doesn't sit live in the menu.
+  const [clearArmedSlot, setClearArmedSlot] = useState(null)
+  const clearArmTimerRef = useRef(null)
+  // Reset arming when the Tools menu closes — the × is only reachable
+  // inside the dropdown, and an opened-then-closed menu shouldn't have
+  // a stale red × waiting on next open.
+  useEffect(() => {
+    if (!tableMenuOpen && clearArmedSlot !== null) {
+      setClearArmedSlot(null)
+      if (clearArmTimerRef.current) {
+        clearTimeout(clearArmTimerRef.current)
+        clearArmTimerRef.current = null
+      }
+    }
+  }, [tableMenuOpen, clearArmedSlot])
+  useEffect(() => () => {
+    if (clearArmTimerRef.current) clearTimeout(clearArmTimerRef.current)
+  }, [])
   const [activePokerPanel, setActivePokerPanel] = useState(null)
   // Sub-editor state for the items panel (swap / river_card / next_card
   // / rig_hand). Lifted out of ItemsPanel so the tools-panel chrome's
@@ -1096,6 +1018,39 @@ export default function PokerPage() {
   const [inputCode, setInputCode] = useState('')
   const [isPrivate, setIsPrivate] = useState(false)
   const [inviteCode, setInviteCode] = useState(null)
+
+  // Host-side draft: tools the player wants disabled in the NEXT private
+  // room they create. Persisted to localStorage so a user who always
+  // wants "no items" doesn't have to re-toggle each session. Only read
+  // when sending the create_private join payload.
+  const [privateRoomDisabledTools, setPrivateRoomDisabledTools] = useState(() => loadPrivateRoomDisabledTools())
+  const togglePrivateRoomDisabledTool = useCallback((toolId) => {
+    if (!TOGGLEABLE_TOOL_IDS.has(toolId)) return
+    setPrivateRoomDisabledTools(prev => {
+      const next = new Set(prev)
+      if (next.has(toolId)) next.delete(toolId)
+      else next.add(toolId)
+      savePrivateRoomDisabledTools(next)
+      return next
+    })
+  }, [])
+  // Bulk setter used by the lobby's "Disable all" master toggle. Lets
+  // the host go from "wild west" to "nothing but poker" in one click,
+  // or vice versa. Persisted same as the per-tool toggle so the choice
+  // survives reloads.
+  const setAllPrivateRoomDisabledTools = useCallback((disableAll) => {
+    setPrivateRoomDisabledTools(() => {
+      const next = disableAll ? new Set(TOGGLEABLE_TOOL_IDS) : new Set()
+      savePrivateRoomDisabledTools(next)
+      return next
+    })
+  }, [])
+
+  // Authoritative list for the CURRENT room — populated from server
+  // payloads (join_game / reconnect_ok / room_update). General rooms
+  // always come back with an empty set; private rooms reflect what the
+  // host picked at creation time. Used to hide Tools menu entries.
+  const [roomDisabledTools, setRoomDisabledTools] = useState(() => new Set())
 
   // Pending purchase confirmation. `requestPurchase({ title, body, cost, onConfirm })`
   // sets this; the modal at the bottom of the page reads it. If the player
@@ -1459,6 +1414,11 @@ export default function PokerPage() {
             if (room.gameState) applyGameState(room.gameState)
             setIsPrivate(room.isPrivate || false)
             setInviteCode(room.inviteCode || null)
+            setRoomDisabledTools(new Set(
+              Array.isArray(room.disabledTools)
+                ? room.disabledTools.filter(id => TOGGLEABLE_TOOL_IDS.has(id))
+                : []
+            ))
             if (room.sideBets) setSideBetsState(room.sideBets)
             if (room.crypto) setCryptoState(room.crypto)
             if (room.contestMode) setContestMode(room.contestMode)
@@ -1644,6 +1604,11 @@ export default function PokerPage() {
           applyGameState(msg.data.gameState)
           setIsPrivate(msg.data.isPrivate || false)
           setInviteCode(msg.data.inviteCode || null)
+          setRoomDisabledTools(new Set(
+            Array.isArray(msg.data.disabledTools)
+              ? msg.data.disabledTools.filter(id => TOGGLEABLE_TOOL_IDS.has(id))
+              : []
+          ))
           // Auto-apply saved blind-level preference for "you started this
           // table"-style joins. Conditions:
           //   1. We have a saved preference,
@@ -1817,6 +1782,11 @@ export default function PokerPage() {
           if (msg.data.isSpectator !== undefined) setIsSpectator(msg.data.isSpectator)
           if (msg.data.isPrivate !== undefined) setIsPrivate(msg.data.isPrivate)
           if (msg.data.inviteCode !== undefined) setInviteCode(msg.data.inviteCode)
+          if (Array.isArray(msg.data.disabledTools)) {
+            setRoomDisabledTools(new Set(
+              msg.data.disabledTools.filter(id => TOGGLEABLE_TOOL_IDS.has(id))
+            ))
+          }
           // Authoritative refresh of the disconnected set: room_update
           // carries the canonical isConnected flag for every seat, so
           // recompute the set from it. This catches any drift between
@@ -2161,13 +2131,20 @@ export default function PokerPage() {
     // CDN uploads, and "no avatar → initials at the table" all work
     // through one code path on both sides, and lets the player drop their
     // current avatar by clearing it in the Profile modal.
+    // Host-only setting — only attached when the player is CREATING a
+    // private room. Ignored by the server for every other join mode.
+    const privateRoomExtras = mode === 'create_private'
+      ? { disabledTools: [...privateRoomDisabledTools].filter(id => TOGGLEABLE_TOOL_IDS.has(id)) }
+      : {}
+
     if (useSelf && mode !== 'spectate' && mode !== 'bot_arena') {
-      return { playAsSelf: true, mode, ...extra }
+      return { playAsSelf: true, mode, ...privateRoomExtras, ...extra }
     }
 
     const payload = {
       username: username || undefined,
       mode,
+      ...privateRoomExtras,
       ...extra,
     }
 
@@ -2395,7 +2372,10 @@ export default function PokerPage() {
   const toCall = currentBetAmount - myBet
   const phase = gameState?.phase || 'waiting'
   const isWaitingNextHand = myPlayer?.waitingNextHand
-  const canUseEmotes = !isSpectator && Boolean(myPlayer)
+  // Emote + yell inputs share the same "chat" toggle on the server —
+  // hiding the row when chat is disabled keeps the UI honest with the
+  // gate (no buttons that always 403).
+  const canUseEmotes = !isSpectator && Boolean(myPlayer) && !roomDisabledTools.has('chat')
   const estimatedServerTime = gameState?.serverTime
     ? gameState.serverTime + (turnClock - gameStateReceivedAt)
     : turnClock
@@ -2523,6 +2503,13 @@ export default function PokerPage() {
     // this (Recents pills always open even in customize mode).
     if (toolsCustomizing) {
       toggleToolHidden(panel)
+      return
+    }
+    // Host-disabled tool in this private room — defensive guard. The
+    // menu and recents bar already filter these out, but a stale LRU
+    // entry or a direct shortcut could still hit this path.
+    if (panel && roomDisabledTools.has(panel)) {
+      setTableMenuOpen(false)
       return
     }
     // 'finances' is no longer a popup panel — the inline Finances
@@ -2963,6 +2950,9 @@ export default function PokerPage() {
         joinError={joinError}
         onPendingAvatar={stagePendingAvatar}
         recentPfps={recentPfps}
+        privateRoomDisabledTools={privateRoomDisabledTools}
+        togglePrivateRoomDisabledTool={togglePrivateRoomDisabledTool}
+        setAllPrivateRoomDisabledTools={setAllPrivateRoomDisabledTools}
       />
     )
   }
@@ -3151,7 +3141,7 @@ export default function PokerPage() {
               overlap the spectator chips/PL pill. Same rounded-lg /
               border / padding as those siblings for visual parity. Only
               renders when toggled on via the Tools menu. */}
-          {financesWidgetOpen && joined && (
+          {financesWidgetOpen && joined && !roomDisabledTools.has('finances') && (
             <div className="rounded-lg border border-zinc-600/60 bg-zinc-900/95 px-2 py-1 sm:px-3 sm:py-1.5 shadow-sm backdrop-blur-md flex items-center gap-2 text-[11px] sm:text-xs font-bold text-zinc-100 whitespace-nowrap">
               {/* Body is a button — clicking the pill opens the
                   Investment HUD widget. The HUD itself has the
@@ -3251,13 +3241,14 @@ export default function PokerPage() {
                     above the 2-column section grid as a single full-
                     width row so a returning player can one-tap their
                     most-used tool without scanning the whole menu. */}
-                {toolsLRU.length > 0 && (
+                {toolsLRU.filter(id => !roomDisabledTools.has(id)).length > 0 && (
                   <div className="border-b border-zinc-800 px-3 pt-2 pb-2">
                     <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-1.5">Recents</div>
                     <div className="flex flex-wrap gap-1.5">
                       {toolsLRU.map(panelId => {
                         const meta = TOOLS_LRU_META[panelId]
                         if (!meta) return null
+                        if (roomDisabledTools.has(panelId)) return null
                         return (
                           <button
                             key={panelId}
@@ -3307,14 +3298,28 @@ export default function PokerPage() {
                     {/* Basic Info (How to Play, Current Hand, Session,
                         Daily, Finances) lives in the right column under
                         its own header below Big Yahu — keeps this column
-                        focused on the games-within-the-game. */}
-                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Markets</div>
-                    {(!toolsHidden.has('crypto') || toolsCustomizing) && (
+                        focused on the games-within-the-game. Header is
+                        conditional on at least one market entry still
+                        being visible — otherwise the host-disabled list
+                        could leave it floating alone above social. */}
+                    {(
+                      !roomDisabledTools.has('crypto') ||
+                      !roomDisabledTools.has('items') ||
+                      !roomDisabledTools.has('assets') ||
+                      !roomDisabledTools.has('jobs') ||
+                      !roomDisabledTools.has('stocks') ||
+                      !roomDisabledTools.has('world') ||
+                      !roomDisabledTools.has('influence') ||
+                      authUser
+                    ) && (
+                      <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Markets</div>
+                    )}
+                    {!roomDisabledTools.has('crypto') && (!toolsHidden.has('crypto') || toolsCustomizing) && (
                       <button type="button" onClick={() => openPokerPanel('crypto')} title={TOOLS_TOOLTIPS.crypto} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-fuchsia-200 hover:bg-zinc-800 ${toolsHidden.has('crypto') ? 'opacity-40' : ''}`}>
                         <span>★ Crypto Market</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('crypto') ? '+show' : '×hide'}</span>}
                       </button>
                     )}
-                    {(!toolsHidden.has('items') || toolsCustomizing) && (
+                    {!roomDisabledTools.has('items') && (!toolsHidden.has('items') || toolsCustomizing) && (
                       <button type="button" onClick={() => openPokerPanel('items')} title={TOOLS_TOOLTIPS.items} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-lime-200 hover:bg-zinc-800 ${toolsHidden.has('items') ? 'opacity-40' : ''}`}>
                         <span>★ Items &amp; Powers</span>
                         {toolsCustomizing ? (
@@ -3330,7 +3335,7 @@ export default function PokerPage() {
                         })()}
                       </button>
                     )}
-                    {(!toolsHidden.has('assets') || toolsCustomizing) && (
+                    {!roomDisabledTools.has('assets') && (!toolsHidden.has('assets') || toolsCustomizing) && (
                       <button type="button" onClick={() => openPokerPanel('assets')} title={TOOLS_TOOLTIPS.assets} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-emerald-200 hover:bg-zinc-800 ${toolsHidden.has('assets') ? 'opacity-40' : ''}`}>
                         <span>★ Real Estate</span>
                         {toolsCustomizing ? (
@@ -3342,22 +3347,22 @@ export default function PokerPage() {
                         )}
                       </button>
                     )}
-                    {(!toolsHidden.has('jobs') || toolsCustomizing) && (
+                    {!roomDisabledTools.has('jobs') && (!toolsHidden.has('jobs') || toolsCustomizing) && (
                       <button type="button" onClick={() => openPokerPanel('jobs')} title={TOOLS_TOOLTIPS.jobs} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-orange-200 hover:bg-zinc-800 ${toolsHidden.has('jobs') ? 'opacity-40' : ''}`}>
                         <span>★ Jobs Board</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('jobs') ? '+show' : '×hide'}</span>}
                       </button>
                     )}
-                    {(!toolsHidden.has('stocks') || toolsCustomizing) && (
+                    {!roomDisabledTools.has('stocks') && (!toolsHidden.has('stocks') || toolsCustomizing) && (
                       <button type="button" onClick={() => openPokerPanel('stocks')} title={TOOLS_TOOLTIPS.stocks} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-sky-200 hover:bg-zinc-800 ${toolsHidden.has('stocks') ? 'opacity-40' : ''}`}>
                         <span>★ Stock Market</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('stocks') ? '+show' : '×hide'}</span>}
                       </button>
                     )}
-                    {(!toolsHidden.has('world') || toolsCustomizing) && (
+                    {!roomDisabledTools.has('world') && (!toolsHidden.has('world') || toolsCustomizing) && (
                       <button type="button" onClick={() => openPokerPanel('world')} title={TOOLS_TOOLTIPS.world} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-purple-200 hover:bg-zinc-800 ${toolsHidden.has('world') ? 'opacity-40' : ''}`}>
                         <span>★ World Map</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('world') ? '+show' : '×hide'}</span>}
                       </button>
                     )}
-                    {(!toolsHidden.has('influence') || toolsCustomizing) && (
+                    {!roomDisabledTools.has('influence') && (!toolsHidden.has('influence') || toolsCustomizing) && (
                       <button type="button" onClick={() => openPokerPanel('influence')} title={TOOLS_TOOLTIPS.influence} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800 ${toolsHidden.has('influence') ? 'opacity-40' : ''}`}>
                         <span>★ Influence Ops</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('influence') ? '+show' : '×hide'}</span>}
                       </button>
@@ -3377,44 +3382,67 @@ export default function PokerPage() {
                     )}
 
                     {/* ── WIDGETS ─────────────────────────────────── */}
-                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Widgets</div>
-                    {!isSpectator && (
+                    {/* Widgets header is conditional — if the host
+                        disabled every widget in the section, the header
+                        would otherwise stand alone with no children. */}
+                    {(
+                      (!isSpectator && !roomDisabledTools.has('equity')) ||
+                      !roomDisabledTools.has('chat') ||
+                      !roomDisabledTools.has('sidebets') ||
+                      !roomDisabledTools.has('finances') ||
+                      !roomDisabledTools.has('hud')
+                    ) && (
+                      <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Widgets</div>
+                    )}
+                    {!isSpectator && !roomDisabledTools.has('equity') && (
                       <button type="button" onClick={toggleStatsMode} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${statsMode ? 'text-sky-200' : 'text-zinc-400'}`}>
                         <span className={`inline-block h-2 w-2 rounded-full ${statsMode ? 'bg-sky-400 shadow-[0_0_6px_rgba(56,189,248,0.7)]' : 'bg-zinc-600'}`} />
                         Hand Equity {statsMode ? 'On' : 'Off'}
                       </button>
                     )}
-                    <button type="button" onClick={toggleChatDock} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${chatDockVisible ? 'text-cyan-200' : 'text-zinc-400'}`}>
-                      <span className={`inline-block h-2 w-2 rounded-full ${chatDockVisible ? 'bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.7)]' : 'bg-zinc-600'}`} />
-                      Chat {chatDockVisible ? 'On' : 'Off'}
-                    </button>
-                    <button type="button" onClick={toggleSideBetsDock} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${sideBetsDockVisible ? 'text-amber-200' : 'text-zinc-400'}`}>
-                      <span className={`inline-block h-2 w-2 rounded-full ${sideBetsDockVisible ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.7)]' : 'bg-zinc-600'}`} />
-                      Side Bets {sideBetsDockVisible ? 'On' : 'Off'}
-                      {sideBetsState?.props?.length ? (
-                        <span className="ml-auto rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
-                          {sideBetsState.props.filter(p => p.status === 'open').length} live
-                        </span>
-                      ) : null}
-                    </button>
-                    <button type="button" onClick={() => setFinancesWidgetOpenPersist(prev => !prev)} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${financesWidgetOpen ? 'text-emerald-200' : 'text-zinc-400'}`}>
-                      <span className={`inline-block h-2 w-2 rounded-full ${financesWidgetOpen ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]' : 'bg-zinc-600'}`} />
-                      Finances Widget {financesWidgetOpen ? 'On' : 'Off'}
-                    </button>
-                    <button type="button" onClick={() => setHudEnabledPersist(prev => !prev)} title="Floating widget that summarizes every position across crypto, stocks, real estate, and territories" className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${hudEnabled ? 'text-amber-200' : 'text-zinc-400'}`}>
-                      <span className={`inline-block h-2 w-2 rounded-full ${hudEnabled ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.7)]' : 'bg-zinc-600'}`} />
-                      Investment HUD {hudEnabled ? 'On' : 'Off'}
-                    </button>
+                    {!roomDisabledTools.has('chat') && (
+                      <button type="button" onClick={toggleChatDock} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${chatDockVisible ? 'text-cyan-200' : 'text-zinc-400'}`}>
+                        <span className={`inline-block h-2 w-2 rounded-full ${chatDockVisible ? 'bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.7)]' : 'bg-zinc-600'}`} />
+                        Chat {chatDockVisible ? 'On' : 'Off'}
+                      </button>
+                    )}
+                    {!roomDisabledTools.has('sidebets') && (
+                      <button type="button" onClick={toggleSideBetsDock} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${sideBetsDockVisible ? 'text-amber-200' : 'text-zinc-400'}`}>
+                        <span className={`inline-block h-2 w-2 rounded-full ${sideBetsDockVisible ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.7)]' : 'bg-zinc-600'}`} />
+                        Side Bets {sideBetsDockVisible ? 'On' : 'Off'}
+                        {sideBetsState?.props?.length ? (
+                          <span className="ml-auto rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
+                            {sideBetsState.props.filter(p => p.status === 'open').length} live
+                          </span>
+                        ) : null}
+                      </button>
+                    )}
+                    {!roomDisabledTools.has('finances') && (
+                      <button type="button" onClick={() => setFinancesWidgetOpenPersist(prev => !prev)} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${financesWidgetOpen ? 'text-emerald-200' : 'text-zinc-400'}`}>
+                        <span className={`inline-block h-2 w-2 rounded-full ${financesWidgetOpen ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]' : 'bg-zinc-600'}`} />
+                        Finances Widget {financesWidgetOpen ? 'On' : 'Off'}
+                      </button>
+                    )}
+                    {!roomDisabledTools.has('hud') && (
+                      <button type="button" onClick={() => setHudEnabledPersist(prev => !prev)} title="Floating widget that summarizes every position across crypto, stocks, real estate, and territories" className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${hudEnabled ? 'text-amber-200' : 'text-zinc-400'}`}>
+                        <span className={`inline-block h-2 w-2 rounded-full ${hudEnabled ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.7)]' : 'bg-zinc-600'}`} />
+                        Investment HUD {hudEnabled ? 'On' : 'Off'}
+                      </button>
+                    )}
 
                     {/* ── DAILY ───────────────────────────────────── */}
                     {/* Own section under Widgets so the rotating daily
                         prompt reads as its own thing — not buried with
                         reference info. Amber accent matches the in-game
                         challenge chip. */}
-                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Daily Challenge</div>
-                    <button type="button" onClick={() => openPokerPanel('daily')} title={TOOLS_TOOLTIPS.daily} className="block w-full px-3 py-2 text-left text-xs font-bold text-amber-200 hover:bg-zinc-800">
-                      ★ Today's Challenge
-                    </button>
+                    {!roomDisabledTools.has('daily') && (
+                      <>
+                        <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Daily Challenge</div>
+                        <button type="button" onClick={() => openPokerPanel('daily')} title={TOOLS_TOOLTIPS.daily} className="block w-full px-3 py-2 text-left text-xs font-bold text-amber-200 hover:bg-zinc-800">
+                          ★ Today's Challenge
+                        </button>
+                      </>
+                    )}
                   </div>
 
                   {/* ════════ RIGHT COLUMN: actions & profile ════════ */}
@@ -3526,28 +3554,58 @@ export default function PokerPage() {
                                   }}
                                 />
                               </label>
-                              {/* Clear (×) — only when active doesn't
-                                  matter; user might want to reset a
-                                  slot they're not currently using. */}
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  const next = customColors.slice()
-                                  next[i] = null
-                                  // Compact nulls AFTER the cleared
-                                  // index? Don't — keep slot indices
-                                  // stable so the user's spatial
-                                  // memory survives a clear.
-                                  setCustomColors(next)
-                                  if (active) setTableColorId(DEFAULT_TABLE_COLOR_ID)
-                                }}
-                                title="Clear this slot"
-                                aria-label={`Clear custom color slot ${i + 1}`}
-                                className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border border-zinc-900 bg-zinc-800 text-[9px] leading-[10px] text-zinc-200 flex items-center justify-center hover:bg-red-500/30 hover:text-red-100"
-                              >
-                                ×
-                              </button>
+                              {/* Clear (×) — two-step confirm: first
+                                  click arms the × (red); second click
+                                  on the SAME × actually deletes. Stops
+                                  fat-finger deletes of a hand-picked
+                                  custom color the user spent time
+                                  dialing in. */}
+                              {(() => {
+                                const armed = clearArmedSlot === i
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      if (!armed) {
+                                        setClearArmedSlot(i)
+                                        if (clearArmTimerRef.current) clearTimeout(clearArmTimerRef.current)
+                                        clearArmTimerRef.current = setTimeout(() => {
+                                          setClearArmedSlot(null)
+                                          clearArmTimerRef.current = null
+                                        }, 3000)
+                                        return
+                                      }
+                                      // Armed — commit the delete.
+                                      if (clearArmTimerRef.current) {
+                                        clearTimeout(clearArmTimerRef.current)
+                                        clearArmTimerRef.current = null
+                                      }
+                                      setClearArmedSlot(null)
+                                      const next = customColors.slice()
+                                      next[i] = null
+                                      // Compact nulls AFTER the cleared
+                                      // index? Don't — keep slot indices
+                                      // stable so the user's spatial
+                                      // memory survives a clear.
+                                      setCustomColors(next)
+                                      if (active) setTableColorId(DEFAULT_TABLE_COLOR_ID)
+                                    }}
+                                    title={armed ? 'Click again to confirm' : 'Clear this slot'}
+                                    aria-label={armed
+                                      ? `Confirm clearing custom color slot ${i + 1}`
+                                      : `Clear custom color slot ${i + 1}`}
+                                    aria-pressed={armed}
+                                    className={`absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border flex items-center justify-center text-[9px] leading-[10px] transition-colors ${
+                                      armed
+                                        ? 'border-red-400 bg-red-500/80 text-white animate-pulse'
+                                        : 'border-zinc-900 bg-zinc-800 text-zinc-200 hover:bg-red-500/30 hover:text-red-100'
+                                    }`}
+                                  >
+                                    ×
+                                  </button>
+                                )
+                              })()}
                             </div>
                           )
                         })}
@@ -3561,9 +3619,11 @@ export default function PokerPage() {
                         place side bets on the runout even without a seat at the
                         table. Soft teal accent + ★ so it reads as a featured
                         destination, matching the auto-fill style below. */}
-                    <button type="button" onClick={() => openPokerPanel('bank')} title={TOOLS_TOOLTIPS.bank} className="block w-full px-3 py-2 text-left text-xs font-bold text-teal-200 hover:bg-zinc-800">
-                      ★ Bank Account
-                    </button>
+                    {!roomDisabledTools.has('bank') && (
+                      <button type="button" onClick={() => openPokerPanel('bank')} title={TOOLS_TOOLTIPS.bank} className="block w-full px-3 py-2 text-left text-xs font-bold text-teal-200 hover:bg-zinc-800">
+                        ★ Bank Account
+                      </button>
+                    )}
                     {/* All five seat-claim tools (Invite Friend + four
                         ★ auto-fills) share the same three-state pattern:
                           1. Open seats available → seat normally.
@@ -3663,7 +3723,7 @@ export default function PokerPage() {
                               shared "🎲 App bots" set) and seats a
                               random subset. Server-side shuffle so
                               every fill produces a different lineup. */}
-                          {(!isSpectator || isArena) && (
+                          {(!isSpectator || isArena) && !roomDisabledTools.has('bots') && (
                             <div className="px-3 py-1">
                               <ConfirmPopoverButton
                                 {...toolProps({
@@ -3679,7 +3739,7 @@ export default function PokerPage() {
                             </div>
                           )}
                           {/* ── ★ NN Squad (tiers 1-5) ── */}
-                          {(!isSpectator || isArena) && authUser && (
+                          {(!isSpectator || isArena) && authUser && !roomDisabledTools.has('bots') && (
                             <div className="px-3 py-1">
                               <ConfirmPopoverButton
                                 {...toolProps({
@@ -3695,7 +3755,7 @@ export default function PokerPage() {
                             </div>
                           )}
                           {/* ── ★ MLP Squad (tiers 6-10) ── */}
-                          {(!isSpectator || isArena) && authUser && (
+                          {(!isSpectator || isArena) && authUser && !roomDisabledTools.has('bots') && (
                             <div className="px-3 py-1">
                               <ConfirmPopoverButton
                                 {...toolProps({
@@ -3711,7 +3771,7 @@ export default function PokerPage() {
                             </div>
                           )}
                           {/* ── ★ Custom bots ── */}
-                          {(!isSpectator || isArena) && authUser && (
+                          {(!isSpectator || isArena) && authUser && !roomDisabledTools.has('bots') && (
                             <div className="px-3 py-1">
                               <ConfirmPopoverButton
                                 {...toolProps({
@@ -3734,7 +3794,7 @@ export default function PokerPage() {
                               (they need to load /poker/bots once to
                               provision it server-side) or when it's
                               already at the table. */}
-                          {(!isSpectator || isArena) && authUser && (() => {
+                          {(!isSpectator || isArena) && authUser && !roomDisabledTools.has('bots') && (() => {
                             const oracle = botRoster.mine.find(b => b.isOracle)
                             if (!oracle) return null
                             const alreadyAtTable = (gameState?.players || []).some(p => p?.botId === oracle.id)
@@ -3758,7 +3818,7 @@ export default function PokerPage() {
                         </>
                       )
                     })()}
-                    {(!isSpectator || isArena) && (
+                    {(!isSpectator || isArena) && !roomDisabledTools.has('bots') && (
                       <button type="button" onClick={() => openPokerPanel('bots')} title={TOOLS_TOOLTIPS.bots} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                         Add Bots
                       </button>
@@ -3791,16 +3851,24 @@ export default function PokerPage() {
                     {/* ── RESET / BIG YAHU ─────────────────────────── */}
                     {/* Headerless pinned-bottom group. Kept separated by
                         a border-t so it doesn't blur into the Profile
-                        section above; matches the prior placement. */}
-                    {!isSpectator && (
+                        section above; matches the prior placement.
+                        Both buttons can be disabled per-room by the
+                        host — if both are off, the leading border-t
+                        also disappears so nothing visible stays from
+                        the group. */}
+                    {!isSpectator && !roomDisabledTools.has('reset') && (
                       <button type="button" onClick={() => openPokerPanel('reset')} className="block w-full border-t border-zinc-800 px-3 py-2 text-left text-xs font-bold text-red-200 hover:bg-zinc-800">
                         Reset Money
                       </button>
                     )}
-                    {!isSpectator && (
+                    {!isSpectator && !roomDisabledTools.has('big_yahu') && (
                       // Big Yahu in Israel blue — the unlock awards Israel-themed
                       // emotes (✡️ / 🇮🇱), so the call action wears the colors.
-                      <button type="button" onClick={() => openPokerPanel('big_yahu')} className="block w-full px-3 py-2 text-left text-xs font-bold text-sky-300 hover:bg-zinc-800">
+                      // The leading border-t lives on the Reset button above;
+                      // if Reset is disabled and Big Yahu isn't, we render
+                      // the border on this button instead so the group still
+                      // visually separates from Profile.
+                      <button type="button" onClick={() => openPokerPanel('big_yahu')} className={`block w-full px-3 py-2 text-left text-xs font-bold text-sky-300 hover:bg-zinc-800 ${roomDisabledTools.has('reset') ? 'border-t border-zinc-800' : ''}`}>
                         Call Big Yahu
                       </button>
                     )}
@@ -5484,7 +5552,7 @@ export default function PokerPage() {
                     <div className={`mt-0.5 text-[8px] sm:text-[10px] font-black leading-none ${profitClass(playerProfit)}`}>
                       P/L {formatProfit(playerProfit)}
                     </div>
-                    {statsMode && playerAllInOdds && (
+                    {statsMode && !roomDisabledTools.has('equity') && playerAllInOdds && (
                       <div className="mt-0.5 text-[8px] sm:text-[10px] font-black text-amber-200">
                         {formatPercent(playerAllInOdds.equity, 1)}
                       </div>
@@ -6064,7 +6132,7 @@ export default function PokerPage() {
             buttons stay inside the centered content. Click outside the
             panel auto-minimizes it (handled by a useEffect above) so it
             never shifts other UI around. The Close button exits entirely. */}
-        {!isSpectator && statsMode && (
+        {!isSpectator && statsMode && !roomDisabledTools.has('equity') && (
           <div className="pointer-events-none fixed inset-x-0 top-12 z-40 sm:top-14">
             <div className="relative mx-auto max-w-7xl">
               <div
@@ -6177,12 +6245,14 @@ export default function PokerPage() {
           // it at write time, but a legacy localStorage state could still
           // have both enabled, so we belt-and-brace it here too. Side bets
           // wins the conflict (matches the toggle behavior).
-          const showSidebets = sideBetsDockVisible
-          const showChat = chatDockVisible && !sideBetsDockVisible
+          // Host-disabled tools force the corresponding dock off, even
+          // if the player previously toggled it on in another room.
+          const showSidebets = sideBetsDockVisible && !roomDisabledTools.has('sidebets')
+          const showChat = chatDockVisible && !showSidebets && !roomDisabledTools.has('chat')
           // Investment HUD sits ABOVE the dock in the same column. Render
           // the parent column whenever any of the three (HUD, sidebets,
           // chat) is on — otherwise nothing in the column.
-          const showHUD = hudEnabled
+          const showHUD = hudEnabled && !roomDisabledTools.has('hud')
           if (!showSidebets && !showChat && !showHUD) return null
           // Match the spectator panel's md+ lift so both sides of the
           // bottom-UI row visually align. KEEP THESE VALUES IN SYNC with
@@ -6253,14 +6323,52 @@ export default function PokerPage() {
             bottom of the stack so the eye lands on the most recent. */}
         {sessionNotifs.length > 0 && (
           <div className="pointer-events-none fixed bottom-32 sm:bottom-36 left-1/2 z-[200] flex -translate-x-1/2 flex-col items-center gap-1.5 px-3">
-            {sessionNotifs.map(n => (
-              <div
-                key={n.id}
-                className="pointer-events-auto rounded-full border border-amber-400/60 bg-zinc-950/90 px-3 py-1.5 text-[11px] font-black text-amber-100 shadow-xl backdrop-blur"
-              >
-                <span className="text-amber-300">·</span> {n.body}
-              </div>
-            ))}
+            {sessionNotifs.map(n => {
+              // Loan-offer / counter toasts are clickable — they deep-
+              // link into the counterparty's table popover, which already
+              // hosts PeerLoanPanel and shows the open negotiation.
+              const isLoan = (n.kind === 'peer_loan_offer' || n.kind === 'peer_loan_counter') && n.fromId
+              const openLoanPopover = () => {
+                if (!n.fromId) return
+                const target =
+                  gameState?.players?.find(p => p.id === n.fromId) ||
+                  gameState?.spectators?.find(p => p.id === n.fromId)
+                if (!target) return
+                setPopoverSeatId(n.fromId)
+                setPopoverSeat(target)
+                // Dismiss the toast on click — once the popover is open
+                // the notification has done its job, and leaving it up
+                // looks redundant next to the open form.
+                setSessionNotifs(prev => prev.filter(x => x.id !== n.id))
+                const timer = sessionNotifTimersRef.current.get(n.id)
+                if (timer) {
+                  clearTimeout(timer)
+                  sessionNotifTimersRef.current.delete(n.id)
+                }
+              }
+              if (isLoan) {
+                return (
+                  <button
+                    key={n.id}
+                    type="button"
+                    onClick={openLoanPopover}
+                    className="pointer-events-auto cursor-pointer rounded-full border border-amber-400/60 bg-zinc-950/90 px-3 py-1.5 text-[11px] font-black text-amber-100 shadow-xl backdrop-blur transition-colors hover:border-amber-300 hover:bg-amber-500/15 active:scale-95"
+                    title="Open this player's profile to respond"
+                  >
+                    <span className="text-amber-300">·</span> {n.body}
+                    <span className="ml-2 text-[9px] font-bold uppercase tracking-widest text-amber-300/80">tap to open</span>
+                  </button>
+                )
+              }
+              return (
+                <div
+                  key={n.id}
+                  className="pointer-events-auto rounded-full border border-amber-400/60 bg-zinc-950/90 px-3 py-1.5 text-[11px] font-black text-amber-100 shadow-xl backdrop-blur"
+                >
+                  <span className="text-amber-300">·</span> {n.body}
+                </div>
+              )
+            })}
           </div>
         )}
 

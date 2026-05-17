@@ -1,4 +1,4 @@
-import { PokerRoom } from './PokerRoom.js'
+import { PokerRoom, TOGGLEABLE_TOOL_IDS } from './PokerRoom.js'
 import { deleteTableInvitesFromSender } from '../dms/dmsRepository.js'
 import { pushToUser } from '../notifications/dispatcher.js'
 
@@ -27,7 +27,12 @@ export class RoomManager {
       isArena: !!options.isArena,
       ownerUserId: options.ownerUserId || null,
       onArenaExpire: (expiredRoom) => this._destroyRoom(expiredRoom),
-      onTurnTimeout: this.onTurnTimeout
+      onTurnTimeout: this.onTurnTimeout,
+      // Host-picked tool disables only matter for private rooms. The
+      // PokerRoom ctor sanitizes the list, so we can pass it through
+      // raw — but only when it actually applies, to keep general rooms
+      // from accidentally inheriting host preferences.
+      disabledTools: isPrivate ? options.disabledTools : null
     })
 
     if (isPrivate) {
@@ -54,7 +59,7 @@ export class RoomManager {
     return this.createRoom(false)
   }
 
-  joinGame(player, mode = 'general', code = null, roomId = null) {
+  joinGame(player, mode = 'general', code = null, roomId = null, _gameKind = 'poker', extras = {}) {
     if (player.currentRoom) {
       const currentRoom = this.getRoom(player.currentRoom)
       if (currentRoom) {
@@ -73,7 +78,14 @@ export class RoomManager {
     if (mode === 'general') {
       room = this.findAvailableRoom()
     } else if (mode === 'create_private') {
-      room = this.createRoom(true)
+      // Sanitize host-supplied tool disables against the canonical
+      // server-side list so a malformed payload can't smuggle in unknown
+      // ids — the PokerRoom ctor double-filters but defense in depth is
+      // cheap here.
+      const disabledTools = Array.isArray(extras?.disabledTools)
+        ? extras.disabledTools.filter(t => typeof t === 'string' && TOGGLEABLE_TOOL_IDS.has(t))
+        : null
+      room = this.createRoom(true, { disabledTools })
     } else if (mode === 'join_private') {
       if (!code) return { success: false, error: 'Room code required' }
       const lookupId = this.privateRooms.get(code.toUpperCase())

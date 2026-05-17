@@ -105,12 +105,45 @@ function computeHumanPerformanceScore({ won, chipsDelta, bigBlind, foldedPreflop
   return Math.max(0, Math.min(1, s))
 }
 
+// Tool ids a private-room host can switch off at creation time. Mirrors
+// client/app/lib/privateRoomTools.js — keep the two lists aligned.
+// Exported so RoomManager + MessageHandler can sanitize against it.
+export const TOGGLEABLE_TOOL_IDS = new Set([
+  'crypto',
+  'items',
+  'assets',
+  'jobs',
+  'stocks',
+  'world',
+  'influence',
+  'bank',
+  'daily',
+  'sidebets',
+  'equity',
+  'hud',
+  'finances',
+  'chat',
+  'bots',
+  'reset',
+  'big_yahu',
+])
+
 export class PokerRoom {
   constructor(roomId, isPrivate = false, options = {}) {
     this.roomId = roomId
     this.roomType = 'poker'
     this.isPrivate = isPrivate
     this.inviteCode = null
+    // Host-disabled tools (private rooms only). Stored as a Set of tool
+    // ids. Frozen at room creation — there's no "host edits later" UI
+    // because mid-room toggles would orphan open positions (e.g. you
+    // bought stock, host disables stocks, your shares are stuck). If
+    // we add an in-room editor later, we'll need to think through that.
+    this.disabledTools = new Set(
+      isPrivate && Array.isArray(options.disabledTools)
+        ? options.disabledTools.filter(t => typeof t === 'string' && TOGGLEABLE_TOOL_IDS.has(t))
+        : []
+    )
     this.players = new Map()    // playerId -> player (seated)
     this.spectators = new Map() // playerId -> player (watching)
     this.emoteSequence = 0
@@ -2138,6 +2171,7 @@ export class PokerRoom {
       arenaRunning: this.arenaRunning,
       arenaStartingChips: this.arenaStartingChips,
       arenaThinkDelayMs: this.arenaThinkDelayMs,
+      disabledTools: [...this.disabledTools],
       players: this.getPlayerList(),
       spectators: this.getSpectatorList(),
       gameState: this.game.getGameState(isSpectator ? null : forPlayerId, { revealAllCards: isSpectator }),
@@ -2145,6 +2179,12 @@ export class PokerRoom {
       sideBets: this.sideBetEngine?.getStatePayload() || null,
       crypto: this.cryptoEngine?.getStatePayload(forPlayerId) || null
     }
+  }
+
+  // True if this room is private AND the host disabled the named tool.
+  // General rooms always return false — they're the wild west.
+  isToolDisabled(toolId) {
+    return this.disabledTools.has(toolId)
   }
 
   // ─── Crypto passthroughs (called by MessageHandler) ────────────────────
@@ -2325,6 +2365,7 @@ export class PokerRoom {
       arenaRunning: this.arenaRunning,
       arenaStartingChips: this.arenaStartingChips,
       arenaThinkDelayMs: this.arenaThinkDelayMs,
+      disabledTools: [...this.disabledTools],
       players: playerList,
       spectators: spectatorList,
       contestMode

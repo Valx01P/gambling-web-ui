@@ -98,7 +98,8 @@ export async function findUserById(id) {
             side_bets_won, side_bets_lost, side_bet_longshot_wins,
             side_bet_chip_pl, all_in_showdowns, all_in_underdog_wins,
             dailies_completed, daily_date_key, daily_progress,
-            daily_completed_at, achievements, skin_id, custom_skin
+            daily_completed_at, achievements, skin_id, custom_skin,
+            felt_color_id, felt_custom_colors
        FROM users WHERE id = $1`,
     [id]
   )

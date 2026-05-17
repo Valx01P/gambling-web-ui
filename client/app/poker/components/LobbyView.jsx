@@ -1,8 +1,10 @@
 'use client'
 
+import { useState } from 'react'
 import Link from 'next/link'
 import HomeBackLink from '../../components/HomeBackLink'
 import RouteNavCluster from '../../components/RouteNavCluster'
+import { TOGGLEABLE_TOOLS, TOGGLEABLE_TOOL_IDS } from '../../lib/privateRoomTools'
 // AccountMenu (profile + DMs + notifications) is mounted globally via
 // AccountDock in the root layout, so the lobby's local nav only owns
 // the back link and the Bots link. RouteNavCluster makes the right-
@@ -47,7 +49,24 @@ export default function LobbyView({
   // Most-recent saved PFPs (up to 5, server-capped). Signed-in users in
   // anon mode see them as a one-tap re-pick strip inside the selector.
   recentPfps = [],
+  // Set of tool ids the host has disabled for their next private room.
+  // Persisted in the parent via localStorage so the choice carries
+  // across sessions. Ignored by every join mode except create_private.
+  privateRoomDisabledTools = null,
+  togglePrivateRoomDisabledTool,
+  // Bulk setter — `true` disables everything, `false` clears the set.
+  // Wired up to the "Disable all" master checkbox below.
+  setAllPrivateRoomDisabledTools,
 }) {
+  const [privateSettingsOpen, setPrivateSettingsOpen] = useState(false)
+  const disabledToolsSet = privateRoomDisabledTools instanceof Set
+    ? privateRoomDisabledTools
+    : new Set()
+  const disabledCount = disabledToolsSet.size
+  // Master "Disable all" stays checked only when every catalog id is in
+  // the set. Re-enabling any single tool naturally flips it off — no
+  // separate state to keep in sync.
+  const allDisabled = disabledCount === TOGGLEABLE_TOOL_IDS.size && TOGGLEABLE_TOOL_IDS.size > 0
   // Signed-out users always join as anonymous — there's no "self" to play
   // as. Force the toggle accordingly to keep the rest of the UI simple.
   const effectivePlayMode = authUser ? playMode : 'anon'
@@ -214,6 +233,91 @@ export default function LobbyView({
               >
                 {joinBusy ? 'Uploading…' : 'Create Private Room'}
               </button>
+              {/* Host-side tool toggles. Defaults to ALL enabled so the
+                  out-of-the-box experience matches general rooms; the
+                  host clicks off whatever they want gone from their
+                  players' Tools menu. Setting persists in localStorage
+                  so a host who always plays "no items" doesn't have to
+                  re-toggle each session. */}
+              <button
+                type="button"
+                onClick={() => setPrivateSettingsOpen(v => !v)}
+                aria-expanded={privateSettingsOpen}
+                className="mt-2 flex w-full items-center justify-between rounded-lg border border-zinc-700/70 bg-zinc-900/70 px-3 py-2 text-left text-xs font-bold text-zinc-300 hover:bg-zinc-900"
+              >
+                <span>
+                  Room settings
+                  {disabledCount > 0 && (
+                    <span className="ml-2 rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-black text-amber-200">
+                      {disabledCount} off
+                    </span>
+                  )}
+                </span>
+                <span className="text-[10px] font-black text-zinc-500">
+                  {privateSettingsOpen ? '▲' : '▼'}
+                </span>
+              </button>
+              {privateSettingsOpen && (
+                <div className="mt-2 rounded-lg border border-zinc-700/70 bg-zinc-950/60 p-3">
+                  <div className="flex items-baseline justify-between gap-3 mb-2">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                      Enable / disable tools
+                    </div>
+                    <div className="text-[10px] font-black text-zinc-500">
+                      {disabledCount}/{TOGGLEABLE_TOOL_IDS.size} off
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-zinc-400 mb-2 leading-snug">
+                    Uncheck a tool to hide it from every player's Tools
+                    menu in this room. General rooms are unaffected.
+                  </div>
+                  {/* Master "Disable all" — one-click way to start
+                      from zero and only re-enable a few. The box auto-
+                      unchecks the moment the host re-enables any single
+                      tool (allDisabled is derived from the set size). */}
+                  <label className="mb-2 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 cursor-pointer hover:bg-amber-500/15">
+                    <input
+                      type="checkbox"
+                      checked={allDisabled}
+                      onChange={() => setAllPrivateRoomDisabledTools?.(!allDisabled)}
+                      className="h-4 w-4 accent-amber-500 cursor-pointer"
+                    />
+                    <span className="text-[11px] font-black text-amber-200">
+                      Disable all (start from zero)
+                    </span>
+                  </label>
+                  {/* Two-column grid on sm+. On phones we drop to one
+                      column so the label + description don't squeeze
+                      below a readable size. */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-2 gap-y-1">
+                    {TOGGLEABLE_TOOLS.map(tool => {
+                      const enabled = !disabledToolsSet.has(tool.id)
+                      return (
+                        <label
+                          key={tool.id}
+                          title={tool.description}
+                          className="flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-zinc-800/70 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={enabled}
+                            onChange={() => togglePrivateRoomDisabledTool?.(tool.id)}
+                            className="mt-0.5 h-4 w-4 accent-emerald-500 cursor-pointer"
+                          />
+                          <span className="min-w-0">
+                            <span className={`block text-xs font-black ${enabled ? 'text-white' : 'text-zinc-500 line-through'}`}>
+                              {tool.label}
+                            </span>
+                            <span className="block text-[10px] font-bold text-zinc-500 leading-tight">
+                              {tool.description}
+                            </span>
+                          </span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="border-t border-zinc-700/70 pt-4">
               <div className="mb-2 text-sm font-black text-white">Have a code? Join one</div>

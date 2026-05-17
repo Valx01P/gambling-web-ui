@@ -63,6 +63,9 @@ export const api = {
   google: (credential) => apiFetch('/api/auth/google', { method: 'POST', body: { credential } }),
   me: () => apiFetch('/api/auth/me', { auth: true }),
   updateMe: (patch) => apiFetch('/api/auth/me', { method: 'PATCH', auth: true, body: patch }),
+  // Site-wide felt color preference. Body: `{ colorId, customColors }`.
+  // Server validates both; see feltColor.js for the shape.
+  setFelt: (payload) => apiFetch('/api/auth/me/felt', { method: 'POST', auth: true, body: payload }),
 
   // Native auth — email/password with a 6-digit code verification step.
   // Lives alongside Google OAuth; a user can have either or both.

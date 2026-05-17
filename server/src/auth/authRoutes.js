@@ -10,6 +10,7 @@ import {
 } from '../users/userRepository.js'
 import { sanitizeDisplayString } from '../utils/sanitize.js'
 import { hashPassword, verifyPassword, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } from './password.js'
+import { query } from '../db/pool.js'
 import {
   issueCode, findActiveCode, recordFailedAttempt, consumeCode,
   EMAIL_CODE_TTL_MINUTES
@@ -133,7 +134,15 @@ export function authRoutes() {
         description: user.description ?? null,
         elo: user.elo ?? null,
         handsPlayed: user.hands_played ?? 0,
-        handsWon: user.hands_won ?? 0
+        handsWon: user.hands_won ?? 0,
+        // Felt color — site-wide background tint preference (see
+        // client/app/lib/feltColor.js). Surfaced here so every page
+        // that already reads /auth/me on mount gets the user's pick
+        // without an extra round-trip.
+        feltColorId: user.felt_color_id ?? null,
+        feltCustomColors: Array.isArray(user.felt_custom_colors)
+          ? user.felt_custom_colors
+          : (user.felt_custom_colors ?? null)
       }
     })
   })
@@ -201,6 +210,54 @@ export function authRoutes() {
         description: updated.description ?? null
       }
     })
+  })
+
+  // POST /api/auth/me/felt — persist the user's site-wide felt color
+  // preference. Accepts `{ colorId, customColors }`. colorId can be:
+  //   * one of the built-in TABLE_COLOR_PALETTES ids (e.g. 'emerald')
+  //   * a custom slot id 'custom-0' … 'custom-4'
+  //   * null to clear the saved choice (revert to default on next load)
+  // customColors is an array of up to 5 `{ hex, label }` entries; any
+  // entry without a valid 6-digit hex is silently dropped. Validated
+  // here against the same shape the client persists in localStorage so
+  // a tampered request can't smuggle in unusable rows.
+  router.post('/me/felt', authRequired, profileUpdateLimiter, async (req, res) => {
+    const HEX = /^#[0-9a-fA-F]{6}$/
+    const VALID_BUILTIN = new Set(['emerald', 'forest', 'sapphire', 'crimson', 'royal'])
+    const rawId = req.body?.colorId
+    let colorId = null
+    if (typeof rawId === 'string') {
+      if (VALID_BUILTIN.has(rawId)) colorId = rawId
+      else if (/^custom-[0-4]$/.test(rawId)) colorId = rawId
+    } else if (rawId === null) {
+      colorId = null
+    } else if (rawId !== undefined) {
+      return res.status(400).json({ error: 'invalid_color_id' })
+    }
+    let customColors = null
+    if (Array.isArray(req.body?.customColors)) {
+      customColors = req.body.customColors
+        .slice(0, 5)
+        .map(entry => {
+          if (!entry || typeof entry.hex !== 'string') return null
+          const hex = entry.hex.startsWith('#') ? entry.hex : `#${entry.hex}`
+          if (!HEX.test(hex)) return null
+          const label = typeof entry.label === 'string' && entry.label.length <= 24
+            ? entry.label
+            : 'Custom'
+          return { hex, label }
+        })
+        .filter(Boolean)
+    }
+    await query(
+      `UPDATE users
+          SET felt_color_id = $2,
+              felt_custom_colors = $3::jsonb,
+              updated_at = NOW()
+        WHERE id = $1`,
+      [req.user.id, colorId, customColors ? JSON.stringify(customColors) : null]
+    )
+    res.json({ feltColorId: colorId, feltCustomColors: customColors })
   })
 
   // === Native email/password auth ========================================

@@ -14,6 +14,86 @@ import { findUserById, touchLastActive } from "../users/userRepository.js"
 import { hydrateDailyFromRow } from "../dailies/dailyEngine.js"
 import { track as trackPresence } from "../users/presence.js"
 
+// Message-type → tool id, for the host-disabled-tools gate. Any message
+// landing here gets a room lookup + isToolDisabled() check before the
+// real handler runs. General rooms always pass through (the room's set
+// is empty); private rooms reject with a friendly "tool disabled" error
+// so a client that somehow still surfaces the action gets explicit
+// feedback instead of a silent no-op.
+const TOOL_FOR_TYPE = {
+  // Crypto market
+  'crypto:buy': 'crypto',
+  'crypto:sell': 'crypto',
+  'crypto:create': 'crypto',
+  'crypto:rug': 'crypto',
+  // Items & powers
+  [MESSAGE_TYPES.ITEM_USE]: 'items',
+  [MESSAGE_TYPES.ITEM_SCAM_RESOLVE]: 'items',
+  // Real estate
+  'asset:buy': 'assets',
+  'asset:sell': 'assets',
+  // Jobs board
+  'job:claim': 'jobs',
+  // Stock market (options share the same tool — they're a stock derivative)
+  'stock:buy': 'stocks',
+  'stock:sell': 'stocks',
+  'stock:sabotage': 'stocks',
+  'options:buy': 'stocks',
+  'options:close': 'stocks',
+  // World map
+  'world:claim': 'world',
+  'world:pandemic': 'world',
+  'world:offer': 'world',
+  'world:accept_offer': 'world',
+  'world:decline_offer': 'world',
+  'world:cancel_offer': 'world',
+  // Influence ops
+  'influence:run': 'influence',
+  // Bank loans
+  [MESSAGE_TYPES.POKER_LOAN]: 'bank',
+  [MESSAGE_TYPES.POKER_REPAY_LOAN]: 'bank',
+  [MESSAGE_TYPES.POKER_SET_AUTOPAY]: 'bank',
+  // In-hand side bets (place + cash-out)
+  'sidebet:place': 'sidebets',
+  'sidebet:sell':  'sidebets',
+  // Chat (table chat + emote/yell — same toggle hides the whole dock)
+  [MESSAGE_TYPES.CHAT]:         'chat',
+  [MESSAGE_TYPES.PLAYER_EMOTE]: 'chat',
+  [MESSAGE_TYPES.PLAYER_YELL]:  'chat',
+  // Bot seating: manual add + auto-fills + kick-all all live under one
+  // host toggle. "No bots in this room" is the common house rule.
+  [MESSAGE_TYPES.ADD_BOT]:               'bots',
+  [MESSAGE_TYPES.REMOVE_BOT]:            'bots',
+  [MESSAGE_TYPES.POKER_AUTO_FILL_BOTS]:   'bots',
+  [MESSAGE_TYPES.POKER_AUTO_FILL_NEURAL]: 'bots',
+  [MESSAGE_TYPES.POKER_AUTO_FILL_CUSTOM]: 'bots',
+  [MESSAGE_TYPES.POKER_AUTO_FILL_MLP]:    'bots',
+  [MESSAGE_TYPES.POKER_KICK_ALL_BOTS]:    'bots',
+  // Personal nuclear options
+  [MESSAGE_TYPES.RESET_MONEY]:    'reset',
+  [MESSAGE_TYPES.POKER_BIG_YAHU]: 'big_yahu',
+}
+
+const TOOL_LABELS = {
+  crypto:    'Crypto Market',
+  items:     'Items & Powers',
+  assets:    'Real Estate',
+  jobs:      'Jobs Board',
+  stocks:    'Stock Market',
+  world:     'World Map',
+  influence: 'Influence Ops',
+  bank:      'Bank Loans',
+  daily:     'Daily Challenge',
+  sidebets:  'Side Bets',
+  equity:    'Hand Equity HUD',
+  hud:       'Investment HUD',
+  finances:  'Finances Widget',
+  chat:      'Chat',
+  bots:      'Bot Seating',
+  reset:     'Reset Bankroll',
+  big_yahu:  'Big Yahu',
+}
+
 export class MessageHandler {
   constructor(playerManager, roomManager) {
     this.playerManager = playerManager
@@ -29,6 +109,19 @@ export class MessageHandler {
 
     try {
       const { type, data } = JSON.parse(message)
+
+      // Host-disabled-tool gate. Runs before the real handler so the
+      // check is in one place instead of scattered across nine different
+      // handleX methods. Only matters when the player is in a private
+      // room with a non-empty disabledTools set.
+      const gatedTool = TOOL_FOR_TYPE[type]
+      if (gatedTool) {
+        const room = this.roomManager.getPlayerRoom(player)
+        if (room && typeof room.isToolDisabled === 'function' && room.isToolDisabled(gatedTool)) {
+          const label = TOOL_LABELS[gatedTool] || gatedTool
+          return this.error(`${label} is disabled in this private room.`, player)
+        }
+      }
 
       switch (type) {
         case MESSAGE_TYPES.JOIN_GAME:
@@ -263,7 +356,14 @@ export class MessageHandler {
     const roomId = data?.roomId || null
     const game = data?.game || 'poker'
 
-    const result = this.roomManager.joinGame(player, mode, code, roomId, game)
+    // create_private only — host's tool toggles. Sanitized again inside
+    // joinGame against the canonical TOGGLEABLE_TOOL_IDS list; we just
+    // pass through here.
+    const extras = mode === 'create_private' && Array.isArray(data?.disabledTools)
+      ? { disabledTools: data.disabledTools }
+      : {}
+
+    const result = this.roomManager.joinGame(player, mode, code, roomId, game, extras)
 
     if (result.success) {
       player.send({
