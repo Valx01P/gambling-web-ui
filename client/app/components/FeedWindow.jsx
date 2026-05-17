@@ -13,9 +13,29 @@ import PostCard from './PostCard'
 const POS_KEY = 'pokerxyz:feedwin:pos'
 const SIZE_KEY = 'pokerxyz:feedwin:size'
 
-const MIN_W = 320
-const MIN_H = 320
-const TITLE_H = 36
+const MIN_W = 260
+const MIN_H = 260
+const TITLE_H = 32
+
+// Pick a sensible initial size + position when no persisted state is
+// available. Defaults shrink on small viewports so the window doesn't
+// blanket the table on a phone or a narrow desktop panel. Capped at
+// 70% of the viewport in either axis with a reasonable comfort ceiling.
+function defaultLayout() {
+  if (typeof window === 'undefined') {
+    return { x: 80, y: 72, w: 360, h: 500 }
+  }
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const w = Math.max(MIN_W, Math.min(380, Math.floor(vw * 0.7)))
+  const h = Math.max(MIN_H, Math.min(520, Math.floor(vh * 0.7)))
+  // Bias toward the top-left so the window doesn't cover the seat
+  // chrome on small viewports. The user can drag wherever they want
+  // — this is just where it opens for the first time.
+  const x = Math.max(16, Math.min(80, vw - w - 16))
+  const y = Math.max(16, Math.min(72, vh - h - 16))
+  return { x, y, w, h }
+}
 
 function loadJson(key, fallback) {
   if (typeof window === 'undefined') return fallback
@@ -54,8 +74,17 @@ function clamp({ x, y, w, h }) {
 export default function FeedWindow({ open, onClose, onBack }) {
   const { user } = useAuth()
   const wrapRef = useRef(null)
-  const [pos, setPos] = useState(() => loadJson(POS_KEY, { x: 80, y: 72 }))
-  const [size, setSize] = useState(() => loadJson(SIZE_KEY, { w: 440, h: 600 }))
+  // Lazy-init both pos + size from a single defaultLayout() so a fresh
+  // open on a small viewport doesn't slam down a 440x600 window when
+  // the screen is only 600 wide. Persisted values still win when set.
+  const [pos, setPos] = useState(() => {
+    const def = defaultLayout()
+    return loadJson(POS_KEY, { x: def.x, y: def.y })
+  })
+  const [size, setSize] = useState(() => {
+    const def = defaultLayout()
+    return loadJson(SIZE_KEY, { w: def.w, h: def.h })
+  })
   const [drag, setDrag] = useState(null) // { dx, dy }
   const [resize, setResize] = useState(null) // { x0, y0, w0, h0 }
 
@@ -181,13 +210,14 @@ export default function FeedWindow({ open, onClose, onBack }) {
       style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}
     >
       {/* Title bar — drag handle + close. Cursor flips to move when
-          hovering so the affordance is obvious. */}
+          hovering so the affordance is obvious. Tighter padding +
+          smaller text so the chrome doesn't dominate the window. */}
       <div
         onPointerDown={onTitleDown}
-        className="flex items-center justify-between gap-2 rounded-t-lg border-b border-zinc-700 bg-zinc-950/60 px-3 py-1.5 cursor-move select-none"
+        className="flex items-center justify-between gap-2 rounded-t-lg border-b border-zinc-700 bg-zinc-950/60 px-2 py-1 cursor-move select-none"
         style={{ height: TITLE_H }}
       >
-        <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-violet-200">
+        <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-violet-200">
           {onBack && (
             <button
               type="button"
@@ -195,21 +225,21 @@ export default function FeedWindow({ open, onClose, onBack }) {
               onClick={(e) => { e.stopPropagation(); onBack() }}
               aria-label="Back to Tools menu"
               title="Back to Tools menu"
-              className="inline-flex items-center gap-1 rounded-md border border-zinc-600/70 bg-zinc-800 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-zinc-100 transition-colors hover:bg-zinc-700"
+              className="inline-flex items-center gap-0.5 rounded-md border border-zinc-600/70 bg-zinc-800 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-100 transition-colors hover:bg-zinc-700"
             >
-              <span aria-hidden className="text-[12px] leading-none">←</span>
+              <span aria-hidden className="text-[11px] leading-none">←</span>
               Tools
             </button>
           )}
           <span aria-hidden>★</span>
-          <span>Social Media</span>
+          <span>Social</span>
         </div>
         <button
           type="button"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onClose() }}
           aria-label="Close feed window"
-          className="rounded px-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+          className="rounded px-1.5 text-base leading-none text-zinc-400 hover:bg-zinc-800 hover:text-white"
         >×</button>
       </div>
 
@@ -217,7 +247,7 @@ export default function FeedWindow({ open, onClose, onBack }) {
           flex-1 lets the composer pin to the top and the list fill the
           rest of the window. Tighter mobile padding so the window
           holds more content on small screens. */}
-      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2 text-white sm:p-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-1.5 text-white sm:gap-2 sm:p-2">
         {user && <PostComposer onPosted={(p) => setPosts(prev => [p, ...prev])} />}
         {loading && (
           <div className="rounded-lg border border-zinc-700/70 bg-zinc-900/40 p-3 text-center text-[11px] font-bold text-zinc-400 sm:p-4 sm:text-xs">

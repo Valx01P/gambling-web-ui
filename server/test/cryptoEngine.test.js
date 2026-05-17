@@ -18,9 +18,14 @@ function makeRoom() {
 }
 
 function fakePlayer({ id = 'p1', chips = 10_000, isBot = false } = {}) {
+  // 2026-05: crypto money now flows through bankBalance, not chips.
+  // Default the bank to whatever caller specified as `chips` so
+  // existing test arithmetic keeps working — they're effectively
+  // configuring the wallet that the engine touches.
   return {
     id,
     chips,
+    bankBalance: chips,
     isBot,
     username: id,
     _sent: [],
@@ -58,7 +63,7 @@ test('buy → costs chips, mints shares; sell → returns proceeds, clears basis
 
   const buy = engine.buy(p.id, btc.id, 600)
   assert.equal(buy.success, true)
-  assert.equal(p.chips, 4400)
+  assert.equal(p.bankBalance, 4400)
   const pos = engine.holdings.get(p.id).get(btc.id)
   assert.ok(pos.shares > 0)
   assert.equal(pos.costBasis, 600)
@@ -88,7 +93,7 @@ test('mint fee is deducted and owner gets allocated shares', () => {
   const p = fakePlayer({ chips: 5000 })
   room.addPlayer(p)
   engine.createCoin(p.id, { name: 'COIN', startPrice: 2, keepPercent: 0.75 })
-  assert.equal(p.chips, 5000 - 500, 'mint fee deducted')
+  assert.equal(p.bankBalance, 5000 - 500, 'mint fee deducted from bank')
   const coinId = engine.ownerCoinIds.get(p.id)
   const coin = engine.coins.get(coinId)
   assert.equal(coin.ownerId, p.id)
@@ -129,7 +134,7 @@ test('rug pull: owner cashes out + extracts a cut of outsider cost', () => {
   const coinId = engine.ownerCoinIds.get(owner.id)
   engine.buy(a.id, coinId, 2000)
   engine.buy(b.id, coinId, 3000)
-  const ownerChipsBeforeRug = owner.chips
+  const ownerBankBeforeRug = owner.bankBalance
   const result = engine.rugPull(owner.id)
   assert.equal(result.success, true)
   // ownerProceeds = ~current price * owner's shares (very close to 800k
@@ -137,7 +142,7 @@ test('rug pull: owner cashes out + extracts a cut of outsider cost', () => {
   // 2026-05: bonus bumped 0.30 → 0.60 alongside the change that wipes
   // every non-owner position on rug — see cryptoEngine.js RUG_KEEP_PERCENT.
   assert.equal(result.rugBonus, Math.floor(5000 * 0.60))
-  assert.ok(owner.chips > ownerChipsBeforeRug)
+  assert.ok(owner.bankBalance > ownerBankBeforeRug)
   const coin = engine.coins.get(coinId)
   assert.equal(coin.rugged, true)
   // Outsiders' positions are now WIPED — they lose what they put in.
@@ -163,22 +168,22 @@ test('bots cannot trade', () => {
   assert.equal(buy.error, 'bots_cannot_trade')
 })
 
-test('handlePlayerLeave liquidates holdings into the player\'s chips', () => {
+test('handlePlayerLeave liquidates holdings into the player\'s bank', () => {
   const { room, engine } = newEngine()
   const p = fakePlayer({ chips: 5000 })
   room.addPlayer(p)
   const btc = [...engine.coins.values()].find(c => c.symbol === 'BTC')
   engine.buy(p.id, btc.id, 1000)
-  const chipsAfterBuy = p.chips
+  const bankAfterBuy = p.bankBalance
   engine.handlePlayerLeave(p.id)
-  // Liquidated at the current price — chips should come back close to
-  // (but not necessarily exactly) the pre-buy total. At minimum the player
-  // shouldn't lose chips since no tick has happened.
-  assert.ok(p.chips >= chipsAfterBuy, 'leave returns some value')
+  // Liquidated at the current price — bank should come back close to
+  // (but not necessarily exactly) the pre-buy total. At minimum the
+  // player shouldn't lose bank since no tick has happened.
+  assert.ok(p.bankBalance >= bankAfterBuy, 'leave returns some value')
   assert.equal(engine.holdings.has(p.id), false)
 })
 
-test('insufficient chips on buy is rejected, no state mutation', () => {
+test('insufficient bank on buy is rejected, no state mutation', () => {
   const { room, engine } = newEngine()
   const p = fakePlayer({ chips: 50 })
   room.addPlayer(p)
@@ -186,7 +191,7 @@ test('insufficient chips on buy is rejected, no state mutation', () => {
   const result = engine.buy(p.id, btc.id, 1000)
   assert.equal(result.success, false)
   assert.equal(result.error, 'insufficient_chips')
-  assert.equal(p.chips, 50)
+  assert.equal(p.bankBalance, 50)
   assert.equal(engine.holdings.has(p.id), false)
 })
 
@@ -212,7 +217,7 @@ test('spectators can trade just like seated players', () => {
   const btc = [...engine.coins.values()].find(c => c.symbol === 'BTC')
   const buy = engine.buy(p.id, btc.id, 200)
   assert.equal(buy.success, true)
-  assert.equal(p.chips, 4800)
+  assert.equal(p.bankBalance, 4800)
 })
 
 test('getStatePayload scopes myPositions/myCoinId to the requester', () => {

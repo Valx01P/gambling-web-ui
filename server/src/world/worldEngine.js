@@ -161,6 +161,20 @@ const PANDEMIC_BASE_COST_PERCENT = 0.05  // 5% of total territory market cap
 // session so the flat map reads at a glance. 12 entries to handle a
 // table + spectators without collisions; if more players show up we
 // rotate (acceptable since 5-handed tables max out at 5 owners).
+// Deterministic 5–10% per-hand yield rate keyed off a territory id.
+// FNV-1a hash for a stable 32-bit value, then a uniform mapping into
+// [0.05, 0.10]. Same id always yields the same rate so room state
+// is reproducible across reloads.
+function _yieldRateForId(id) {
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  const u = (h % 10000) / 10000  // [0, 1)
+  return 0.05 + u * 0.05         // [0.05, 0.10)
+}
+
 const PLAYER_COLOR_PALETTE = [
   '#ef4444', // red
   '#3b82f6', // blue
@@ -185,13 +199,27 @@ export class WorldEngine {
     // its own world.
     this.catalog = new Map()
     for (const t of TERRITORIES) {
+      // Per-territory yield rate. Drawn deterministically from the
+      // region id so a fresh room always has the same yield-rate
+      // profile, but each region varies within the 5%-10%/hand band
+      // (decimal of currentCost) the user asked for. Squatting is
+      // now genuinely worthwhile — a region paying 7%/hand of its
+      // own cost pays back in ~14 hands.
+      const yieldRate = _yieldRateForId(t.id)
       this.catalog.set(t.id, {
         ...t,
         ownerId: null,
         ownerName: null,
         currentCost: t.costBase,
+        yieldRate,
+        // Pending offer queue. Each entry:
+        //   { id, buyerId, buyerName, price, createdAtHand }
+        // The buyer's bank is debited at offer time (escrow). The
+        // owner accept/decline drains or refunds the escrow.
+        offers: [],
       })
     }
+    this._offerSeq = 0
     // Pandemic state. activeUntil > handIndex means yields are
     // depressed and a release is in flight.
     this.pandemicActive = false
@@ -218,6 +246,11 @@ export class WorldEngine {
   }
 
   // ─── Territory claim ───────────────────────────────────────────────────
+  // 2026-05: hostile-takeover semantics are GONE. An owned territory
+  // can only change hands through the offer/accept flow below. This
+  // keeps regions a "real" investment — you hold yours and sell at
+  // your own will, and a richer rival can't just outbid you out of
+  // your bag. Empty territories still claim normally (no auction).
   claim(playerId, { territoryId } = {}) {
     const player = this._findPlayer(playerId)
     if (!player) return { success: false, error: 'not_at_table' }
@@ -225,32 +258,128 @@ export class WorldEngine {
     const t = this.catalog.get(territoryId)
     if (!t) return { success: false, error: 'unknown_territory' }
     if (t.ownerId === playerId) return { success: false, error: 'already_owned' }
-    if (player.chips < t.currentCost) return { success: false, error: 'insufficient_chips', cost: t.currentCost }
-
-    const prevOwner = t.ownerId ? this._findPlayer(t.ownerId) : null
-    const prevOwnerName = t.ownerName
-    player.chips -= t.currentCost
-    if (prevOwner) {
-      // Hostile takeover — previous owner gets the SALE PRICE back
-      // (the prior currentCost, not the new one). They lose the
-      // territory but recoup most of their investment.
-      prevOwner.chips += Math.floor(t.currentCost * 0.7)
+    if (t.ownerId) return { success: false, error: 'already_owned_by_other' }
+    if ((player.bankBalance || 0) < t.currentCost) {
+      return { success: false, error: 'insufficient_chips', cost: t.currentCost }
     }
+    player.bankBalance -= t.currentCost
     t.ownerId = playerId
     t.ownerName = player.username
     t.ownerColor = this._colorFor(playerId)
-    // Each successful claim doubles the next claim price so squatting
-    // gets exponentially expensive.
-    t.currentCost = Math.floor(t.currentCost * 2)
     this._broadcastState()
     this.broadcast({
       type: MESSAGE_TYPES.SYSTEM_MESSAGE,
-      data: { message: prevOwner
-        ? `🗺 ${player.username} took ${t.name} from ${prevOwnerName}.`
-        : `🗺 ${player.username} claimed ${t.name}.`
-      }
+      data: { message: `🗺 ${player.username} claimed ${t.name}.` }
     })
-    return { success: true, territoryId, cost: t.currentCost / 2 }
+    return { success: true, territoryId, cost: t.currentCost }
+  }
+
+  // ─── Offer / accept / decline for owned territories ───────────────────
+  // A buyer escrows their offer from their bank. The owner reviews
+  // the list and accepts (transfer + escrow → owner's bank) or
+  // declines (refund escrow). Cancel from the buyer side also
+  // refunds. Multiple offers from different buyers can sit on the
+  // same territory at once.
+
+  makeOffer(playerId, { territoryId, price } = {}) {
+    const player = this._findPlayer(playerId)
+    if (!player) return { success: false, error: 'not_at_table' }
+    if (player.isBot) return { success: false, error: 'bots_cannot_claim' }
+    const t = this.catalog.get(territoryId)
+    if (!t) return { success: false, error: 'unknown_territory' }
+    if (!t.ownerId) return { success: false, error: 'not_owned' }
+    if (t.ownerId === playerId) return { success: false, error: 'already_owned' }
+    const p = Math.floor(Number(price) || 0)
+    if (!Number.isFinite(p) || p < 1) return { success: false, error: 'invalid_price' }
+    if ((player.bankBalance || 0) < p) {
+      return { success: false, error: 'insufficient_chips', cost: p }
+    }
+    // Escrow now so the buyer can't double-spend the same bank
+    // money across multiple simultaneous offers. Refunded on
+    // decline / cancel; transferred on accept.
+    player.bankBalance -= p
+    const offer = {
+      id: `offer_${++this._offerSeq}`,
+      buyerId: playerId,
+      buyerName: player.username,
+      price: p,
+      createdAtHand: this.room.game?.handIndex || 0,
+    }
+    t.offers.push(offer)
+    this._broadcastState()
+    const owner = this._findPlayer(t.ownerId)
+    if (owner) {
+      owner.send?.({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `🗺 ${player.username} offered $${p.toLocaleString()} for ${t.name}.` }
+      })
+    }
+    return { success: true, offerId: offer.id, territoryId, price: p }
+  }
+
+  acceptOffer(playerId, { territoryId, offerId } = {}) {
+    const t = this.catalog.get(territoryId)
+    if (!t) return { success: false, error: 'unknown_territory' }
+    if (t.ownerId !== playerId) return { success: false, error: 'not_owner' }
+    const idx = t.offers.findIndex(o => o.id === offerId)
+    if (idx < 0) return { success: false, error: 'offer_not_found' }
+    const offer = t.offers[idx]
+    const buyer = this._findPlayer(offer.buyerId)
+    const owner = this._findPlayer(playerId)
+    if (!owner) return { success: false, error: 'owner_gone' }
+    // Escrow → owner's bank. Transfer ownership.
+    owner.bankBalance = (owner.bankBalance || 0) + offer.price
+    t.ownerId = buyer ? offer.buyerId : null
+    t.ownerName = buyer ? offer.buyerName : null
+    t.ownerColor = buyer ? this._colorFor(offer.buyerId) : null
+    t.currentCost = offer.price  // the new floor is what the new owner paid
+    // Refund every OTHER pending offer (they didn't win the auction).
+    const refunds = t.offers.filter(o => o.id !== offerId)
+    for (const r of refunds) {
+      const b = this._findPlayer(r.buyerId)
+      if (b) b.bankBalance = (b.bankBalance || 0) + r.price
+    }
+    t.offers = []
+    this.broadcast({
+      type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+      data: { message: `🤝 ${owner.username} sold ${t.name} to ${offer.buyerName} for $${offer.price.toLocaleString()}.` }
+    })
+    this._broadcastState()
+    return { success: true, territoryId, price: offer.price }
+  }
+
+  declineOffer(playerId, { territoryId, offerId } = {}) {
+    const t = this.catalog.get(territoryId)
+    if (!t) return { success: false, error: 'unknown_territory' }
+    if (t.ownerId !== playerId) return { success: false, error: 'not_owner' }
+    const idx = t.offers.findIndex(o => o.id === offerId)
+    if (idx < 0) return { success: false, error: 'offer_not_found' }
+    const offer = t.offers[idx]
+    const buyer = this._findPlayer(offer.buyerId)
+    if (buyer) buyer.bankBalance = (buyer.bankBalance || 0) + offer.price
+    t.offers.splice(idx, 1)
+    if (buyer) {
+      buyer.send?.({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `🚫 ${t.ownerName} declined your $${offer.price.toLocaleString()} offer for ${t.name}.` }
+      })
+    }
+    this._broadcastState()
+    return { success: true }
+  }
+
+  cancelOffer(playerId, { territoryId, offerId } = {}) {
+    const t = this.catalog.get(territoryId)
+    if (!t) return { success: false, error: 'unknown_territory' }
+    const idx = t.offers.findIndex(o => o.id === offerId)
+    if (idx < 0) return { success: false, error: 'offer_not_found' }
+    const offer = t.offers[idx]
+    if (offer.buyerId !== playerId) return { success: false, error: 'not_your_offer' }
+    const buyer = this._findPlayer(playerId)
+    if (buyer) buyer.bankBalance = (buyer.bankBalance || 0) + offer.price
+    t.offers.splice(idx, 1)
+    this._broadcastState()
+    return { success: true }
   }
 
   // ─── Pandemic release ──────────────────────────────────────────────────
@@ -268,8 +397,8 @@ export class WorldEngine {
     // the start of a session.
     const total = [...this.catalog.values()].reduce((s, t) => s + (t.currentCost || 0), 0)
     const cost = Math.max(100_000, Math.floor(total * PANDEMIC_BASE_COST_PERCENT))
-    if (player.chips < cost) return { success: false, error: 'insufficient_chips', cost }
-    player.chips -= cost
+    if ((player.bankBalance || 0) < cost) return { success: false, error: 'insufficient_chips', cost }
+    player.bankBalance -= cost
     this.pandemicActive = true
     this.pandemicActiveUntilHand = handIndex + PANDEMIC_DURATION_HANDS
     this.pandemicCooldowns.set(playerId, handIndex)
@@ -299,15 +428,21 @@ export class WorldEngine {
         data: { message: '🌍 Pandemic has subsided. World yields return to normal.' }
       })
     }
-    // Pay yields to each territory owner.
+    // Pay yields to each territory owner. Per the 2026-05 retune,
+    // the yield is a DECIMAL of the territory's currentCost (its
+    // per-region yieldRate sits in [5%, 10%]), so a region pays back
+    // on the order of 10-20 hands of squatting. Yields land in the
+    // BANK wallet — world income is off-table money like every other
+    // passive source.
     const yieldMul = this.pandemicActive ? PANDEMIC_YIELD_DROP : 1.0
     const payouts = new Map()
     for (const t of this.catalog.values()) {
       if (!t.ownerId) continue
       const owner = this._findPlayer(t.ownerId)
       if (!owner) continue
-      const paid = Math.floor((t.yieldBase || 0) * yieldMul)
-      owner.chips += paid
+      const rate = typeof t.yieldRate === 'number' ? t.yieldRate : 0.07
+      const paid = Math.floor((t.currentCost || 0) * rate * yieldMul)
+      owner.bankBalance = (owner.bankBalance || 0) + paid
       payouts.set(t.ownerId, (payouts.get(t.ownerId) || 0) + paid)
     }
     for (const [pid, total] of payouts) {
@@ -324,20 +459,42 @@ export class WorldEngine {
   // ─── Snapshot ──────────────────────────────────────────────────────────
   buildSnapshot(playerId) {
     return {
-      territories: [...this.catalog.values()].map(t => ({
-        id: t.id,
-        name: t.name,
-        color: t.color,
-        yieldBase: t.yieldBase,
-        currentCost: t.currentCost,
-        ownerId: t.ownerId,
-        ownerName: t.ownerName,
-        ownerColor: t.ownerColor || null,
-        region: t.region || 'other',
-        isMine: t.ownerId === playerId,
-        imageUrl: t.imageUrl || null,
-        countries: Array.isArray(t.countries) ? t.countries : [],
-      })),
+      territories: [...this.catalog.values()].map(t => {
+        const isMine = t.ownerId === playerId
+        // Offers visible to:
+        //   - the owner (so they can accept/decline)
+        //   - the buyer who submitted each one (so they can cancel)
+        // Other viewers see just the offer count (a hint that this
+        // region is being courted) but not individual prices.
+        const visibleOffers = (t.offers || []).filter(o =>
+          isMine || o.buyerId === playerId
+        )
+        return {
+          id: t.id,
+          name: t.name,
+          color: t.color,
+          // yieldRate is exposed so the client can render "+5.6%/hand"
+          // labels alongside the dollar yield estimate.
+          yieldRate: t.yieldRate || 0.07,
+          // The dollar yield this region would pay THIS hand at the
+          // current pandemic multiplier; kept on the wire to match
+          // the old `yieldBase` field name the client UI reads.
+          yieldBase: Math.floor((t.currentCost || 0) * (t.yieldRate || 0.07)),
+          currentCost: t.currentCost,
+          ownerId: t.ownerId,
+          ownerName: t.ownerName,
+          ownerColor: t.ownerColor || null,
+          region: t.region || 'other',
+          isMine,
+          imageUrl: t.imageUrl || null,
+          countries: Array.isArray(t.countries) ? t.countries : [],
+          // Offer queue — only owner / buyer see the full row, but
+          // every viewer sees the count so they know if a region is
+          // already being negotiated.
+          offers: visibleOffers,
+          offerCount: (t.offers || []).length,
+        }
+      }),
       myColor: this.playerColors.get(playerId) || null,
       pandemicActive: this.pandemicActive,
       pandemicEndsInHands: this.pandemicActive

@@ -68,6 +68,10 @@ export default function PlayerProfilePopover({
   // hiding the UI keeps spectators from seeing buttons that always fail).
   myId,
   myChips,
+  // Viewer's bank balance — used by PeerLoanPanel to decide whether the
+  // viewer can offer vs only request a loan. Loan eligibility is based
+  // on bank balance (the off-table wallet), not chips at the table.
+  myBankBalance = 0,
   myPeerLoans,
   negotiations,
   onPeerLoanSend,
@@ -274,7 +278,23 @@ export default function PlayerProfilePopover({
   }
 
   const isLinked = !!seat.publicUserId
-  const sessionProfit = (seat.chips ?? 0) - (seat.pokerBuyIn ?? 0)
+  // Poker P/L. Prefer the server-computed `profit` when present
+  // (that's the field the gameState seat-view publishes — it
+  // already folds in mid-hand bets + open side-bet stake so posting
+  // a blind doesn't show as an instant loss). Fall back to a
+  // client-side compute against either field name the seat might
+  // carry: `pokerBuyIn` from the room_update broadcast (Player.toJSON)
+  // or `buyIn` from the gameState broadcast (_buildPlayerView).
+  // Without that dual fallback, a fresh seat looked +$1000 because
+  // gameState publishes `buyIn` and the popover was only checking
+  // `pokerBuyIn` — undefined → profit = chips − 0 = +chips.
+  const sessionProfit = typeof seat.profit === 'number'
+    ? seat.profit
+    : (seat.chips ?? 0) - (seat.pokerBuyIn ?? seat.buyIn ?? 0)
+  // Bank P/L = how the off-table wallet has moved vs its starting
+  // balance. Stocks, options, crypto, assets, jobs all settle here,
+  // so this is the "investing / scamming" score, independent of poker.
+  const bankProfit = (seat.bankBalance ?? 0) - (seat.bankStartBalance ?? 0)
 
   return createPortal(
     <div
@@ -372,62 +392,57 @@ export default function PlayerProfilePopover({
               </div>
             )}
             <div className="mt-0.5 flex items-baseline justify-between gap-2">
-              <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Session P/L</span>
+              <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Poker P/L</span>
               <span className={`text-xs font-black tabular-nums ${sessionProfit >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
                 {fmtChips(sessionProfit)}
               </span>
             </div>
           </div>
-          {onSelfBudgetCommit && (
-            <div className="rounded-md border border-amber-700/40 bg-amber-950/20 px-2 py-1.5">
-              <div className="flex items-center justify-between gap-1">
-                <span className="text-[9px] font-black uppercase tracking-widest text-amber-200">Chips to play with</span>
-                {budgetDraft && (
+          {/* Bank wallet — separate score for the off-table money game
+              (stocks, options, crypto, assets, jobs, etc). Always
+              rendered for self so the player tracks the two
+              independently. */}
+          {(() => {
+            const overdrawn = (seat.bankBalance ?? 0) < 0
+            return (
+              <div className={`rounded-md border px-2 py-1.5 ${overdrawn ? 'border-red-500/50 bg-red-950/30' : 'border-sky-700/40 bg-sky-950/20'}`}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-sky-200">Bank balance</span>
+                  <span className={`text-xs font-black tabular-nums ${overdrawn ? 'text-red-300' : 'text-white'}`}>${(seat.bankBalance ?? 0).toLocaleString()}</span>
+                </div>
+                <div className="mt-0.5 flex items-baseline justify-between gap-2">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-sky-200">Bank P/L</span>
+                  <span className={`text-xs font-black tabular-nums ${bankProfit >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                    {fmtChips(bankProfit)}
+                  </span>
+                </div>
+                {overdrawn ? (
                   <button
                     type="button"
                     onClick={() => {
-                      setBudgetDraft('')
-                      onSelfBudgetCommit(null)
+                      // Tell the page to swap the active tools panel
+                      // to the bank loan UI. Page.jsx listens for this
+                      // event so the popover doesn't need a direct
+                      // panel-router prop.
+                      window.dispatchEvent(new CustomEvent('gwu:open-bank-panel'))
+                      onClose?.()
                     }}
-                    className="text-[9px] font-black uppercase tracking-widest text-amber-200/70 hover:text-amber-100"
-                    title="Clear — bring all chips back to the table"
+                    className="mt-1 inline-flex w-full items-center justify-center rounded-md border border-red-400/60 bg-red-500/15 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-red-100 hover:bg-red-500/25"
                   >
-                    Clear
+                    Take a bank loan →
                   </button>
+                ) : (
+                  <div className="mt-0.5 text-[9px] font-bold text-sky-300/70">
+                    Stocks · options · crypto · assets · jobs settle here.
+                  </div>
                 )}
               </div>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={budgetDraft}
-                placeholder="all your chips"
-                onChange={(e) => setBudgetDraft(e.target.value.replace(/[^0-9]/g, ''))}
-                onBlur={() => {
-                  const live = typeof seat.pokerBudget === 'number' ? seat.pokerBudget : null
-                  const next = budgetDraft === '' ? null : Number(budgetDraft)
-                  if (next === live) return
-                  onSelfBudgetCommit(next)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    const live = typeof seat.pokerBudget === 'number' ? seat.pokerBudget : null
-                    const next = budgetDraft === '' ? null : Number(budgetDraft)
-                    if (next !== live) onSelfBudgetCommit(next)
-                    e.currentTarget.blur()
-                  } else if (e.key === 'Escape') {
-                    const live = typeof seat.pokerBudget === 'number' ? seat.pokerBudget : null
-                    setBudgetDraft(live === null ? '' : String(live))
-                    e.currentTarget.blur()
-                  }
-                }}
-                className="mt-0.5 w-full rounded border border-zinc-700 bg-zinc-950/60 px-2 py-0.5 text-xs font-black tabular-nums text-amber-100 placeholder-amber-200/30 outline-none"
-                title="Sets your table chips right now. Excess chips move to your reserves; you rebuy from reserves when you bust."
-              />
-              <div className="mt-0.5 text-[9px] font-bold text-amber-200/60 leading-tight">
-                Excess chips go to your reserves. If you bust, you rebuy from there.
-              </div>
-            </div>
-          )}
+            )
+          })()}
+          {/* "Chips to play with" input intentionally removed. The
+              poker stack is hard-capped at CHIP_STACK_MAX (1000) and
+              auto-rebuy draws from the bank wallet, so a per-seat
+              budget knob no longer has a job. */}
         </div>
       )}
 
@@ -498,6 +513,26 @@ export default function PlayerProfilePopover({
                 <Stat label="Luck" value={`${info.luckScore ?? 5}/10`} accent={luckAccent(info.luckScore)} />
                 <Stat label="Side bets won" value={info.sideBetsWon ?? 0} />
               </div>
+              {/* Bank wallet card — visible to other viewers too, since
+                  the user explicitly wants the bank balance to surface
+                  when someone clicks your profile (lender knows how
+                  rich the borrower is before quoting a peer loan). */}
+              {(seat.bankBalance != null || seat.bankStartBalance != null) && (
+                <div className="mt-2 rounded-md border border-sky-700/40 bg-sky-950/20 px-2 py-1.5">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-sky-200">Bank balance</span>
+                    <span className={`text-xs font-black tabular-nums ${(seat.bankBalance ?? 0) < 0 ? 'text-red-300' : 'text-white'}`}>
+                      ${(seat.bankBalance ?? 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex items-baseline justify-between gap-2">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-sky-200">Bank P/L</span>
+                    <span className={`text-xs font-black tabular-nums ${bankProfit >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                      {fmtChips(bankProfit)}
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="mt-2 grid grid-cols-2 gap-2 text-center">
                 <Stat label="Followers" value={info.followersCount} />
                 <Stat label="Following" value={info.followingCount} />
@@ -529,31 +564,55 @@ export default function PlayerProfilePopover({
         </>
       )}
 
-      {/* Anonymous body — only session signal exists. Hidden when this
-          is the viewer's own seat (the self-block above covers their
-          money + budget; the "Anonymous — no profile" subtitle would
-          read as redundant). */}
+      {/* Anonymous body — only session signals exist. Splits the two
+          P/Ls (poker chip P/L vs bank wallet P/L) so the viewer can
+          see at a glance who's the best poker player vs who's the
+          best business scammer. Compact layout mirrors the self-view
+          rows above: small label/value pairs in two thin cards, no
+          oversized Stat tiles — keeps the popover from running tall. */}
       {!isLinked && seat?.id !== myId && (
-        <div className="mt-3 rounded-md border border-zinc-700/60 bg-zinc-950/40 p-2">
-          <div className="mb-1 text-[10px] font-black uppercase tracking-widest text-zinc-300">This session</div>
-          <div className="grid grid-cols-2 gap-2 text-center">
-            <Stat label="Chips" value={`$${(seat.chips ?? 0).toLocaleString()}`} />
-            <Stat label="P/L" value={fmtChips(sessionProfit)} accent={sessionProfit >= 0 ? 'emerald' : 'red'} />
+        <div className="mt-2 space-y-1.5">
+          <div className="rounded-md border border-zinc-700/60 bg-zinc-950/40 px-2 py-1.5">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">At the table</span>
+              <span className="text-xs font-black tabular-nums text-white">${(seat.chips ?? 0).toLocaleString()}</span>
+            </div>
+            <div className="mt-0.5 flex items-baseline justify-between gap-2">
+              <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Poker P/L</span>
+              <span className={`text-xs font-black tabular-nums ${sessionProfit >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                {fmtChips(sessionProfit)}
+              </span>
+            </div>
           </div>
-          <div className="mt-2 text-[10px] font-bold text-zinc-500">
-            Anonymous players don't keep an ELO — they'd need to "Play as YOU" from the lobby for their hands to count.
+          {(() => {
+            const overdrawn = (seat.bankBalance ?? 0) < 0
+            return (
+              <div className={`rounded-md border px-2 py-1.5 ${overdrawn ? 'border-red-500/50 bg-red-950/30' : 'border-sky-700/40 bg-sky-950/20'}`}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-sky-200">Bank balance</span>
+                  <span className={`text-xs font-black tabular-nums ${overdrawn ? 'text-red-300' : 'text-white'}`}>${(seat.bankBalance ?? 0).toLocaleString()}</span>
+                </div>
+                <div className="mt-0.5 flex items-baseline justify-between gap-2">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-sky-200">Bank P/L</span>
+                  <span className={`text-xs font-black tabular-nums ${bankProfit >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                    {fmtChips(bankProfit)}
+                  </span>
+                </div>
+              </div>
+            )
+          })()}
+          <div className="text-[9px] font-bold text-zinc-500 leading-snug">
+            Anonymous — no ELO until they "Play as YOU".
           </div>
         </div>
       )}
 
-      {/* Quick-contact row. For signed-in targets we offer Direct Message
-          (fires the gwu:open-dm event the popup is listening for); for
-          anon seats we offer @-in-chat (the popover's parent handles
-          inserting "@name " into the chat input). Nudge sits beside
-          either path so a sender can prod a slow player without typing.
-          Hidden for self and bots. */}
+      {/* Quick-contact row. Compact px-2 py-1 buttons so the popover
+          chrome doesn't dwarf the loan panel below — the loan form is
+          the headline action on a seat-click popover, everything else
+          is supporting. Hidden for self and bots. */}
       {seat?.id !== myId && !seat?.isBot && (onNudge || isLinked || onMentionInChat) && (
-        <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="mt-2 grid grid-cols-2 gap-1.5">
           {isLinked && info?.id && (
             <button
               type="button"
@@ -572,7 +631,7 @@ export default function PlayerProfilePopover({
                 }))
                 onClose?.()
               }}
-              className="rounded-md border border-sky-400/60 bg-sky-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-sky-100 hover:bg-sky-500/25"
+              className="rounded-md border border-sky-400/60 bg-sky-500/15 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-sky-100 hover:bg-sky-500/25"
               title={`DM ${info?.displayName || seat.username}`}
             >
               DM
@@ -582,7 +641,7 @@ export default function PlayerProfilePopover({
             <button
               type="button"
               onClick={() => { onMentionInChat(seat.username || 'player'); onClose?.() }}
-              className="rounded-md border border-sky-400/60 bg-sky-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-sky-100 hover:bg-sky-500/25"
+              className="rounded-md border border-sky-400/60 bg-sky-500/15 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-sky-100 hover:bg-sky-500/25"
               title={`Mention ${seat.username} in chat — they'll see a session toast`}
             >
               @ chat
@@ -592,7 +651,7 @@ export default function PlayerProfilePopover({
             <button
               type="button"
               onClick={() => onNudge(seat.id)}
-              className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-amber-100 hover:bg-amber-500/20"
+              className="rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-amber-100 hover:bg-amber-500/20"
               title="Send a subtle toast — works whether they're signed in or not"
             >
               Nudge
@@ -606,12 +665,12 @@ export default function PlayerProfilePopover({
           path for talking to someone with no account). Collapses
           itself away when the popover closes. */}
       {onSessionDm && seat?.id !== myId && !seat?.isBot && (
-        <div className="mt-2">
+        <div className="mt-1.5">
           {!sessionDmOpen ? (
             <button
               type="button"
               onClick={() => setSessionDmOpen(true)}
-              className="w-full rounded-md border border-cyan-500/50 bg-cyan-500/10 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-cyan-100 hover:bg-cyan-500/20"
+              className="w-full rounded-md border border-cyan-500/50 bg-cyan-500/10 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-cyan-100 hover:bg-cyan-500/20"
               title="One-off session message — toast for them, no history"
             >
               Send session message
@@ -666,11 +725,11 @@ export default function PlayerProfilePopover({
           range is whatever they were coded with, not a guess). Toggles
           inline; the popover grows vertically when opened. */}
       {seat?.id !== myId && !seat?.isBot && (
-        <div className="mt-3">
+        <div className="mt-1.5">
           <button
             type="button"
             onClick={() => setShowRangeMatrix(s => !s)}
-            className="w-full rounded-md border border-zinc-600/60 bg-zinc-800 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-zinc-200 hover:bg-zinc-700"
+            className="w-full rounded-md border border-zinc-600/60 bg-zinc-800 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-200 hover:bg-zinc-700"
           >
             {showRangeMatrix ? 'Hide hand range' : 'Show hand range'}
           </button>
@@ -691,6 +750,7 @@ export default function PlayerProfilePopover({
         <PeerLoanPanel
           myId={myId}
           myChips={myChips}
+          myBankBalance={myBankBalance}
           targetSeat={seat}
           negotiations={negotiations}
           myPeerLoans={myPeerLoans}
@@ -707,27 +767,27 @@ export default function PlayerProfilePopover({
         const votes = poll?.votes || 0
         const canKick = Number.isFinite(threshold) && threshold > 0
         return (
-          <div className="mt-3 rounded-md border border-red-500/30 bg-red-950/30 p-2">
+          <div className="mt-1.5 rounded-md border border-red-500/30 bg-red-950/30 px-2 py-1.5">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
-                <div className="text-[10px] font-black uppercase tracking-widest text-red-300">Vote to kick</div>
-                <div className="text-[10px] font-bold text-zinc-400 leading-snug">
+                <div className="text-[9px] font-black uppercase tracking-widest text-red-300">Vote to kick</div>
+                <div className="text-[9px] font-bold text-zinc-400 leading-snug">
                   {canKick
-                    ? `${votes}/${threshold} votes · resets every 3 min`
-                    : 'Need 3+ players at the table'}
+                    ? `${votes}/${threshold} votes · 3-min reset`
+                    : 'Need 3+ players'}
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => onKickVote(seat.id)}
                 disabled={!canKick}
-                className="shrink-0 rounded-md border border-red-400/60 bg-red-500/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-red-100 hover:bg-red-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="shrink-0 rounded-md border border-red-400/60 bg-red-500/15 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-red-100 hover:bg-red-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Kick
               </button>
             </div>
             {canKick && (
-              <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-zinc-800">
+              <div className="mt-1 h-0.5 overflow-hidden rounded-full bg-zinc-800">
                 <div
                   className="h-full rounded-full bg-red-400 transition-all"
                   style={{ width: `${Math.min(100, (votes / threshold) * 100)}%` }}

@@ -1,12 +1,26 @@
 export const POKER_CONFIG = {
   MAX_PLAYERS: 5,
   MIN_PLAYERS: 2,
-  // Initial bankroll for every Player object — seated AND spectator. Same
-  // pool funds both poker bets and side-bet props, so the number has to be
-  // generous enough for a spectator to gamble all evening without needing
-  // a bank loan immediately. Side bets + run-it-twice are calibrated to
-  // this size (run-it-twice triggers at 10k pot, side-bets min bet 10).
+  // Initial poker bankroll — chips on the table. Every player buys in
+  // for this much; busting at zero auto-rebuys another batch of this
+  // size, funded from the bank account below. Keeping it small means
+  // every hand at the table is the same scale of stack regardless of
+  // how well the player's investing portfolio is doing.
   STARTING_CHIPS: 1000,
+  // Starting balance of the SEPARATE bank account. Stocks, crypto,
+  // options, assets, jobs, world yields — all settle here, not in
+  // the poker stack. When the poker stack busts, we draw STARTING_CHIPS
+  // from this account to rebuy. The split keeps "I lost a big poker
+  // hand" cleanly distinct from "my stock portfolio is down" so the
+  // P/L badges read honestly.
+  BANK_START_BALANCE: 5000,
+  // Hard cap on the on-table poker stack. Wins that would push a seat
+  // above this size sweep the excess into the bank wallet so every
+  // hand is played at the same scale of stacks. Combined with the
+  // 5000 chip-stack maximum on blinds (50/100), the table economy
+  // stays a tight one-buy-in game regardless of how rich the player's
+  // bank account gets from outside investments.
+  CHIP_STACK_MAX: 1000,
   SMALL_BLIND: 5,
   BIG_BLIND: 10,
   MIN_RAISE: 10,
@@ -15,37 +29,20 @@ export const POKER_CONFIG = {
 }
 
 // Allowed blind levels at the table. Validated server-side so a malicious
-// client can't propose arbitrary numbers. Tail end of the list (1k/2k
-// through the 500M/1B "absurd" tiers) is for deep-stack contest mode /
-// late tournament feel and high-stakes trolling — the buy-in at
-// STARTING_CHIPS=10k means the absurd tiers require loans, but the
-// chip math still works.
+// client can't propose arbitrary numbers. 2026-05: ladder collapsed to
+// the small-stack range only — the poker stack is hard-capped at 1000
+// chips (see CHIP_STACK_MAX), so blinds in the K+ range would force
+// everyone all-in on the post. Off-table earnings live in the bank
+// wallet, not the poker stack, so we don't need huge blinds anymore.
 // IMPORTANT: must stay in sync with client/app/poker/page.jsx BLIND_LEVELS.
 export const BLIND_LEVELS = [
-  { id: '5_10',           small: 5,         big: 10         },
-  { id: '15_25',          small: 15,        big: 25         },
-  { id: '25_50',          small: 25,        big: 50         },
-  { id: '50_100',         small: 50,        big: 100        },
-  { id: '100_200',        small: 100,       big: 200        },
-  { id: '250_500',        small: 250,       big: 500        },
-  { id: '500_1000',       small: 500,       big: 1000       },
-  { id: '1000_2000',      small: 1000,      big: 2000       },
-  { id: '2000_4000',      small: 2000,      big: 4000       },
-  { id: '4000_8000',      small: 4000,      big: 8000       },
-  { id: '8000_16000',     small: 8000,      big: 16000      },
-  { id: '16000_32000',    small: 16000,     big: 32000      },
-  { id: '50000_100000',   small: 50000,     big: 100000     },
-  { id: '150000_300000',  small: 150000,    big: 300000     },
-  { id: '500000_1m',      small: 500000,    big: 1000000    },
-  { id: '1m_2m',          small: 1000000,   big: 2000000    },
-  { id: '5m_10m',         small: 5000000,   big: 10000000   },
-  { id: '50m_100m',       small: 50000000,  big: 100000000  },
-  { id: '500m_1b',        small: 500000000,    big: 1000000000    },
-  // Trillion tier — keep in sync with client BLIND_LEVELS.
-  { id: '5b_10b',         small: 5000000000,    big: 10000000000    },
-  { id: '50b_100b',       small: 50000000000,   big: 100000000000   },
-  { id: '500b_1t',        small: 500000000000,  big: 1000000000000  },
-  { id: '5t_10t',         small: 5000000000000, big: 10000000000000 }
+  { id: '1_2',    small: 1,   big: 2   },
+  { id: '2_3',    small: 2,   big: 3   },
+  { id: '5_10',   small: 5,   big: 10  },
+  { id: '10_15',  small: 10,  big: 15  },
+  { id: '20_25',  small: 20,  big: 25  },
+  { id: '25_50',  small: 25,  big: 50  },
+  { id: '50_100', small: 50,  big: 100 },
 ]
 
 // Approvals required to apply a blinds change, indexed by # of seated humans

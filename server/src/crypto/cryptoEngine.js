@@ -22,6 +22,14 @@ const TICK_MS = 2000
 const NUM_SCAM_COINS = 4
 const MAX_PLAYER_COINS = 1            // per player
 const PLAYER_COIN_FEE = 500           // chips burned to mint
+// Per-hand anonymous coin mint. The market keeps spawning fresh meme
+// tickers every hand so there's always new candy to chase — and any
+// player-launched coin blends into the same stream so other players
+// can't tell which is which. Capped so the universe doesn't bloat
+// indefinitely; the oldest auto-mints retire when we breach.
+const AUTO_MINT_PER_HAND_MIN = 1
+const AUTO_MINT_PER_HAND_MAX = 3
+const SCAM_COIN_CAP = 18              // hard cap on simultaneous scam coins
 // Owner's rug bonus as a fraction of outsiders' total cost basis.
 // Bumped 0.30 → 0.60 in 2026-05 alongside the change that wipes
 // holders' positions entirely (see rugPull). The trolling has to
@@ -84,13 +92,12 @@ export class CryptoMarketEngine {
   handlePlayerLeave(playerId) {
     const player = this._findPlayer(playerId)
     const bag = this.holdings.get(playerId)
-    if (!bag) return
-    if (player) {
+    if (player && bag) {
       for (const [coinId, pos] of bag) {
         const coin = this.coins.get(coinId)
         if (!coin || pos.shares <= 0) continue
         const proceeds = Math.floor(pos.shares * coin.price)
-        if (proceeds > 0) player.chips += proceeds
+        if (proceeds > 0) player.bankBalance = (player.bankBalance || 0) + proceeds
       }
     }
     this.holdings.delete(playerId)
@@ -139,12 +146,20 @@ export class CryptoMarketEngine {
   getStatePayload(forPlayerId = null) {
     const coins = []
     for (const coin of this.coins.values()) {
-      // Top holders — sort by current share count, take top 5. Lets a
-      // would-be dumper see exactly who they're about to wreck (and
-      // lets a would-be buyer see whether one whale dominates the
-      // float, which is its own warning).
+      // Top holders — sort by current share count, take top 5.
+      //
+      // Anonymity rule for player-minted coins: when the viewer is NOT
+      // the coin's owner, we exclude the owner from this list entirely.
+      // The owner always holds the lion's share of float (mint allocates
+      // 50-100% to them), which would otherwise tip off non-owners that
+      // a real player launched this coin. Excluding them makes the
+      // top-holders panel look like a typical "few small buyers, no
+      // whale" auto-minted scam coin.
+      const isOwnCoinForViewer = forPlayerId && coin.ownerId === forPlayerId
+      const hideOwnerFromHolders = coin.kind === 'player' && !isOwnCoinForViewer
       const holders = []
       for (const [pid, bag] of this.holdings) {
+        if (hideOwnerFromHolders && pid === coin.ownerId) continue
         const pos = bag.get(coin.id)
         if (!pos || pos.shares <= 0) continue
         const p = this._findPlayer(pid)
@@ -247,7 +262,9 @@ export class CryptoMarketEngine {
     if (!Number.isFinite(spend) || spend < MIN_TRADE_CHIPS) {
       return { success: false, error: 'invalid_amount' }
     }
-    if (player.chips < spend) return { success: false, error: 'insufficient_chips' }
+    // Crypto trades hit the bank wallet only — keeps the poker
+    // stack untouched so a market move doesn't risk a busted seat.
+    if ((player.bankBalance || 0) < spend) return { success: false, error: 'insufficient_chips' }
 
     const priceAtTrade = coin.price
     const shares = spend / priceAtTrade
@@ -263,7 +280,7 @@ export class CryptoMarketEngine {
       coin.outstandingHeld += shares
     }
 
-    player.chips -= spend
+    player.bankBalance -= spend
 
     const bag = this._getOrInitBag(playerId)
     const prev = bag.get(coinId) || { shares: 0, costBasis: 0 }
@@ -309,7 +326,7 @@ export class CryptoMarketEngine {
 
     const priceAtTrade = coin.price
     const proceeds = Math.floor(toSell * priceAtTrade)
-    player.chips += proceeds
+    player.bankBalance = (player.bankBalance || 0) + proceeds
 
     // Reduce cost basis proportionally — keeps realized vs unrealized
     // accounting honest when the player sells partial size.
@@ -361,7 +378,9 @@ export class CryptoMarketEngine {
     if (this.ownerCoinIds.has(playerId)) {
       return { success: false, error: 'already_minted' }
     }
-    if (player.chips < PLAYER_COIN_FEE) {
+    // Mint fee paid from the bank wallet — same surface as other
+    // crypto-market money flows.
+    if ((player.bankBalance || 0) < PLAYER_COIN_FEE) {
       return { success: false, error: 'insufficient_chips' }
     }
 
@@ -378,7 +397,7 @@ export class CryptoMarketEngine {
       ? opts.name.trim().slice(0, 12).toUpperCase().replace(/[^A-Z0-9]/g, '')
       : ''
 
-    player.chips -= PLAYER_COIN_FEE
+    player.bankBalance -= PLAYER_COIN_FEE
 
     const id = nextCoinId('coin')
     const meme = generateMemeCoin(id)
@@ -451,7 +470,9 @@ export class CryptoMarketEngine {
     const outsidersCost = this._outsideInvested.get(coinId) || 0
     const rugBonus = Math.floor(outsidersCost * RUG_KEEP_PERCENT)
 
-    player.chips += ownerProceeds + rugBonus
+    // Rug proceeds + bonus land in the bank wallet — all crypto
+    // money paths route here, never to the poker stack.
+    player.bankBalance = (player.bankBalance || 0) + ownerProceeds + rugBonus
 
     // 2026-05: actually drain holders. Pre-change, rugging crashed the
     // chart but every outsider could still in theory sell at the floor
@@ -554,6 +575,57 @@ export class CryptoMarketEngine {
       this.holdings.set(playerId, bag)
     }
     return bag
+  }
+
+  // Per-hand hook from PokerRoom. Mints 1-3 anonymous scam coins on
+  // every hand-end and retires the oldest plain-scam coins when the
+  // universe grows past SCAM_COIN_CAP. Player-minted coins are NEVER
+  // retired here — only the auto-mint pool churns, so a player's
+  // shitcoin survives until they rug it or leave.
+  onHandEnd(_handIndex = 0) {
+    // 1) Retire the oldest auto-mints if we're over the cap. We never
+    //    cull player-launched coins or rugged ones (they're already
+    //    dead chart-wise but holders may still be selling dust).
+    const sortableAutos = [...this.coins.values()]
+      .filter(c => c.kind === 'scam')
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+    const wantMint = AUTO_MINT_PER_HAND_MIN
+      + Math.floor(Math.random() * (AUTO_MINT_PER_HAND_MAX - AUTO_MINT_PER_HAND_MIN + 1))
+    const projectedCount = sortableAutos.length + wantMint
+    const overflow = Math.max(0, projectedCount - SCAM_COIN_CAP)
+    for (let i = 0; i < overflow && i < sortableAutos.length; i++) {
+      const dead = sortableAutos[i]
+      this.coins.delete(dead.id)
+      this._outsideInvested.delete(dead.id)
+      // Any holdings sitting on a retired coin become worthless — we
+      // already broadcasted them; clients drop the coin from the list
+      // on next snapshot.
+    }
+
+    // 2) Mint fresh anonymous coins. Same makeCoin args as the
+    //    initial spawn so they're indistinguishable from the day-zero
+    //    pool (and from player-launched coins, which also report
+    //    kind='scam' to non-owners).
+    for (let i = 0; i < wantMint; i++) {
+      const id = nextCoinId('scam')
+      const meme = generateMemeCoin(id)
+      const scamLiquidity = 2_000_000 + Math.random() * 3_000_000
+      const coin = makeCoin({
+        id,
+        symbol: meme.symbol,
+        name: meme.name,
+        kind: 'scam',
+        price: 0.001 + Math.random() * 0.1,
+        liquidity: scamLiquidity,
+        impactCap: 0.40
+      })
+      coin._initialLiquidity = scamLiquidity
+      this.coins.set(id, coin)
+    }
+
+    if (wantMint > 0 || overflow > 0) {
+      this._broadcastState({ reason: 'auto_mint' })
+    }
   }
 
   _spawnInitial() {

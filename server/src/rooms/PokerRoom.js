@@ -180,6 +180,8 @@ export class PokerRoom {
           catch (err) { console.error('[jobs] hand-end hook failed:', err.message) }
           try { this.stockEngine?.onHandEnd(this.game?.handIndex || 0) }
           catch (err) { console.error('[stocks] hand-end hook failed:', err.message) }
+          try { this.cryptoEngine?.onHandEnd(this.game?.handIndex || 0) }
+          catch (err) { console.error('[crypto] hand-end hook failed:', err.message) }
           try { this.optionsEngine?.onHandEnd(this.game?.handIndex || 0) }
           catch (err) { console.error('[options] hand-end hook failed:', err.message) }
           try { this.worldEngine?.onHandEnd(this.game?.handIndex || 0) }
@@ -619,6 +621,11 @@ export class PokerRoom {
         proposerName: proposer.username,
         approvalsNeeded: needed,
         approvalsCount: proposal.approvals.size,
+        // Per-player breakdown so the proposer (and anyone else) can
+        // see who has and hasn't responded yet. Client maps IDs to
+        // usernames against its seat list.
+        approvedBy: Array.from(proposal.approvals),
+        rejectedBy: Array.from(proposal.rejections),
         humanCount,
         expiresAt: proposal.expiresAt
       }
@@ -661,6 +668,8 @@ export class PokerRoom {
           proposerName: proposal.proposerName,
           approvalsNeeded: proposal.needed,
           approvalsCount: proposal.approvals.size,
+          approvedBy: Array.from(proposal.approvals),
+          rejectedBy: Array.from(proposal.rejections),
           humanCount: this.countSeatedHumans(),
           expiresAt: proposal.expiresAt
         }
@@ -1378,35 +1387,44 @@ export class PokerRoom {
     if (this._humanRebuyGuard) return
     this._humanRebuyGuard = true
     try {
-      const bb = this.game?.bigBlind || POKER_CONFIG.BIG_BLIND || 10
       const startingStack = POKER_CONFIG.STARTING_CHIPS || 1000
-      const rebuySize = Math.max(startingStack, bb * 4)
+      // Always rebuy at the fixed starting-stack size — chips on the
+      // table are now decoupled from off-table earnings (the bank
+      // account), so a single fixed buy-in keeps every hand at the
+      // same scale regardless of how much the player has in stocks
+      // / crypto / etc. Funding priority:
+      //   1) pokerReserves (legacy shelve mechanic)
+      //   2) bankBalance (new persistent wallet)
+      //   3) free-grant floor — last resort so a totally broke human
+      //      can still keep clicking buttons
       for (const p of [...this.players.values()]) {
         if (p.isBot) continue
         if (!p || p.chips > 0) continue
         const reserves = Math.max(0, p.pokerReserves || 0)
-        const hasBudget = typeof p.pokerBudget === 'number' && p.pokerBudget > 0
-        if (reserves <= 0 && !hasBudget) continue
-        // Rebuy is always the fixed size — partial cover from reserves,
-        // the gap topped up by the free-grant floor so the player ends
-        // up with a clean starting stack every bust. Extra reserves
-        // stay shelved for the next bust.
-        const fromReserves = Math.min(reserves, rebuySize)
-        const fromFloor = rebuySize - fromReserves
-        const rebuyAmount = rebuySize
+        const bank = Math.max(0, p.bankBalance || 0)
+        const rebuyAmount = startingStack
+        const fromReserves = Math.min(reserves, rebuyAmount)
+        const remainingAfterReserves = rebuyAmount - fromReserves
+        const fromBank = Math.min(bank, remainingAfterReserves)
+        const fromFloor = remainingAfterReserves - fromBank
         if (fromReserves > 0) p.pokerReserves = reserves - fromReserves
-        const source = fromReserves > 0 && fromFloor === 0
-          ? 'reserves'
-          : fromFloor > 0 && fromReserves > 0
-            ? 'mixed'
-            : 'fallback'
+        if (fromBank > 0) p.bankBalance = bank - fromBank
         p.chips = rebuyAmount
         p.pokerBuyIn = (p.pokerBuyIn || 0) + rebuyAmount
-        const msg = source === 'reserves'
-          ? `${p.username} rebought for $${rebuyAmount.toLocaleString()} from reserves.`
-          : source === 'mixed'
-            ? `${p.username} rebought $${rebuyAmount.toLocaleString()} ($${fromReserves.toLocaleString()} from reserves, rest granted).`
-            : `${p.username} was out of money — granted a $${rebuyAmount.toLocaleString()} fresh stack.`
+        const source = fromBank > 0 && fromFloor === 0
+          ? 'bank'
+          : fromReserves > 0 && fromBank === 0 && fromFloor === 0
+            ? 'reserves'
+            : fromFloor === 0
+              ? 'mixed'
+              : 'fallback'
+        const msg = source === 'bank'
+          ? `${p.username} busted — auto-rebought $${rebuyAmount.toLocaleString()} from bank (bank: $${p.bankBalance.toLocaleString()} left).`
+          : source === 'reserves'
+            ? `${p.username} rebought $${rebuyAmount.toLocaleString()} from reserves.`
+            : source === 'mixed'
+              ? `${p.username} rebought $${rebuyAmount.toLocaleString()} ($${fromReserves.toLocaleString()} reserves + $${fromBank.toLocaleString()} bank).`
+              : `${p.username} was broke top-to-bottom — granted a $${rebuyAmount.toLocaleString()} fresh stack.`
         this.broadcast({
           type: MESSAGE_TYPES.SYSTEM_MESSAGE,
           data: { message: msg }
@@ -1414,6 +1432,27 @@ export class PokerRoom {
       }
     } finally {
       this._humanRebuyGuard = false
+    }
+  }
+
+  // Sweep any human seat's chips above CHIP_STACK_MAX into the bank
+  // wallet. Runs between hands so the table stack always tops out at
+  // the same 1k size — winners' excess becomes "investing money" in
+  // the bank, not a runaway poker stack that distorts blinds vs. stack
+  // ratios. Bots and arena seats are exempt (no bank to sweep into).
+  _sweepStackOverflow() {
+    const cap = POKER_CONFIG.CHIP_STACK_MAX
+    if (!Number.isFinite(cap) || cap <= 0) return
+    for (const p of this.players.values()) {
+      if (p.isBot) continue
+      const overflow = (p.chips || 0) - cap
+      if (overflow <= 0) continue
+      p.chips = cap
+      p.bankBalance = (p.bankBalance || 0) + overflow
+      this.broadcast({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `${p.username}'s stack capped at $${cap.toLocaleString()} — $${overflow.toLocaleString()} swept to bank.` }
+      })
     }
   }
 
@@ -2229,6 +2268,7 @@ export class PokerRoom {
     if (currentPhase === GAME_PHASES.WAITING && previousPhase !== GAME_PHASES.WAITING) {
       this._cleanupBrokeBots()
       this._autoRebuyBudgetedHumans()
+      this._sweepStackOverflow()
     }
     // Side-bet engine ticks once per broadcast — it detects new hands via
     // game.handIndex internally, so this single call covers handStart, every

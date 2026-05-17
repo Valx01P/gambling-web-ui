@@ -2,6 +2,32 @@
 
 import { useAuth } from '../lib/useAuth'
 
+// Inline Sign-in chip rendered as a direct flex sibling of the route-
+// local nav buttons (Tools/Lobby on /poker, Home on others). The chip
+// historically lived in the AccountDock — but AccountDock is mounted
+// outside ZoomLayer, and ZoomLayer's CSS `zoom` property creates a new
+// containing block for fixed descendants in some browsers, even at
+// 100%. The result was a sub-pixel y-offset between the dock's chip
+// and the cluster's buttons. Putting them in the same flex row makes
+// alignment definitive.
+function SignInChip() {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        // Same global event AccountMenu listens for. We dispatch it
+        // here so the modal (which still lives in AccountMenu in the
+        // dock) opens — no need to re-implement the modal locally.
+        if (typeof window === 'undefined') return
+        window.dispatchEvent(new CustomEvent('pokerxyz:open-signin'))
+      }}
+      className="inline-flex h-9 items-center rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 sm:px-3 sm:text-sm"
+    >
+      Sign in
+    </button>
+  )
+}
+
 // Right-side route-local nav. Sits to the LEFT of the global AccountDock
 // at top-3 / sm:top-4 — same baseline as the AccountDock chips and the
 // fixed HomeBackLink on /feed-style pages.
@@ -39,15 +65,32 @@ export default function RouteNavCluster({ as: As = 'div', className = '', childr
   // band, the cluster tracks the content's right edge instead of drifting
   // out to the viewport edge alongside the AccountDock. Mirrors the dock's
   // offset math so the two stay aligned at every width.
+  // Auth-aware right offset:
+  //   • signed-IN  → reserve 3.5rem/4rem so the cluster clears the
+  //                  AccountDock's avatar (and DMs/Notifications/
+  //                  BotSpeed icons stacked below it).
+  //   • signed-OUT → drop to the viewport gutter (0.75rem/1rem) — on
+  //                  RouteNavCluster routes the dock suppresses its
+  //                  Sign-in chip, DMs/Notifications are hidden, and
+  //                  BotSpeed only shows on /poker with bots. Leaving
+  //                  3.5rem of empty space there looks off-center;
+  //                  the tighter gutter pushes the cluster (which now
+  //                  contains the Sign-in chip itself) flush to the
+  //                  same right edge the dock uses on signed-in routes.
   const offset = user
     ? 'right-[max(3.5rem,calc((100vw-80rem)/2+3.5rem))] sm:right-[max(4rem,calc((100vw-80rem)/2+4rem))]'
-    : 'right-[max(6rem,calc((100vw-80rem)/2+6rem))] sm:right-[max(7rem,calc((100vw-80rem)/2+7rem))]'
+    : 'right-[max(0.75rem,calc((100vw-80rem)/2+0.75rem))] sm:right-[max(1rem,calc((100vw-80rem)/2+1rem))]'
   return (
     <As
       className={`fixed ${offset} top-3 z-10 flex items-center gap-2 sm:top-4 ${className}`}
       {...rest}
     >
       {children}
+      {/* Signed-out chip rendered as the LAST flex sibling so its
+          center sits on the same horizontal axis as Tools/Lobby/Home.
+          Avatar mode stays in the global AccountDock — only the chip
+          moves here. */}
+      {!user && <SignInChip />}
     </As>
   )
 }

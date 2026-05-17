@@ -198,7 +198,9 @@ export class AssetEngine {
         total += Math.floor((entry.yield || 0) * units)
       }
       if (total > 0) {
-        player.chips += total
+        // Yields land in the bank — assets are a passive-income
+        // money-maker, decoupled from the poker stack.
+        player.bankBalance = (player.bankBalance || 0) + total
         yields.push({ playerId, amount: total })
       }
     }
@@ -238,8 +240,10 @@ export class AssetEngine {
     if (!entry) return { success: false, error: 'unknown_asset' }
     const price = this._displayPrice(entry)
     const total = price * u
-    if (player.chips < total) return { success: false, error: 'insufficient_chips' }
-    player.chips -= total
+    // Asset purchases are funded from the bank. Player.chips at the
+    // table is poker money only.
+    if ((player.bankBalance || 0) < total) return { success: false, error: 'insufficient_chips' }
+    player.bankBalance -= total
     const bag = this._bagFor(playerId)
     bag.set(assetId, (bag.get(assetId) || 0) + u)
     this._broadcastState()
@@ -257,7 +261,7 @@ export class AssetEngine {
     if (!entry) return { success: false, error: 'unknown_asset' }
     const price = this._displayPrice(entry)
     const proceeds = price * u
-    player.chips += proceeds
+    player.bankBalance = (player.bankBalance || 0) + proceeds
     const next = have - u
     if (next <= 0) bag.delete(assetId)
     else bag.set(assetId, next)
@@ -344,7 +348,7 @@ export class AssetEngine {
         if (!entry) continue
         proceeds += this._displayPrice(entry) * units
       }
-      player.chips += proceeds
+      player.bankBalance = (player.bankBalance || 0) + proceeds
     }
     this.holdings.delete(playerId)
   }

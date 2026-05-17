@@ -78,6 +78,33 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
             </div>
           </div>
         </div>
+        {/* Bank balance + a plain-English hint about what the percent
+            buttons mean. New players were getting confused — % of
+            what? — so we spell it out once at the top of the panel. */}
+        <div className="mt-2 flex flex-wrap items-baseline justify-between gap-2 border-t border-zinc-800/80 pt-2 text-[10px] font-bold text-zinc-400">
+          <span>Bank balance: <span className="tabular-nums text-white">${fmtCompact(myChips)}</span></span>
+          <span className="text-zinc-500">Buy buttons spend a % of your bank balance.</span>
+        </div>
+        {positions.length > 0 && (
+          <div className="mt-2 border-t border-zinc-800/80 pt-2">
+            <button
+              type="button"
+              disabled={!joined}
+              onClick={() => {
+                // Sweep every open long into the bank in one shot. The
+                // server handles each `stock:sell` independently — no
+                // batch endpoint, so we fire one per symbol.
+                positions.forEach(p => {
+                  if (p.shares > 0) onSell(p.symbol, p.shares)
+                })
+              }}
+              title={`Sell all ${positions.length} position${positions.length === 1 ? '' : 's'} at market`}
+              className="w-full rounded-md border border-red-400/60 bg-red-500/15 px-3 py-2 text-xs font-black uppercase tracking-widest text-red-100 hover:bg-red-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              💥 Sell all shares ({positions.length}) — ${fmtCompact(portfolioValue)}
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-3 gap-1.5 text-[10px] font-black uppercase tracking-widest sm:grid-cols-5">
@@ -160,42 +187,57 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                   <div className="mt-1 text-[10px] font-bold text-red-300">⚠️ Under active sabotage</div>
                 )}
                 {expanded && (() => {
-                  // Dollar-only input. The "≈ N shares" preview below
-                  // tells the user what their dollars convert to so
-                  // share-thinkers still get the count without the
-                  // mode toggle that nobody knew how to read.
-                  const parsed = parseInputAmount(buyAmount)
-                  const dollarsToSpend = parsed == null ? 0 : Math.floor(parsed)
-                  const sharesToGet = parsed == null ? 0 : parsed / stock.price
-                  const insufficient = dollarsToSpend > 0 && (myChips || 0) < dollarsToSpend
+                  // Long-only. Matches the crypto-market layout: one
+                  // flat row of action buttons, no inputs, no confirm
+                  // dialogs. 10/25/50 % buys (green) → Sell ½ / Sell
+                  // all (amber/red) when a position is open.
+                  // Shorting removed entirely per design.
+                  const myPosition = positions.find(p => p.symbol === stock.symbol)
+                  const buyAtPct = (pct) => {
+                    const dollars = Math.floor(((myChips || 0) * pct) / 100)
+                    if (dollars <= 0) return
+                    onBuy(stock.symbol, dollars)
+                  }
                   return (
-                    <div className="mt-2 space-y-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          placeholder={`Spend $ (try "$5M" or "1B")`}
-                          value={buyAmount}
-                          onChange={e => setBuyAmount(e.target.value)}
-                          className="flex-1 min-w-0 rounded-md border border-zinc-600 bg-zinc-900 px-2 py-1.5 text-xs font-bold text-white outline-none focus:border-zinc-400 tabular-nums"
-                        />
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      {[10, 25, 50].map(pct => (
                         <button
+                          key={`buy${pct}`}
                           type="button"
-                          disabled={!joined || !buyAmount || dollarsToSpend <= 0 || insufficient}
-                          title={insufficient ? `Need $${Math.ceil(dollarsToSpend).toLocaleString()} — short $${Math.ceil(dollarsToSpend - (myChips || 0)).toLocaleString()}` : undefined}
-                          onClick={() => { onBuy(stock.symbol, dollarsToSpend); setBuyAmount('') }}
-                          className="shrink-0 rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
+                          onClick={() => buyAtPct(pct)}
+                          disabled={!joined || (myChips || 0) <= 0}
+                          title={`Buy with ${pct}% of bank`}
+                          className="rounded border border-emerald-500/60 bg-emerald-700/70 px-2 py-1 text-[11px] font-black text-white hover:bg-emerald-600/80 disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                          {insufficient ? `Need $${fmtCompact(dollarsToSpend - (myChips || 0))}` : 'Buy'}
+                          {pct}%
                         </button>
-                      </div>
-                      {/* Live share-count preview so the player always
-                          knows what their dollars are buying. */}
-                      {parsed != null && (
-                        <div className="text-[10px] font-bold text-zinc-400 tabular-nums">
-                          ≈ <span className="text-zinc-200">{sharesToGet.toFixed(2)} shares</span> · ${fmtCompact(dollarsToSpend)}
-                        </div>
+                      ))}
+                      {myPosition && myPosition.shares > 0 && (
+                        <>
+                          <button type="button" disabled={!joined} onClick={() => onSell(stock.symbol, myPosition.shares / 2)} className="rounded border border-amber-500/60 bg-amber-700/60 px-2 py-1 text-[11px] font-black text-white hover:bg-amber-600/70">
+                            Sell ½
+                          </button>
+                          <button type="button" disabled={!joined} onClick={() => onSell(stock.symbol, myPosition.shares)} className="rounded border border-red-500/60 bg-red-700/60 px-2 py-1 text-[11px] font-black text-white hover:bg-red-600/70">
+                            Sell all
+                          </button>
+                        </>
                       )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          // Stop the parent expand-toggle from collapsing
+                          // the card right after we navigate away — feels
+                          // janky to have the tab change *and* the picker
+                          // collapse the symbol you just clicked into.
+                          e.stopPropagation()
+                          setSelectedSymbol(stock.symbol)
+                          setTab('options')
+                        }}
+                        title={`Open ${stock.symbol} options chain`}
+                        className="ml-auto rounded border border-amber-400/60 bg-amber-500/20 px-2 py-1 text-[11px] font-black text-amber-100 hover:bg-amber-500/30"
+                      >
+                        Options →
+                      </button>
                     </div>
                   )
                 })()}
@@ -233,7 +275,7 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                     </div>
                     <button
                       type="button"
-                      onClick={() => onSell(pos.symbol)}
+                      onClick={() => onSell(pos.symbol, pos.shares)}
                       className="shrink-0 rounded-md border border-amber-400/60 bg-amber-500/15 px-3 py-2 text-xs font-black uppercase tracking-widest text-amber-100 hover:bg-amber-500/25"
                     >
                       Sell All
@@ -400,11 +442,24 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
               if (!stock) return null
               const spot = stock.price
               const isCall = pendingOption.type === 'call'
-              const contracts = Math.max(1, Math.floor(pendingOption.contracts || 1))
-              const totalCost = (pendingOption.premium || 0) * contracts
-              const canAfford = (myChips || 0) >= totalCost
-              const shortBy = Math.max(0, totalCost - (myChips || 0))
               const SHARES_PER_CONTRACT = 100
+              const premium = pendingOption.premium || 0
+              // Max contracts the player can actually afford. If they
+              // can't afford even one, the whole configurator collapses
+              // into a single "you can't afford this" notice (no slider,
+              // no scenarios, no confirm button).
+              const maxAffordable = premium > 0 ? Math.floor((myChips || 0) / premium) : 0
+              const cannotAffordOne = maxAffordable < 1
+              // Cap requested contracts at the affordable max so the
+              // slider can't be dragged into a state the server would
+              // reject — UI honesty trumps letting them try.
+              const contracts = Math.max(1, Math.min(
+                maxAffordable || 1,
+                Math.floor(pendingOption.contracts || 1)
+              ))
+              const totalCost = premium * contracts
+              const canAfford = (myChips || 0) >= totalCost && !cannotAffordOne
+              const shortBy = Math.max(0, totalCost - (myChips || 0))
               // Breakeven on expiry: for a call you need spot to exit
               // ≥ strike + premium/100; for a put, spot must drop to
               // strike − premium/100. Premium is per CONTRACT, so we
@@ -438,7 +493,40 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                     { label: '−15% move',       spot: spot * 0.85 },
                     { label: '−30% move',       spot: spot * 0.70 },
                   ]
-              const QUICK_QTYS = [1, 5, 10, 25, 100]
+              if (cannotAffordOne) {
+                // Can't even afford ONE contract — collapse the whole
+                // configurator to a single explanatory notice. No
+                // slider (a 0-max slider is just confusing), no
+                // scenarios (they'd all be hypothetical), no Confirm.
+                return (
+                  <div className="rounded-lg border-2 border-red-500/50 bg-red-950/30 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-black text-white">
+                        <span className={isCall ? 'text-emerald-300' : 'text-red-300'}>{pendingOption.type.toUpperCase()}</span>
+                        <span className="ml-1">${pendingOption.symbol}</span>
+                        <span className="ml-1 text-zinc-300">@ ${fmtPrice(pendingOption.strike)}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPendingOption(null)}
+                        className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <div className="mt-3 rounded-md border border-red-500/50 bg-red-950/40 px-2 py-2 text-[12px] font-black text-red-100">
+                      You can't afford this contract.
+                      <div className="mt-1 text-[11px] font-bold text-red-200/90">
+                        One contract costs <span className="tabular-nums">${fmtCompact(premium)}</span>; you have <span className="tabular-nums">${fmtCompact(myChips || 0)}</span> in the bank. Short by <span className="tabular-nums">${fmtCompact(premium - (myChips || 0))}</span>.
+                      </div>
+                      <div className="mt-1 text-[10px] font-bold text-zinc-300">
+                        Pick a cheaper strike, grind a few more hands, or sell something to free up bank.
+                      </div>
+                    </div>
+                  </div>
+                )
+              }
+              const sliderId = `opt-slider-${pendingOption.symbol}-${pendingOption.type}-${pendingOption.strike}`
               return (
                 <div className={`rounded-lg border-2 p-3 ${canAfford ? 'border-amber-400/60 bg-amber-950/30' : 'border-red-500/50 bg-red-950/30'}`}>
                   <div className="flex items-center justify-between gap-2">
@@ -457,54 +545,61 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                   </div>
 
                   <div className="mt-2">
-                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Contracts</div>
-                    <div className="mt-1 flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setPendingOption(prev => prev && ({ ...prev, contracts: Math.max(1, (prev.contracts || 1) - 1) }))}
-                        className="h-8 w-8 rounded-md border border-zinc-600 bg-zinc-900 text-base font-black text-white hover:bg-zinc-800"
-                      >−</button>
-                      <input
-                        type="number"
-                        min={1}
-                        value={contracts}
-                        onChange={(e) => {
-                          const v = Math.max(1, Math.floor(Number(e.target.value) || 1))
-                          setPendingOption(prev => prev && ({ ...prev, contracts: v }))
-                        }}
-                        className="w-20 rounded-md border border-zinc-600 bg-zinc-900 px-2 py-1.5 text-center text-sm font-black text-white tabular-nums outline-none focus:border-zinc-400"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setPendingOption(prev => prev && ({ ...prev, contracts: (prev.contracts || 1) + 1 }))}
-                        className="h-8 w-8 rounded-md border border-zinc-600 bg-zinc-900 text-base font-black text-white hover:bg-zinc-800"
-                      >+</button>
-                      <div className="ml-1 flex flex-wrap gap-1">
-                        {QUICK_QTYS.map(q => (
-                          <button
-                            key={q}
-                            type="button"
-                            onClick={() => setPendingOption(prev => prev && ({ ...prev, contracts: q }))}
-                            className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-widest ${contracts === q ? 'border-amber-400/60 bg-amber-500/20 text-amber-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:text-white'}`}
-                          >
-                            {q}
-                          </button>
-                        ))}
+                    <div className="flex items-baseline justify-between gap-2">
+                      <label htmlFor={sliderId} className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+                        Contracts
+                      </label>
+                      <div className="text-[10px] font-bold text-zinc-400 tabular-nums">
+                        <span className="text-white text-base">{contracts}</span>
+                        <span className="mx-1 text-zinc-500">/</span>
+                        <span>max {maxAffordable}</span>
                       </div>
+                    </div>
+                    {/* Range slider — max is whatever the bank can afford,
+                        so the player can see at a glance how many they
+                        could buy if they went all-in. Min is 1. */}
+                    <input
+                      id={sliderId}
+                      type="range"
+                      min={1}
+                      max={maxAffordable}
+                      step={1}
+                      value={contracts}
+                      onChange={(e) => {
+                        const v = Math.max(1, Math.min(maxAffordable, Math.floor(Number(e.target.value) || 1)))
+                        setPendingOption(prev => prev && ({ ...prev, contracts: v }))
+                      }}
+                      className="mt-1 w-full accent-amber-400"
+                    />
+                    <div className="mt-1 flex items-center justify-between gap-2 text-[10px] font-bold text-zinc-500 tabular-nums">
+                      <button
+                        type="button"
+                        onClick={() => setPendingOption(prev => prev && ({ ...prev, contracts: 1 }))}
+                        className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 font-black uppercase tracking-widest text-zinc-300 hover:bg-zinc-800"
+                      >Min 1</button>
+                      <button
+                        type="button"
+                        onClick={() => setPendingOption(prev => prev && ({ ...prev, contracts: maxAffordable }))}
+                        className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-black uppercase tracking-widest text-amber-200 hover:bg-amber-500/20"
+                      >Max {maxAffordable}</button>
                     </div>
                     <div className="mt-1 text-[10px] text-zinc-500">
                       {contracts} × 100 shares = <span className="text-zinc-300 tabular-nums">{(contracts * SHARES_PER_CONTRACT).toLocaleString()}</span> shares of ${pendingOption.symbol} controlled
                     </div>
                   </div>
 
-                  <div className="mt-2 grid grid-cols-3 gap-2 rounded-md border border-zinc-700/60 bg-zinc-950/50 p-2 text-[11px] font-bold">
+                  <div className="mt-2 grid grid-cols-2 gap-2 rounded-md border border-zinc-700/60 bg-zinc-950/50 p-2 text-[11px] font-bold sm:grid-cols-4">
                     <div>
                       <div className="text-[9px] uppercase tracking-wider text-zinc-500">Per contract</div>
-                      <div className="text-white tabular-nums">${fmtCompact(pendingOption.premium)}</div>
+                      <div className="text-white tabular-nums">${fmtCompact(premium)}</div>
                     </div>
                     <div>
                       <div className="text-[9px] uppercase tracking-wider text-zinc-500">Total cost</div>
                       <div className={`tabular-nums ${canAfford ? 'text-white' : 'text-red-300'}`}>${fmtCompact(totalCost)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase tracking-wider text-zinc-500">Max loss</div>
+                      <div className="text-red-300 tabular-nums">−${fmtCompact(totalCost)}</div>
                     </div>
                     <div>
                       <div className="text-[9px] uppercase tracking-wider text-zinc-500">You have</div>
@@ -514,7 +609,7 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
 
                   {!canAfford && (
                     <div className="mt-2 rounded-md border border-red-500/50 bg-red-950/40 px-2 py-1.5 text-[11px] font-black text-red-100">
-                      Not enough chips — short by <span className="text-red-200">${fmtCompact(shortBy)}</span>. Lower the contract count or pick a cheaper strike.
+                      Not enough money — short by <span className="text-red-200">${fmtCompact(shortBy)}</span>. Lower the contract count or pick a cheaper strike.
                     </div>
                   )}
 
@@ -581,7 +676,7 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                           : 'border-red-500/60 bg-red-950/40 text-red-200 opacity-90'
                       }`}
                     >
-                      {canAfford ? `Confirm — Pay $${fmtCompact(totalCost)}` : 'Not enough chips'}
+                      {canAfford ? `Confirm — Pay $${fmtCompact(totalCost)}` : 'Not enough money'}
                     </button>
                   </div>
                 </div>
@@ -695,35 +790,32 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                     </div>
                   )}
 
-                  {/* Quick stock buy — earnings-day mini-form for this
-                      ticker. Re-uses the shared `buyAmount` state so a
-                      typed dollar amount applies to whichever ticker
-                      the player clicks Buy on. */}
+                  {/* Quick stock buy — preset-% buttons. Each fires a
+                      direct buy at that fraction of the bank balance
+                      (no input, no confirm modal, just tap). Mirrors
+                      the crypto-market spam-buy UX. */}
                   <div className="space-y-1">
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder={`Spend $ on $${evt.symbol}`}
-                        value={buyAmount}
-                        onChange={e => setBuyAmount(e.target.value)}
-                        className="flex-1 min-w-0 rounded-md border border-zinc-600 bg-zinc-900 px-2 py-1.5 text-xs font-bold text-white outline-none focus:border-zinc-400 tabular-nums"
-                      />
-                      <button
-                        type="button"
-                        disabled={!joined || !buyAmount || dollarsToSpend <= 0 || insufficient}
-                        title={insufficient ? `Need $${Math.ceil(dollarsToSpend).toLocaleString()} — short $${Math.ceil(dollarsToSpend - (myChips || 0)).toLocaleString()}` : `Buy ${sharesToGet.toFixed(2)} shares of ${evt.symbol}`}
-                        onClick={() => { onBuy(evt.symbol, dollarsToSpend); setBuyAmount('') }}
-                        className={`shrink-0 rounded-md border px-2 py-1.5 text-[11px] font-black uppercase tracking-widest disabled:cursor-not-allowed ${insufficient ? 'border-red-500/60 bg-red-950/40 text-red-200 opacity-90' : 'border-emerald-400/60 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-40'}`}
-                      >
-                        {insufficient ? `Need $${fmtCompact(dollarsToSpend - (myChips || 0))}` : 'Buy'}
-                      </button>
+                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Buy ${evt.symbol} from bank</div>
+                    <div className="grid grid-cols-4 gap-1">
+                      {[10, 25, 50, 100].map(pct => {
+                        const dollars = Math.floor(((myChips || 0) * pct) / 100)
+                        const shares = spot > 0 ? dollars / spot : 0
+                        const disabled = !joined || dollars <= 0
+                        return (
+                          <button
+                            key={pct}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => onBuy(evt.symbol, dollars)}
+                            title={disabled ? 'Not enough in bank' : `Spend $${dollars.toLocaleString()} (~${shares.toFixed(2)} sh)`}
+                            className="rounded-md border border-emerald-400/60 bg-emerald-500/15 px-1.5 py-1 text-[10px] font-black uppercase tracking-widest text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <div>{pct === 100 ? 'Max' : `${pct}%`}</div>
+                            <div className="text-[8px] font-bold text-emerald-200/80 tabular-nums">${fmtCompact(dollars)}</div>
+                          </button>
+                        )
+                      })}
                     </div>
-                    {parsed != null && (
-                      <div className="text-[10px] font-bold text-zinc-400 tabular-nums">
-                        ≈ <span className="text-zinc-200">{sharesToGet.toFixed(2)} shares</span> · ${fmtCompact(dollarsToSpend)}
-                      </div>
-                    )}
                   </div>
 
                   <div className="flex gap-1.5">
@@ -752,7 +844,7 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
       {tab === 'sabotage' && (
         <div className="space-y-1.5">
           <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] font-bold text-red-200 leading-snug">
-            Burn 10% of a company's market cap to crash its price 18-42%. 3-hand cooldown. Short the stock first for max profit.
+            Burn 10% of a company's market cap (from your bank) to crash its price 18-42%. 3-hand cooldown.
           </div>
           {stocks.map(stock => {
             const cost = Math.max(500, Math.floor(stock.price * 10000 * 0.10))

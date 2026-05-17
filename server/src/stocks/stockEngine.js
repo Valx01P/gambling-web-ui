@@ -307,10 +307,11 @@ export class StockEngine {
     if (player.isBot) return { success: false, error: 'bots_cannot_trade' }
     const stock = this.stocks.get(symbol)
     if (!stock) return { success: false, error: 'unknown_symbol' }
-    if (player.chips < spend) return { success: false, error: 'insufficient_chips' }
+    // Stocks live in the BANK wallet — never touch poker chips.
+    if ((player.bankBalance || 0) < spend) return { success: false, error: 'insufficient_chips' }
     const shares = spend / stock.price
     if (shares <= 0) return { success: false, error: 'too_small' }
-    player.chips -= spend
+    player.bankBalance -= spend
     const bag = this._bagFor(playerId)
     const pos = bag.get(symbol) || { shares: 0, costBasis: 0 }
     pos.shares += shares
@@ -336,7 +337,8 @@ export class StockEngine {
     const stock = this.stocks.get(symbol)
     if (!stock) return { success: false, error: 'unknown_symbol' }
     const proceeds = Math.floor(sellShares * stock.price)
-    player.chips += proceeds
+    // Proceeds land in the bank wallet, same surface as the buy.
+    player.bankBalance = (player.bankBalance || 0) + proceeds
     const ratio = sellShares / pos.shares
     pos.costBasis = Math.floor(pos.costBasis * (1 - ratio))
     pos.shares -= sellShares
@@ -363,8 +365,11 @@ export class StockEngine {
       return { success: false, error: 'cooldown', cooldownRemaining: SABOTAGE_COOLDOWN_HANDS - (handIndex - lastUsed) }
     }
     const cost = Math.max(500, Math.floor(stock.price * 10000 * SABOTAGE_COST_PERCENT))
-    if (player.chips < cost) return { success: false, error: 'insufficient_chips', cost }
-    player.chips -= cost
+    // Sabotage is paid from the BANK wallet, not poker chips. Chips
+    // are reserved exclusively for poker bets per the design ask;
+    // every other money flow on the table runs through the bank.
+    if ((player.bankBalance || 0) < cost) return { success: false, error: 'insufficient_chips', cost }
+    player.bankBalance -= cost
     this.sabotageCooldowns.set(playerId, handIndex)
     stock.sabotageUntil = Date.now() + 20_000  // 20s of downward bias
     // Immediate hit on top of the bias so the player sees the effect.
@@ -494,13 +499,10 @@ export class StockEngine {
     this.upcomingEarnings = batch
     this.nextEarningsAtHand = handIndex + EARNINGS_INTERVAL_HANDS
     if (batch.length === 0) return
-    // One combined headline keeps the system chat tidy — per-event
-    // detail lives in the Earnings tab.
-    const list = batch.map(e => `$${e.symbol}`).join(', ')
-    this.broadcast({
-      type: MESSAGE_TYPES.SYSTEM_MESSAGE,
-      data: { message: `📢 EARNINGS DAY — ${batch.length} ${batch.length === 1 ? 'company reports' : 'companies report'} next hand: ${list}. Check the Earnings tab.` }
-    })
+    // 2026-05: earnings announcements no longer push into the table
+    // chat — players asked for clean chat with no market noise. The
+    // Earnings tab is the canonical surface (it has a 🔔 badge on
+    // the tab label and per-event cards), so the chat-spam is gone.
   }
 
   // Build a single earnings event for the given stock. Pulled out
@@ -578,13 +580,11 @@ export class StockEngine {
                 : sizeFrac >= 0.25 ? 'moderate'
                 : 'meh'
     const pctText = `${(signed * 100).toFixed(1)}%`
-    const emoji = isBeat
-      ? (label === 'rocket' ? '🚀' : label === 'blowout' ? '📈' : '✅')
-      : (label === 'rocket' ? '💥' : label === 'blowout' ? '📉' : '⚠️')
-    this.broadcast({
-      type: MESSAGE_TYPES.SYSTEM_MESSAGE,
-      data: { message: `${emoji} $${event.symbol} earnings: ${label.toUpperCase()} ${isBeat ? 'BEAT' : 'MISS'} ${pctText} — now $${stock.price < 100 ? stock.price.toFixed(2) : Math.round(stock.price).toLocaleString()}.` }
-    })
+    // 2026-05: earnings resolution candle no longer pushes into the
+    // table chat. The Earnings tab + the spot price on the stock card
+    // are the canonical surfaces — players who don't care about
+    // markets shouldn't see market chatter at all.
+    void label; void isBeat; void pctText
   }
 
   buildSnapshot(playerId) {
@@ -653,15 +653,14 @@ export class StockEngine {
   handlePlayerLeave(playerId) {
     const player = this._findPlayer(playerId)
     const bag = this.holdings.get(playerId)
-    if (!bag || bag.size === 0) { this.holdings.delete(playerId); this.sabotageCooldowns.delete(playerId); return }
-    if (player) {
+    if (player && bag) {
       let proceeds = 0
       for (const [symbol, pos] of bag) {
         const s = this.stocks.get(symbol)
         if (!s) continue
         proceeds += Math.floor(pos.shares * s.price)
       }
-      player.chips += proceeds
+      player.bankBalance = (player.bankBalance || 0) + proceeds
     }
     this.holdings.delete(playerId)
     this.sabotageCooldowns.delete(playerId)

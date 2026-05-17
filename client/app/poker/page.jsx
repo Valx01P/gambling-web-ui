@@ -130,36 +130,18 @@ const POKER_STARTING_CHIPS = 1000
 // `label` is client-only — purely cosmetic flavor for the blinds picker.
 // One unique title per tier (no bucketing) so the highest stakes don't
 // keep saying the same "Mythic" tag.
+// 2026-05: ladder collapsed — the poker stack is capped at 1000 chips,
+// so anything beyond 50/100 forces all-ins on the post. All off-table
+// money lives in the bank wallet now; blinds only need to span the
+// "cheap home game → max-aggression at 1k stack" range.
 const BLIND_LEVELS = [
-  { id: '5_10',           small: 5,         big: 10,         label: 'Penny ante'         },
-  { id: '15_25',          small: 15,        big: 25,         label: 'Garage night'       },
-  { id: '25_50',          small: 25,        big: 50,         label: 'Coffee-shop reg'    },
-  { id: '50_100',         small: 50,        big: 100,        label: 'Weekend grinder'    },
-  { id: '100_200',        small: 100,       big: 200,        label: 'Local crusher'      },
-  { id: '250_500',        small: 250,       big: 500,        label: 'Backroom pro'       },
-  { id: '500_1000',       small: 500,       big: 1000,       label: 'High roller'        },
-  { id: '1000_2000',      small: 1000,      big: 2000,       label: 'Whale tank'         },
-  { id: '2000_4000',      small: 2000,      big: 4000,       label: 'Hedge fund energy'  },
-  { id: '4000_8000',      small: 4000,      big: 8000,       label: 'Family office'      },
-  { id: '8000_16000',     small: 8000,      big: 16000,      label: 'Oligarch grade'     },
-  { id: '16000_32000',    small: 16000,     big: 32000,      label: 'Mythic'             },
-  // 2026-05: absurd-blind levels. Player feedback was that high-stakes
-  // peer pressure makes the game more interesting — these tiers escalate
-  // by ~3x each so the math (stacks, side bets, loans) starts to feel
-  // genuinely unreasonable. Labels lean into the bit.
-  { id: '50000_100000',   small: 50000,     big: 100000,     label: 'Sovereign wealth'   },
-  { id: '150000_300000',  small: 150000,    big: 300000,     label: 'Tax haven'          },
-  { id: '500000_1m',      small: 500000,    big: 1000000,    label: 'Private island'     },
-  { id: '1m_2m',          small: 1000000,   big: 2000000,    label: 'Cartel money'       },
-  { id: '5m_10m',         small: 5000000,   big: 10000000,   label: 'Russian oligarch'   },
-  { id: '50m_100m',       small: 50000000,  big: 100000000,  label: 'Fortune 500 CEO'    },
-  { id: '500m_1b',        small: 500000000,    big: 1000000000,    label: 'Ten-figure villain' },
-  // Trillion tier — for the late-game economy where players have built
-  // multi-asset portfolios and stocks/territories pay in billions/hand.
-  { id: '5b_10b',         small: 5000000000,    big: 10000000000,    label: 'Trillionaire warmup' },
-  { id: '50b_100b',       small: 50000000000,   big: 100000000000,   label: 'Apex predator' },
-  { id: '500b_1t',        small: 500000000000,  big: 1000000000000,  label: 'Trillion-dollar table' },
-  { id: '5t_10t',         small: 5000000000000, big: 10000000000000, label: 'Reality-warping stakes' }
+  { id: '1_2',    small: 1,   big: 2,   label: 'Microstakes'    },
+  { id: '2_3',    small: 2,   big: 3,   label: 'Loose home game'},
+  { id: '5_10',   small: 5,   big: 10,  label: 'Penny ante'     },
+  { id: '10_15',  small: 10,  big: 15,  label: 'Garage night'   },
+  { id: '20_25',  small: 20,  big: 25,  label: 'Coffee-shop reg'},
+  { id: '25_50',  small: 25,  big: 50,  label: 'Backroom pro'   },
+  { id: '50_100', small: 50,  big: 100, label: 'Max aggression' },
 ]
 
 // Tools-menu LRU (Recents) tracking — persisted to localStorage so the
@@ -1594,6 +1576,11 @@ export default function PokerPage() {
               // — they're not in gameState.players, so the side-bets panel
               // & bank UI read their stack out of bankState instead.
               chips: me.chips ?? prev.chips,
+              // Separate persistent off-table wallet. All stocks, options,
+              // crypto, assets, jobs land here. The poker stack tops up
+              // from this when busted.
+              bankBalance: me.bankBalance ?? prev.bankBalance ?? 0,
+              bankStartBalance: me.bankStartBalance ?? prev.bankStartBalance ?? 0,
               // Persistent buy-in and open-stake values feed the spectator
               // bankroll badge's P/L calc. Server is authoritative — the
               // client just renders.
@@ -1687,6 +1674,11 @@ export default function PokerPage() {
               // — they're not in gameState.players, so the side-bets panel
               // & bank UI read their stack out of bankState instead.
               chips: me.chips ?? prev.chips,
+              // Separate persistent off-table wallet. All stocks, options,
+              // crypto, assets, jobs land here. The poker stack tops up
+              // from this when busted.
+              bankBalance: me.bankBalance ?? prev.bankBalance ?? 0,
+              bankStartBalance: me.bankStartBalance ?? prev.bankStartBalance ?? 0,
               // Persistent buy-in and open-stake values feed the spectator
               // bankroll badge's P/L calc. Server is authoritative — the
               // client just renders.
@@ -1728,6 +1720,16 @@ export default function PokerPage() {
               msg.data.players.filter(p => p && p.isConnected === false && !p.isBot).map(p => p.id)
             ))
           }
+          // BUG FIX 2026-05: room_update carries a fresh gameState (built
+          // by the same buildBroadcastViews the game_state push uses),
+          // and it's the only refresh that fires between hands for things
+          // like job claims / stock buys / bank balance changes. Without
+          // this, the seat object the popover snapshots from gameState
+          // stays stale (e.g. you earn 26k from a job, click your
+          // profile, but it still shows $0 in the bank until the next
+          // poker action). Mirror the spectator_update / game_state
+          // handlers and apply if present.
+          if (msg.data.gameState) applyGameState(msg.data.gameState)
           break
         case 'chip_throw':
           addChipThrow(msg.data)
@@ -1924,8 +1926,11 @@ export default function PokerPage() {
           }
           break
         case 'poker_blinds_proposal':
-          // Don't show our own proposal back to us — we already know we sent it.
-          if (msg.data?.proposerId === playerIdRef.current) break
+          // Show the proposal to EVERYONE including the proposer, but
+          // the UI flips to a sent-receipt view for the proposer (no
+          // Approve/Reject buttons — they already auto-approved). The
+          // proposer also needs visibility into who has responded so
+          // they're not left wondering whether their request landed.
           setPendingBlindsProposal(msg.data)
           break
         case 'poker_blinds_resolved':
@@ -2204,6 +2209,20 @@ export default function PokerPage() {
     return () => window.removeEventListener('gwu:open-table-chat', handler)
   }, [])
 
+  // Open the Bank tools panel from anywhere in the app — the
+  // profile-popover's "Take a bank loan →" CTA dispatches this
+  // when the player's bank balance has gone negative. Implementing
+  // it as a window event lets the popover stay portal-agnostic and
+  // means future surfaces (the InvestmentHUD's Money tile, etc) can
+  // re-use the same hook with one line.
+  useEffect(() => {
+    function handler() {
+      setActivePokerPanel('bank')
+    }
+    window.addEventListener('gwu:open-bank-panel', handler)
+    return () => window.removeEventListener('gwu:open-bank-panel', handler)
+  }, [])
+
   // "Check in the dark" / pre-action queue intentionally removed —
   // it was firing checks (and chaining into surprise all-ins for some
   // users) without an explicit per-street confirmation. The table is
@@ -2225,6 +2244,12 @@ export default function PokerPage() {
   // every crypto tick because price moves continuously.
   const liquidatedSummary = useMemo(() => {
     const chips = bankState.chips ?? 0
+    // BUG FIX 2026-05: net-worth was reading only the poker stack and
+    // ignoring the bank balance, so jobs / stock proceeds / crypto
+    // sells landed in the bank but never showed up in the widget.
+    // Bank balance is the player's persistent wallet — everything
+    // earned outside the table lives here.
+    const bank = bankState.bankBalance ?? 0
     const bankDebt = (bankState.loans || []).reduce((s, l) => s + (l.owed || 0), 0)
     const parked = bankState.openSideBetStake ?? 0
     let peerOwedIn = 0
@@ -2242,11 +2267,12 @@ export default function PokerPage() {
       cryptoValue += (p.shares || 0) * (c.price || 0)
       cryptoCost += p.costBasis || 0
     }
-    const liquidated = chips + parked + peerOwedIn + cryptoValue - bankDebt - peerOwedOut
+    const liquidated = chips + bank + parked + peerOwedIn + cryptoValue - bankDebt - peerOwedOut
     return {
       chips,
+      bank,
       liquidated: Math.round(liquidated),
-      delta: Math.round(liquidated - chips),
+      delta: Math.round(liquidated - chips - bank),
       bankDebt,
       parked,
       peerOwedIn,
@@ -2255,7 +2281,7 @@ export default function PokerPage() {
       cryptoCost: Math.round(cryptoCost),
       cryptoPnl: Math.round(cryptoValue - cryptoCost)
     }
-  }, [bankState.chips, bankState.loans, bankState.openSideBetStake, myPeerLoans, playerId, cryptoState])
+  }, [bankState.chips, bankState.bankBalance, bankState.loans, bankState.openSideBetStake, myPeerLoans, playerId, cryptoState])
   const myBet = myPlayer?.bet || 0
   const currentBetAmount = gameState?.currentBet || 0
   const toCall = currentBetAmount - myBet
@@ -2516,6 +2542,11 @@ export default function PokerPage() {
 
   function proposeBlinds(level) {
     send('poker_propose_blinds', { small: level.small, big: level.big })
+    // Immediate sender-side receipt — server only echoes back if the
+    // request lands (i.e. not solo-human auto-apply). Without this,
+    // a user who proposes blinds gets no confirmation that the
+    // message even left the client.
+    addSys(`Asked the table to switch blinds to $${level.small}/$${level.big}…`)
   }
 
   function toggleContestMode(enabled, startingLevelId) {
@@ -3020,9 +3051,20 @@ export default function PokerPage() {
               renders when toggled on via the Tools menu. */}
           {financesWidgetOpen && joined && (
             <div className="rounded-lg border border-zinc-600/60 bg-zinc-900/95 px-2 py-1 sm:px-3 sm:py-1.5 shadow-sm backdrop-blur-md flex items-center gap-2 text-[11px] sm:text-xs font-bold text-zinc-100 whitespace-nowrap">
-              <div className="flex items-center gap-2">
+              {/* Body is a button — clicking the pill opens the
+                  Investment HUD widget. The HUD itself has the
+                  detailed breakdown; the pill is the always-on glance
+                  surface. */}
+              <button
+                type="button"
+                onClick={() => setHudEnabledPersist(true)}
+                title="Open Investment HUD"
+                className="flex items-center gap-2 -mx-1 px-1 py-0.5 rounded hover:bg-zinc-800"
+              >
                 <span className="text-[9px] uppercase tracking-wider text-zinc-500">Net</span>
-                <span className="tabular-nums">${liquidatedSummary.liquidated.toLocaleString()}</span>
+                <span className={`tabular-nums ${liquidatedSummary.liquidated < 0 ? 'text-red-300' : ''}`}>
+                  ${liquidatedSummary.liquidated.toLocaleString()}
+                </span>
                 {(liquidatedSummary.cryptoValue > 0 || liquidatedSummary.cryptoCost > 0) && (
                   <>
                     <span className="text-zinc-700">·</span>
@@ -3031,7 +3073,7 @@ export default function PokerPage() {
                     </span>
                   </>
                 )}
-              </div>
+              </button>
               <button
                 type="button"
                 onClick={() => setFinancesWidgetOpenPersist(false)}
@@ -3987,10 +4029,38 @@ export default function PokerPage() {
             const slotsUsed = bankState.loans?.length ?? 0
             const slotsLeft = Math.max(0, maxLoans - slotsUsed)
             const totalOwed = (bankState.loans || []).reduce((sum, l) => sum + (l.owed || 0), 0)
+            const bankBalance = bankState.bankBalance ?? 0
+            const overdrawn = bankBalance < 0
             const nextTier = nextUnlockTier(peakSwing)
             const handsAt = bankState.handsAtSession ?? 0
             return (
               <div className="space-y-3">
+                {/* Top "wallet" card — bank cash sitting idle. This is
+                    money not in any asset; it's what pays off loans,
+                    funds investments, and rebuys chips when busted.
+                    Goes red on overdraft with a tip to take a bank
+                    loan from the section below. */}
+                <div className={`rounded-lg border p-3 ${overdrawn ? 'border-red-500/50 bg-red-950/25' : 'border-sky-700/40 bg-sky-950/20'}`}>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-sky-200">Money on hand</span>
+                    {/* Regular-sized amount, color-coded: emerald if
+                        positive, red if negative, zinc if zero — same
+                        signal the rest of the app's P/L badges use. */}
+                    <span className={`text-sm font-black tabular-nums ${bankBalance > 0 ? 'text-emerald-300' : bankBalance < 0 ? 'text-red-300' : 'text-zinc-300'}`}>
+                      ${bankBalance.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[10px] font-bold text-zinc-400 leading-snug">
+                    Cash not in any asset. Funds investments, loan payoffs, and auto-rebuys when your poker stack hits zero.
+                  </div>
+                  {overdrawn && (
+                    <div className="mt-2 rounded-md border border-red-500/50 bg-red-950/40 px-2 py-1.5 text-[11px] font-black text-red-100">
+                      Overdrawn by <span className="text-red-200 tabular-nums">${Math.abs(bankBalance).toLocaleString()}</span>.
+                      Take a bank loan below to dig out, or sell some assets to top up.
+                    </div>
+                  )}
+                </div>
+
                 <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3 space-y-2">
                   <div className="grid grid-cols-3 gap-2 text-center">
                     <div className="rounded-md border border-zinc-700/70 bg-zinc-900/80 px-2 py-1.5">
@@ -4024,21 +4094,28 @@ export default function PokerPage() {
 
                 <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
                   <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-zinc-300">Lifetime stats</div>
+                  {/* Label classes use `whitespace-nowrap` + tighter
+                      tracking + a smaller font so "INTEREST PAID" — the
+                      widest label of the four — sits on one line in
+                      every tile. Previously it wrapped onto a second
+                      line which shoved its $0 value down half a row
+                      and visually broke alignment with the other
+                      three tiles. */}
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     <div className="rounded-md border border-zinc-700/70 bg-zinc-900/80 px-2 py-1.5 text-center">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Borrowed</div>
+                      <div className="text-[8px] font-black uppercase tracking-wider text-zinc-400 whitespace-nowrap">Borrowed</div>
                       <div className="text-sm font-black text-white">${(bankState.lifetimeBorrowed ?? 0).toLocaleString()}</div>
                     </div>
                     <div className="rounded-md border border-zinc-700/70 bg-zinc-900/80 px-2 py-1.5 text-center">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Interest paid</div>
+                      <div className="text-[8px] font-black uppercase tracking-wider text-zinc-400 whitespace-nowrap">Interest paid</div>
                       <div className="text-sm font-black text-amber-300">${(bankState.lifetimeInterestPaid ?? 0).toLocaleString()}</div>
                     </div>
                     <div className="rounded-md border border-zinc-700/70 bg-zinc-900/80 px-2 py-1.5 text-center">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Credit low</div>
+                      <div className="text-[8px] font-black uppercase tracking-wider text-zinc-400 whitespace-nowrap">Credit low</div>
                       <div className={`text-sm font-black ${creditScoreColorClass(bankState.creditScoreMin ?? score)}`}>{bankState.creditScoreMin ?? score}</div>
                     </div>
                     <div className="rounded-md border border-zinc-700/70 bg-zinc-900/80 px-2 py-1.5 text-center">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Credit high</div>
+                      <div className="text-[8px] font-black uppercase tracking-wider text-zinc-400 whitespace-nowrap">Credit high</div>
                       <div className={`text-sm font-black ${creditScoreColorClass(bankState.creditScoreMax ?? score)}`}>{bankState.creditScoreMax ?? score}</div>
                     </div>
                   </div>
@@ -4637,7 +4714,8 @@ export default function PokerPage() {
           {activePokerPanel === 'crypto' && (
             <CryptoMarketPanel
               crypto={cryptoState}
-              myChips={bankState.chips ?? 0}
+              // Crypto trades from the bank wallet, not the poker stack.
+              myChips={bankState.bankBalance ?? 0}
               canTrade={joined}
               onBuy={cryptoBuy}
               onSell={cryptoSell}
@@ -4677,18 +4755,16 @@ export default function PokerPage() {
           {activePokerPanel === 'assets' && (
             <AssetsPanel
               assetsState={assetsState}
-              myChips={bankState.chips ?? 0}
+              // Assets are an off-table money game — bank wallet only.
+              myChips={bankState.bankBalance ?? 0}
               joined={joined}
               onBuy={(assetId, units) => {
-                const entry = (assetsState?.catalog || []).find(c => c.id === assetId)
-                if (!entry) return
-                const cost = (entry.price || 0) * (units || 1)
-                requestPurchase({
-                  title: entry.name,
-                  body: `Buy ${units || 1} × ${entry.name} for $${(cost).toLocaleString()}? Yields +$${(entry.yieldPerHand || 0).toLocaleString()}/hand.`,
-                  cost,
-                  onConfirm: () => send('asset:buy', { assetId, units }),
-                })
+                // Direct send — no confirm modal. The Assets panel
+                // already shows price + an inline "Need $X" affordability
+                // gate on the Buy button, so a separate confirm popup
+                // was just blocking spam-buy. Mirrors the crypto-market
+                // flow: panel stays open after every purchase.
+                send('asset:buy', { assetId, units })
               }}
               onSell={(assetId, units) => send('asset:sell', { assetId, units })}
             />
@@ -4706,10 +4782,13 @@ export default function PokerPage() {
             <StocksPanel
               stocksState={stocksState}
               optionsState={optionsState}
-              myChips={bankState.chips ?? 0}
+              // Stocks + options + earnings spend from the bank wallet —
+              // poker chips at the table are betting money only.
+              myChips={bankState.bankBalance ?? 0}
               joined={joined}
               onBuy={(symbol, amount) => send('stock:buy', { symbol, amount })}
-              onSell={(symbol) => send('stock:sell', { symbol })}
+              // sharesToSell omitted = sell entire position (server default).
+              onSell={(symbol, sharesToSell) => send('stock:sell', { symbol, sharesToSell })}
               onSabotage={(symbol) => send('stock:sabotage', { symbol })}
               onBuyOption={(payload) => send('options:buy', payload)}
               onCloseOption={(payload) => send('options:close', payload)}
@@ -4719,23 +4798,24 @@ export default function PokerPage() {
           {activePokerPanel === 'world' && (
             <WorldPanel
               worldState={worldState}
-              myChips={bankState.chips ?? 0}
+              // World purchases + offers spend from the BANK wallet,
+              // not the poker stack. Yields also settle to bank.
+              myChips={bankState.bankBalance ?? 0}
               joined={joined}
               myPlayerId={playerId}
               onClaim={(territoryId) => {
+                // Direct claim — only works on UNOWNED regions.
+                // For owned regions, the panel routes the buyer to
+                // the make-offer flow instead.
                 const t = (worldState?.territories || []).find(tt => tt.id === territoryId)
-                if (!t) return
-                if (t.isMine) return
-                requestPurchase({
-                  title: t.name,
-                  body: t.ownerId
-                    ? `Hostile takeover of ${t.name} from ${t.ownerName}. Cost $${(t.currentCost || 0).toLocaleString()}. They get 70% back.`
-                    : `Claim ${t.name} for $${(t.currentCost || 0).toLocaleString()}? Yields +$${(t.yieldBase || 0).toLocaleString()}/hand.`,
-                  cost: t.currentCost || 0,
-                  onConfirm: () => send('world:claim', { territoryId }),
-                })
+                if (!t || t.isMine || t.ownerId) return
+                send('world:claim', { territoryId })
               }}
               onPandemic={() => send('world:pandemic', {})}
+              onMakeOffer={(territoryId, price) => send('world:offer', { territoryId, price })}
+              onAcceptOffer={(territoryId, offerId) => send('world:accept_offer', { territoryId, offerId })}
+              onDeclineOffer={(territoryId, offerId) => send('world:decline_offer', { territoryId, offerId })}
+              onCancelOffer={(territoryId, offerId) => send('world:cancel_offer', { territoryId, offerId })}
             />
           )}
 
@@ -4752,35 +4832,102 @@ export default function PokerPage() {
         </div>
       )}
 
-      {pendingBlindsProposal && !isSpectator && (
-        <div className="fixed left-1/2 top-16 z-[110] w-[calc(100vw-1.5rem)] max-w-[460px] -translate-x-1/2 rounded-xl border border-amber-400/60 bg-zinc-900/98 p-3 text-white shadow-2xl backdrop-blur-md">
-          <div className="mb-1 text-[10px] font-black uppercase tracking-widest text-amber-200">
-            Blinds change requested
+      {pendingBlindsProposal && !isSpectator && (() => {
+        const prop = pendingBlindsProposal
+        const iAmProposer = prop.proposerId === playerId
+        const approvedBy = Array.isArray(prop.approvedBy) ? prop.approvedBy : []
+        const rejectedBy = Array.isArray(prop.rejectedBy) ? prop.rejectedBy : []
+        // Map IDs → seat usernames so the breakdown is human-readable.
+        // Pending = seated humans who haven't voted yet (and aren't bots).
+        // We need a seat list that includes humans only; gameState.players
+        // is the live one (game_state broadcast). The room_update broadcast
+        // also exposes humans via `players` but the proposer's own client
+        // already has gameState in scope here.
+        const seatedHumans = (gameState?.players || []).filter(p => p && !p.isBot)
+        const nameFor = (id) => {
+          const seat = seatedHumans.find(p => p?.id === id)
+          return seat?.username || 'Player'
+        }
+        const votedSet = new Set([...approvedBy, ...rejectedBy])
+        const pendingVoters = seatedHumans.filter(p => !votedSet.has(p.id))
+        return (
+          <div className="fixed left-1/2 top-16 z-[110] w-[calc(100vw-1.5rem)] max-w-[460px] -translate-x-1/2 rounded-xl border border-amber-400/60 bg-zinc-900/98 p-3 text-white shadow-2xl backdrop-blur-md">
+            <div className="mb-1 text-[10px] font-black uppercase tracking-widest text-amber-200">
+              {iAmProposer ? 'Your blinds request — out for a vote' : 'Blinds change requested'}
+            </div>
+            <div className="text-sm font-black text-white mb-1">
+              {iAmProposer
+                ? <>You asked to set blinds to ${prop.small}/${prop.big}.</>
+                : <>{prop.proposerName} wants to set blinds to ${prop.small}/${prop.big}.</>}
+            </div>
+            <div className="text-[10px] font-bold text-zinc-300 mb-2">
+              Approvals: {prop.approvalsCount}/{prop.approvalsNeeded} of {prop.humanCount} humans.
+            </div>
+
+            {/* Per-player breakdown — three lanes (Yes / No / Pending).
+                Helps the proposer see at a glance who's holding things
+                up. Each name renders as a tiny chip so the list scans
+                fast on a busy table. */}
+            {(approvedBy.length + rejectedBy.length + pendingVoters.length) > 0 && (
+              <div className="mb-3 space-y-1">
+                {approvedBy.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1 text-[10px] font-bold">
+                    <span className="text-emerald-300">✓ {approvedBy.length}</span>
+                    {approvedBy.map(id => (
+                      <span key={id} className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-black text-emerald-100">
+                        {nameFor(id)}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {rejectedBy.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1 text-[10px] font-bold">
+                    <span className="text-red-300">✗ {rejectedBy.length}</span>
+                    {rejectedBy.map(id => (
+                      <span key={id} className="rounded border border-red-500/40 bg-red-500/10 px-1.5 py-0.5 text-[9px] font-black text-red-100">
+                        {nameFor(id)}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {pendingVoters.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1 text-[10px] font-bold">
+                    <span className="text-zinc-400">… {pendingVoters.length}</span>
+                    {pendingVoters.map(p => (
+                      <span key={p.id} className="rounded border border-zinc-600/60 bg-zinc-800 px-1.5 py-0.5 text-[9px] font-black text-zinc-300">
+                        {p.username || 'Player'}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {iAmProposer ? (
+              <div className="text-[10px] font-bold text-zinc-400 leading-snug">
+                Waiting on the other players. You'll get a system message when the vote settles (applied / rejected / expired).
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => voteOnBlindsProposal('approve')}
+                  className="flex-1 rounded-md border border-emerald-400/60 bg-emerald-600 px-3 py-2 text-xs font-black text-white hover:bg-emerald-500"
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  onClick={() => voteOnBlindsProposal('reject')}
+                  className="flex-1 rounded-md border border-red-500/60 bg-red-600/80 px-3 py-2 text-xs font-black text-white hover:bg-red-500"
+                >
+                  Reject
+                </button>
+              </div>
+            )}
           </div>
-          <div className="text-sm font-black text-white mb-1">
-            {pendingBlindsProposal.proposerName} wants to set blinds to ${pendingBlindsProposal.small}/${pendingBlindsProposal.big}.
-          </div>
-          <div className="text-[10px] font-bold text-zinc-300 mb-3">
-            Approvals: {pendingBlindsProposal.approvalsCount}/{pendingBlindsProposal.approvalsNeeded} of {pendingBlindsProposal.humanCount} humans.
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => voteOnBlindsProposal('approve')}
-              className="flex-1 rounded-md border border-emerald-400/60 bg-emerald-600 px-3 py-2 text-xs font-black text-white hover:bg-emerald-500"
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              onClick={() => voteOnBlindsProposal('reject')}
-              className="flex-1 rounded-md border border-red-500/60 bg-red-600/80 px-3 py-2 text-xs font-black text-white hover:bg-red-500"
-            >
-              Reject
-            </button>
-          </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Main Table Wrapper. Mobile anchors the table near the top
           (justify-start) so the seat cards — which protrude BELOW the
@@ -5110,7 +5257,22 @@ export default function PokerPage() {
           because exactly one of `isBot` is true per seat. */}
       <PlayerProfilePopover
         open={!!popoverSeat && !popoverSeat.isBot}
-        seat={popoverSeat}
+        // 2026-05: re-derive the seat from live gameState every render
+        // (keyed by stable popoverSeatId) instead of the frozen
+        // click-time snapshot. Otherwise a job-claim / stock-buy /
+        // bank-loan that lands AFTER the popover was opened would
+        // update bankState but the popover's seat snapshot would stay
+        // stale ("$0 bank" even after a 26k payout). Falls back to
+        // the snapshot if the seat has just been removed.
+        seat={(() => {
+          const id = popoverSeatId
+          if (!id) return popoverSeat
+          return (
+            gameState?.players?.find(p => p.id === id) ||
+            gameState?.spectators?.find(p => p.id === id) ||
+            popoverSeat
+          )
+        })()}
         anchorSeatId={popoverSeatId}
         onClose={() => { setPopoverSeat(null); setPopoverSeatId(null) }}
         // Peer-loan wiring — viewer's id + chips, every open negotiation,
@@ -5118,6 +5280,10 @@ export default function PokerPage() {
         // hands these to PeerLoanPanel which filters by counterparty.
         myId={playerId}
         myChips={myPlayer?.chips ?? bankState.chips ?? 0}
+        // Loan eligibility compares BANK balance, not chips. Pass the
+        // live bank balance so PeerLoanPanel decides offer-vs-request
+        // direction against the off-table wallet.
+        myBankBalance={bankState.bankBalance ?? 0}
         myPeerLoans={(myPlayer?.peerLoans) || []}
         negotiations={peerNegotiations}
         onPeerLoanSend={(type, data) => send(type, data)}
@@ -5614,13 +5780,15 @@ export default function PokerPage() {
               <div
                 ref={statsPanelRef}
                 // The equity widget's right edge stays in lockstep
-                // with the Tools/Lobby cluster header — same auth-
-                // reactive offset (mr-24/28 signed-out, mr-14/16
-                // signed-in). Without this, the widget would still
-                // park at the wider offset after sign-in and leave
-                // a visible gap between its right edge and the
-                // avatar.
-                className={`pointer-events-auto absolute top-0 ${authUser ? 'right-14 sm:right-16' : 'right-24 sm:right-28'} ${
+                // with the Tools/Lobby cluster header:
+                //   • signed-IN  → 3.5rem/4rem to clear the dock's
+                //                  avatar.
+                //   • signed-OUT → 0.75rem/1rem gutter (the dock has
+                //                  nothing to render in that state on
+                //                  this route, so the cluster — and
+                //                  this widget — sit flush to the
+                //                  viewport edge).
+                className={`pointer-events-auto absolute top-0 ${authUser ? 'right-14 sm:right-16' : 'right-3 sm:right-4'} ${
                   statsExpansion === 'minimized'
                     ? 'w-[210px]'
                     : statsExpansion === 'detailed'
@@ -5748,7 +5916,20 @@ export default function PokerPage() {
             <div className={`order-1 w-[92%] max-w-[360px] mx-auto md:order-2 md:absolute md:bottom-0 md:right-0 md:mx-0 md:w-auto md:max-w-none md:z-30 flex flex-col items-end gap-3 shrink-0 ${lift}`}>
               {showHUD && (
                 <InvestmentHUD
+                  // Bank cash — the wallet for off-table money. The
+                  // HUD's "Money" tile reads from here; goes red when
+                  // overdrawn so the player sees the debt at a glance.
+                  myBank={bankState.bankBalance ?? 0}
+                  // Poker chips on the table, capped at 1k. Separate
+                  // tile so the player sees both numbers without
+                  // mistaking betting chips for spending money.
                   myChips={bankState.chips ?? 0}
+                  // Bank loans + peer loans drive the debt-accrual
+                  // side of passive income. Sum(owed × rate) per hand
+                  // subtracts from yields.
+                  bankLoans={bankState.loans || []}
+                  peerLoans={myPeerLoans}
+                  myPlayerId={playerId}
                   cryptoState={cryptoState}
                   assetsState={assetsState}
                   stocksState={stocksState}

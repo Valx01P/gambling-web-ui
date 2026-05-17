@@ -22,7 +22,8 @@ function fmtChips(n) { return `$${Math.max(0, Math.round(n)).toLocaleString()}` 
 const PeerLoanPanel = memo(function PeerLoanPanel({
   myId,
   myChips = 0,
-  targetSeat,           // { id, username, chips, isBot, ... } — the popover's seat
+  myBankBalance = 0,
+  targetSeat,           // { id, username, chips, bankBalance, isBot, ... } — the popover's seat
   negotiations = [],    // room-wide list, we filter by pair
   myPeerLoans = [],     // viewer's array
   onSend,               // (type, data) => void
@@ -156,11 +157,37 @@ const PeerLoanPanel = memo(function PeerLoanPanel({
 
   // ─── Open-new-loan form ────────────────────────────────────────────
   // Visible only when no negotiation is in flight with this counterparty.
-  // The server figures out which side is the lender from the chip counts.
+  // Loan eligibility uses the BANK wallet (off-table money), not the
+  // poker stack — the server caps interest and rebalances bank, so the
+  // bank is the meaningful "have money to lend" signal. The poker stack
+  // is volatile within a hand and not what a lender's risk is sized
+  // against. Tie-break by net worth (bank + chips) so two players with
+  // identical bank balances still get a deterministic offer/request
+  // direction: only the richer-net-worth side gets the "Offer" verb.
   let openForm = null
   if (!activeNeg) {
-    const iHaveMore = myChips > (targetSeat.chips || 0)
+    const targetBank = targetSeat.bankBalance ?? 0
+    const targetChips = targetSeat.chips ?? 0
+    const myNetWorth = (myBankBalance || 0) + (myChips || 0)
+    const targetNetWorth = targetBank + targetChips
+    const iHaveMoreBank = (myBankBalance || 0) > targetBank
+    const banksEqual = (myBankBalance || 0) === targetBank
+    const iHaveMoreNetWorth = myNetWorth > targetNetWorth
+    // I can OFFER only when I'm the richer side. Otherwise the form
+    // flips to REQUEST. Banks-equal → fall back to net worth. Equal
+    // on both → request (we never let two perfectly-tied players both
+    // see Offer, since the server can only resolve one direction).
+    const iHaveMore = iHaveMoreBank || (banksEqual && iHaveMoreNetWorth)
     const verb = iHaveMore ? 'Offer loan' : 'Request loan'
+    // Plain-English explanation so the player understands which side
+    // they're on. Hides the mental math; surfaces the rule explicitly.
+    const eligibilityNote = iHaveMore
+      ? iHaveMoreBank
+        ? `Your bank > theirs (${fmtChips(myBankBalance)} vs ${fmtChips(targetBank)}).`
+        : `Banks tied — your net worth wins (${fmtChips(myNetWorth)} vs ${fmtChips(targetNetWorth)}).`
+      : iHaveMoreBank === false && !banksEqual
+        ? `Their bank > yours (${fmtChips(targetBank)} vs ${fmtChips(myBankBalance)}) — you can only request.`
+        : `Banks tied and their net worth ≥ yours — you can only request.`
     openForm = (
       <div className="rounded-md border border-zinc-700/60 bg-zinc-900/50 p-2 text-[11px] space-y-1.5">
         <div className="text-[9px] font-black uppercase tracking-wider text-amber-300">{verb}</div>
@@ -192,8 +219,8 @@ const PeerLoanPanel = memo(function PeerLoanPanel({
         >
           {verb}
         </button>
-        <div className="text-[10px] text-zinc-500">
-          Cap: 50% of the lender's current stack. Interest accrues per hand.
+        <div className="text-[10px] text-zinc-500 leading-snug">
+          {eligibilityNote} Cap: 50% of the lender's stack. Interest accrues per hand.
         </div>
       </div>
     )

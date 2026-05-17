@@ -30,29 +30,29 @@ import { MESSAGE_TYPES } from '../config/constants.js'
 //     as the *minimum* here for safety; the real value is picked at
 //     _markUsed time and stored alongside the last-used hand index
 //   • hack (8) — slowest, since it ALWAYS lands chips (no opt-out)
+// 2026-05: halved across the board so players can take chips from each
+// other more frequently. The "engage with other seats" design ask — if
+// you only get to scam/hack once every 8 hands, the table feels
+// passive. Faster reload keeps the griefing chip-stream flowing.
 const ITEM_COOLDOWN_HANDS = {
-  peek: 6,
+  peek: 4,
   swap: 6,
-  scam: 1,
-  hack: 8,
-  // Deck-rig powers. The user's design ask:
-  //   • river_card (8) — pick the river card on the next time the
-  //     turn → river transition fires this hand
-  //   • next_card (8) — pick whichever single community card comes
-  //     out next (flop's first card, the turn, or the river)
-  //   • rig_hand (14) — script the entire next hand: own hole
-  //     cards, optionally any seated opponent's hole cards, and any
-  //     of the 5 board slots. Empty slots fall back to random draws.
+  scam: 2,
+  hack: 3,
+  // Deck-rig powers — kept on long cooldowns because they're
+  // strictly stronger than chip-takers.
   river_card: 8,
   next_card: 8,
-  rig_hand: 14,
+  rig_hand: 16,
 }
 
-// Scam cooldown is randomized per use to break up popup spam — players
-// can't reliably predict when their next attempt unlocks, so the popup
-// stops feeling like a metronome. Inclusive bounds.
-const SCAM_COOLDOWN_MIN_HANDS = 1
-const SCAM_COOLDOWN_MAX_HANDS = 4
+// Scam cooldown is fixed at 2 hands now (was randomized 2-3 to break
+// up popup spam). Per user request: every item gets a single, exact
+// refresh window so the in-UI "Recharges every N hands" label tells
+// the truth — a 2-3 range would have to read as either 2 or 3 and the
+// pre-roll value isn't known until use.
+const SCAM_COOLDOWN_MIN_HANDS = 2
+const SCAM_COOLDOWN_MAX_HANDS = 2
 
 const HACK_MIN_PERCENT = 0.05
 const HACK_MAX_PERCENT = 0.15
@@ -66,13 +66,11 @@ const SCAM_MIN_AMOUNT = 50
 // indefinitely pin the sender's cooldown.
 const SCAM_EXPIRY_MS = 30_000
 
-// 2026-05: scam removed from the public catalog. The popup-shuffle
-// mechanic was more annoying than entertaining in playtesting; the
-// engine method + message-type plumbing stays around (`initiateScam`,
-// `resolveScam`, the popup message type) so any old session that
-// still has a scam in flight resolves cleanly, but new uses can't
-// be initiated from the client because it's no longer in this list.
-const ITEM_IDS = ['peek', 'swap', 'hack', 'river_card', 'next_card', 'rig_hand']
+// Scam re-enabled per user request — the popup mechanic is back as
+// another way to take chips from another seat. Refreshes every ~3
+// hands (see SCAM_COOLDOWN_*); the popup auto-blocks after 30s of
+// no response so an AFK target can't pin the sender's cooldown.
+const ITEM_IDS = ['peek', 'swap', 'scam', 'hack', 'river_card', 'next_card', 'rig_hand']
 
 // Card validation tables. Used by swap() to reject malformed picks
 // from the client. Kept here (not imported from the deck module) so

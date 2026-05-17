@@ -49,29 +49,46 @@ export function tickBaseCoin(coin) {
 
 // ─── Scam meme coins ────────────────────────────────────────────────────────
 
+// Regime catalog for the volatile "scam" / player coins. Each entry is
+// [name, ticksMin, ticksMax, perTickReturn, vol]. Multi-tick regimes
+// compound — a 10-tick "rocket" at +50%/tick is roughly 57× the
+// starting price; a 6-tick "moon" at +100% is ~64×. The probabilities
+// in pickRegime() keep these rare so the meme market still feels like
+// "most coins are shit" with occasional life-changing candles.
 const SCAM_REGIMES = [
-  // [name, ticksMin, ticksMax, perTickReturn, vol]
+  // ── steady-state / chop ───────────────────────────────────────
   ['pump',  10, 30,  0.040, 0.060],   // sharp rip
   ['dump',  10, 30, -0.045, 0.060],   // sharp dump
   ['crash', 3,  8,  -0.150, 0.030],   // capitulation candle
   ['rise',  20, 60,  0.012, 0.025],   // steady uptrend
   ['bleed', 30, 90, -0.008, 0.020],   // slow death
   ['crab',  20, 60,  0.000, 0.030],   // sideways with chop
-  ['flat',  10, 30,  0.000, 0.005]    // dead-flat (deceptive calm)
+  ['flat',  10, 30,  0.000, 0.005],   // dead-flat (deceptive calm)
+  // ── extreme regimes — the once-in-a-session candles ───────────
+  ['rocket',   6, 14,  0.50, 0.18],   // 1000%+ in a handful of ticks
+  ['moon',     3,  7,  1.00, 0.30],   // 10,000%+ — life-changing
+  ['parabolic',8, 18,  0.20, 0.12],   // sustained ladder, ~500-2000%
+  ['implosion',4,  9, -0.40, 0.20],   // -95% over a few ticks
+  ['ragdoll', 12, 28,  0.05, 0.35],   // huge chop, slight upward drift
 ]
 
 function pickRegime(coin) {
-  // Slight bias toward "crab" / "bleed" so most coins look like garbage
-  // most of the time, punctuated by pumps. Real meme markets behave the
-  // same way.
+  // Most coins crab / bleed most of the time. Extreme regimes are
+  // rare-but-present so the market always has a few rip-or-rug stories.
   const r = Math.random()
-  if (r < 0.25) return SCAM_REGIMES[5]  // crab
-  if (r < 0.45) return SCAM_REGIMES[4]  // bleed
-  if (r < 0.60) return SCAM_REGIMES[0]  // pump
-  if (r < 0.72) return SCAM_REGIMES[1]  // dump
-  if (r < 0.82) return SCAM_REGIMES[3]  // rise
-  if (r < 0.92) return SCAM_REGIMES[6]  // flat
-  return SCAM_REGIMES[2]                // crash
+  if (r < 0.22) return SCAM_REGIMES[5]   // crab
+  if (r < 0.38) return SCAM_REGIMES[4]   // bleed
+  if (r < 0.52) return SCAM_REGIMES[0]   // pump
+  if (r < 0.62) return SCAM_REGIMES[1]   // dump
+  if (r < 0.72) return SCAM_REGIMES[3]   // rise
+  if (r < 0.80) return SCAM_REGIMES[6]   // flat
+  if (r < 0.86) return SCAM_REGIMES[2]   // crash
+  // ── extreme tail (~14% combined) ────────────────────────────
+  if (r < 0.92) return SCAM_REGIMES[11]  // ragdoll (chop)
+  if (r < 0.95) return SCAM_REGIMES[9]   // parabolic
+  if (r < 0.97) return SCAM_REGIMES[7]   // rocket — ~2%
+  if (r < 0.99) return SCAM_REGIMES[10]  // implosion
+  return SCAM_REGIMES[8]                  // moon — ~1%
 }
 
 export function tickScamCoin(coin) {
@@ -90,29 +107,21 @@ export function tickScamCoin(coin) {
 
 // ─── Player-minted coins ────────────────────────────────────────────────────
 //
-// Stability is keyed off the owner's holdings ratio. Owner holds ≥80% of
-// supply → very stable (low vol, slight upward drift). As that drops to
-// 50% → behaves like a base coin. Below 30% → behaves more like a meme,
-// since "the owner can dump at any second".
+// 2026-05: player coins now share the SAME regime engine as scam coins
+// (pump / dump / crash / rocket / moon / etc). This is what makes the
+// "anonymous shitcoin" mix work — other players can't tell from the
+// price chart whether a coin was auto-minted or manually launched.
 //
-// Rugged coins ignore all of this and just decay toward zero.
+// Rugged coins skip regimes and just decay toward zero.
 
 export function tickPlayerCoin(coin) {
   if (coin.rugged) {
-    // Slow bleed of remaining dust + a chance of one last spike for the
-    // bag holders' amusement. Capped near zero.
+    // Slow bleed of remaining dust + a chance of one last spike for
+    // the bag holders' amusement. Capped near zero.
     const noise = gauss() * 0.05 * coin.price
     return clampPrice(coin.price * 0.985 + noise)
   }
-  const ownerRatio = coin.totalSupply > 0
-    ? Math.max(0, Math.min(1, coin.ownerShares / coin.totalSupply))
-    : 1
-  // Volatility goes from 0.005 (100% held) to 0.05 (0% held).
-  const vol = 0.005 + (1 - ownerRatio) * 0.045
-  // Slight upward bias when owner-held → keeps the owner's "narrative" alive.
-  const drift = (ownerRatio * 0.002 - 0.0005) * coin.price
-  const noise = gauss() * vol * coin.price
-  return clampPrice(coin.price + drift + noise)
+  return tickScamCoin(coin)
 }
 
 export function pushHistory(coin, newPrice) {

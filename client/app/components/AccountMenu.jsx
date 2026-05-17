@@ -24,7 +24,7 @@ function InitialsCircle({ name, color }) {
   )
 }
 
-export default function AccountMenu() {
+export default function AccountMenu({ hideSignedOutChip = false } = {}) {
   const { user, signOut } = useAuth()
   const { zoom, adjust: adjustZoom, MIN: ZOOM_MIN, MAX: ZOOM_MAX, STEP: ZOOM_STEP } = useZoom()
   const wrapperRef = useRef(null)
@@ -64,15 +64,21 @@ export default function AccountMenu() {
   }, [user])
 
   if (!user) {
+    // On routes where a RouteNavCluster is also mounted, that cluster
+    // renders the visible Sign-in chip in the same flex row as
+    // Tools/Lobby/Home (guaranteed alignment). In that case we still
+    // need to keep AuthGateModal alive here so the global
+    // `pokerxyz:open-signin` event listener wired in the effect above
+    // can pop the modal open from anywhere in the app (PostComposer,
+    // the in-cluster chip, etc.). `hideSignedOutChip` toggles between
+    // "render chip + modal" (default — used on /feed and /users where
+    // there's no cluster) and "render modal only".
+    if (hideSignedOutChip) {
+      return <AuthGateModal open={authOpen} onClose={() => setAuthOpen(false)} />
+    }
     return (
-      // Text "Sign in" chip — labelled clearly so users don't have to
-      // decode an icon. Clicking opens AuthGateModal which exposes BOTH
-      // native email/password (signin/signup/verify/reset) AND Google.
-      // The earlier dropdown rendered only the Google button, which
-      // made the native option invisible even though the server has
-      // supported it since migration 022.
       <>
-        <div ref={wrapperRef} className="relative inline-flex h-9 items-center">
+        <div ref={wrapperRef} className="relative flex h-9 items-center">
           <button
             type="button"
             onClick={() => setAuthOpen(true)}

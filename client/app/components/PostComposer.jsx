@@ -128,16 +128,17 @@ export default function PostComposer({ onPosted, defaultBody = '', defaultTableI
   }
 
   return (
-    <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/60 p-2.5 sm:p-3">
-      {/* Compact avatar + tighter gap on mobile to claw back vertical
-          space — the textarea is forced to 16px on phones (iOS zoom
-          floor) so the rest of the card needs to scale around it. */}
-      <div className="flex items-start gap-2 sm:gap-3">
+    <div className="rounded-lg border border-zinc-700/70 bg-zinc-900/60 p-2 sm:p-2.5">
+      {/* Compact avatar + tighter gap to claw back vertical space —
+          the textarea is forced to 16px on phones (iOS zoom floor) so
+          the rest of the card scales around it. Shorter placeholder
+          so it doesn't visually truncate inside the narrow feed window. */}
+      <div className="flex items-start gap-1.5 sm:gap-2">
         <ProfileAvatar
           avatarUrl={user.avatarUrl}
           name={user.displayName || user.username}
           nameKey={user.id}
-          size={32}
+          size={26}
         />
         <div className="min-w-0 flex-1">
           <textarea
@@ -152,13 +153,13 @@ export default function PostComposer({ onPosted, defaultBody = '', defaultTableI
             onKeyDown={(e) => {
               if ((e.key === 'Enter') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit() }
             }}
-            placeholder="Share a hand, a strategy thought, or a table you're at. @mention to ping someone."
-            // 2 rows on mobile (smaller composer footprint), 3 rows
-            // sm+ for the more spacious desktop layout. The 16px iOS
-            // floor in globals.css keeps focus from zooming.
+            placeholder="Share a hand, a thought, a table…  @mention to ping."
+            // 2 rows always — keeps the composer footprint small so it
+            // doesn't dominate the feed window on cramped viewports.
+            // The 16px iOS floor in globals.css keeps focus from zooming.
             rows={2}
             disabled={busy}
-            className="w-full resize-none rounded-md border border-zinc-700 bg-zinc-950/50 px-2.5 py-1.5 text-sm font-bold text-white outline-none disabled:opacity-50 sm:px-3 sm:py-2"
+            className="w-full resize-none rounded-md border border-zinc-700 bg-zinc-950/50 px-2 py-1 text-[13px] font-bold text-white outline-none disabled:opacity-50 sm:px-2.5 sm:py-1.5 sm:text-sm"
           />
 
           {/* Mention suggestions popdown — appears under the textarea
@@ -216,7 +217,7 @@ export default function PostComposer({ onPosted, defaultBody = '', defaultTableI
             </div>
           )}
 
-          <div className="mt-2 flex items-center justify-between gap-2">
+          <div className="mt-1.5 flex items-center justify-between gap-2">
             <div className="flex items-center gap-1">
               <input
                 ref={fileRef}
@@ -229,11 +230,11 @@ export default function PostComposer({ onPosted, defaultBody = '', defaultTableI
                 type="button"
                 onClick={() => fileRef.current?.click()}
                 disabled={uploading || busy}
-                className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+                className="rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
               >
-                {uploading ? 'Uploading…' : (imageUrl ? 'Replace image' : '📷 Image')}
+                {uploading ? 'Up…' : (imageUrl ? 'Swap img' : '📷')}
               </button>
-              <span className="ml-1 text-[10px] font-bold text-zinc-500">
+              <span className="ml-1 text-[9px] font-bold text-zinc-500 tabular-nums">
                 {body.length}/{MAX_BODY}
               </span>
             </div>
@@ -241,7 +242,7 @@ export default function PostComposer({ onPosted, defaultBody = '', defaultTableI
               type="button"
               onClick={submit}
               disabled={busy || uploading || (!body.trim() && !imageUrl)}
-              className="rounded-md border border-amber-400/60 bg-amber-500 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-zinc-900 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-md border border-amber-400/60 bg-amber-500 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-900 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? 'Posting…' : 'Post'}
             </button>

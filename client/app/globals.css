@@ -9,6 +9,62 @@ body {
   font-family: var(--font-gscode);
 }
 
+/* ─── Global pointer cursor for everything interactable ──────────────
+ * Tailwind v4 dropped its default cursor-pointer-on-button reset, so
+ * out of the box every <button> in the app gets the default arrow.
+ * That made it ambiguous which surfaces were clickable. This block
+ * restores a pointer cursor for every conventionally-clickable
+ * element, with carve-outs for disabled state so we don't lie about
+ * what's actually clickable.
+ *
+ * The selectors are wrapped in :where() so their specificity is
+ * zeroed — any explicit Tailwind utility (cursor-default, cursor-not-
+ * allowed, cursor-grab, cursor-text, etc.) on a specific element
+ * will still win, with zero need to add !important anywhere.
+ *
+ * Coverage:
+ *   • <button> + <a href> + <summary> — native interactives
+ *   • role="button" / "link" / "menuitem" / "tab" / "option" /
+ *     "checkbox" / "radio" / "switch" — ARIA synthetics
+ *   • <label for> — clicking the label focuses the input
+ *   • <select> + clickable input types (checkbox / radio / file /
+ *     range / submit / reset / button)
+ *   • [data-clickable] — escape hatch for any custom widget
+ *
+ * Disabled state: :disabled, aria-disabled="true", and
+ * data-disabled="true" all flip to not-allowed.
+ */
+:where(button:not(:disabled)),
+:where(a[href]),
+:where(summary),
+:where([role="button"]):not([aria-disabled="true"]),
+:where([role="link"]):not([aria-disabled="true"]),
+:where([role="menuitem"]):not([aria-disabled="true"]),
+:where([role="tab"]):not([aria-disabled="true"]),
+:where([role="option"]):not([aria-disabled="true"]),
+:where([role="checkbox"]):not([aria-disabled="true"]),
+:where([role="radio"]):not([aria-disabled="true"]),
+:where([role="switch"]):not([aria-disabled="true"]),
+:where(label[for]),
+:where(select:not(:disabled)),
+:where(input[type="checkbox"]:not(:disabled)),
+:where(input[type="radio"]:not(:disabled)),
+:where(input[type="file"]:not(:disabled)),
+:where(input[type="range"]:not(:disabled)),
+:where(input[type="submit"]:not(:disabled)),
+:where(input[type="reset"]:not(:disabled)),
+:where(input[type="button"]:not(:disabled)),
+:where([data-clickable]):not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+:where(button:disabled),
+:where([aria-disabled="true"]),
+:where([data-disabled="true"]),
+:where(select:disabled),
+:where(input:disabled) {
+  cursor: not-allowed;
+}
+
 /* ─── Global scrollbar theme ──────────────────────────────────────────
  * Dark, slim, in-palette scrollbars across every scrollable surface
  * in the app — no more default OS chrome. We hit both rendering

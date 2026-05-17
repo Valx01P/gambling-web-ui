@@ -46,18 +46,19 @@ function CoinKindBadge({ kind }) {
 }
 
 function CoinRow({ coin, position, myChips, onBuy, onSell, onRug, canTrade, myCoinId }) {
-  const [amount, setAmount] = useState('')
+  // 2026-05: shorting removed. Long-only — buy with bank-%, sell half
+  // / all on an open position. The chips input is also gone; the %
+  // buttons fire the trade directly.
   const change = pctChange(coin.history)
   const changeColor = change > 0.5 ? 'text-emerald-300' : change < -0.5 ? 'text-red-300' : 'text-zinc-400'
   const isMine = coin.ownerId && coin.id === myCoinId
   const positionValue = position ? position.shares * coin.price : 0
   const positionPnl = position ? positionValue - position.costBasis : 0
 
-  const handleBuy = () => {
-    const n = Math.floor(Number(amount) || 0)
-    if (n <= 0) return
-    onBuy(coin.id, n)
-    setAmount('')
+  const buyAtPct = (pct) => {
+    const dollars = Math.floor((myChips || 0) * pct / 100)
+    if (dollars <= 0) return
+    onBuy(coin.id, dollars)
   }
   const handleSellAll = () => {
     if (!position || position.shares <= 0) return
@@ -88,7 +89,7 @@ function CoinRow({ coin, position, myChips, onBuy, onSell, onRug, canTrade, myCo
 
       {position && position.shares > 0 && (
         <div className="mt-1.5 flex items-center justify-between rounded border border-zinc-700/40 bg-zinc-900/60 px-2 py-1 text-[10px] font-bold">
-          <span className="text-zinc-400">You: <span className="tabular-nums text-zinc-100">{position.shares < 1 ? position.shares.toFixed(4) : position.shares.toFixed(2)}</span> sh</span>
+          <span className="text-zinc-400">Long: <span className="tabular-nums text-zinc-100">{position.shares < 1 ? position.shares.toFixed(4) : position.shares.toFixed(2)}</span> sh</span>
           <span className="tabular-nums text-zinc-300">≈ ${fmtChips(positionValue)}</span>
           <span className={`tabular-nums font-black ${positionPnl > 0 ? 'text-emerald-300' : positionPnl < 0 ? 'text-red-300' : 'text-zinc-300'}`}>
             {positionPnl >= 0 ? '+' : ''}${fmtChips(positionPnl)}
@@ -97,31 +98,19 @@ function CoinRow({ coin, position, myChips, onBuy, onSell, onRug, canTrade, myCo
       )}
 
       {canTrade && !coin.rugged && (
+        // Long-only flat row: 10/25/50 % buys (green) + Sell ½ / Sell
+        // all (amber/red) when a position is open + Rug Pull (own
+        // coin only). The chips input is gone — buttons fire trades
+        // directly. Shorting was removed entirely per design.
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          <input
-            type="number"
-            inputMode="numeric"
-            placeholder="chips"
-            value={amount}
-            onChange={e => setAmount(e.target.value)}
-            min="1"
-            className="w-20 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs font-bold text-white outline-none focus:border-emerald-500"
-          />
-          <button
-            type="button"
-            onClick={handleBuy}
-            disabled={!amount || Number(amount) <= 0 || Number(amount) > myChips}
-            className="rounded border border-emerald-500/60 bg-emerald-700/70 px-2 py-1 text-[11px] font-black text-white hover:bg-emerald-600/80 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Buy
-          </button>
           {[10, 25, 50].map(pct => (
             <button
-              key={pct}
+              key={`buy${pct}`}
               type="button"
-              onClick={() => setAmount(String(Math.floor(myChips * pct / 100)))}
+              onClick={() => buyAtPct(pct)}
               disabled={myChips <= 0}
-              className="rounded border border-zinc-600 px-1.5 py-1 text-[10px] font-bold text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+              title={`Buy with ${pct}% of bank`}
+              className="rounded border border-emerald-500/60 bg-emerald-700/70 px-2 py-1 text-[11px] font-black text-white hover:bg-emerald-600/80 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {pct}%
             </button>
@@ -176,7 +165,7 @@ function CreateForm({ canMint, liveCoin, mintFee, myChips, onCreate }) {
   return (
     <div className="space-y-3">
       <div className="rounded-lg border border-zinc-700/60 bg-zinc-950/40 p-3 text-xs font-bold text-zinc-300">
-        Mint your own coin. Mint fee is <span className="text-amber-300">{mintFee.toLocaleString()}</span> chips. You can only have one live at a time.
+        Mint your own coin. Mint fee is <span className="text-amber-300">${mintFee.toLocaleString()}</span> from your bank balance. You can only have one live at a time.
         The more of the supply you keep, the more stable the price stays — until you rug-pull it.
       </div>
       <div>
@@ -228,7 +217,7 @@ function CreateForm({ canMint, liveCoin, mintFee, myChips, onCreate }) {
         disabled={disabled}
         className="w-full rounded-md border border-emerald-400/60 bg-emerald-700/80 px-3 py-2 text-sm font-black text-white hover:bg-emerald-600/90 disabled:cursor-not-allowed disabled:opacity-40"
       >
-        {myChips < mintFee ? `Need ${mintFee} chips` : `Mint coin (-${mintFee} chips)`}
+        {myChips < mintFee ? `Need $${mintFee.toLocaleString()}` : `Mint coin (−$${mintFee.toLocaleString()})`}
       </button>
     </div>
   )
@@ -301,8 +290,15 @@ function CryptoMarketPanelImpl({
       </div>
 
       <div className="flex items-center justify-between text-[11px] font-bold text-zinc-400">
-        <span>Your stack: <span className="tabular-nums text-white">${fmtChips(myChips)}</span></span>
+        <span>Bank balance: <span className="tabular-nums text-white">${fmtChips(myChips)}</span></span>
         <span>Updates every {((crypto?.config?.tickMs ?? 2000) / 1000).toFixed(1)}s</span>
+      </div>
+      {/* One-line hint so a fresh player understands that "10% / 25%
+          / 50%" mean fractions of their bank balance, not contract
+          counts or share counts. Subtle but always visible. */}
+      <div className="text-[10px] font-bold text-zinc-500 leading-snug">
+        Buy with a % of your bank balance. Bigger buys move the price more —
+        spam them on a thin-float coin to pump.
       </div>
 
       {tab === 'market' && (

@@ -173,6 +173,10 @@ export class MessageHandler {
 
         case 'world:claim':
         case 'world:pandemic':
+        case 'world:offer':
+        case 'world:accept_offer':
+        case 'world:decline_offer':
+        case 'world:cancel_offer':
           return this.handleWorldAction(player, type, data)
 
         case 'influence:run':
@@ -627,15 +631,10 @@ export class MessageHandler {
     if (!bankId) return this.error('Missing bankId', player)
 
     const room = this.roomManager.getPlayerRoom(player)
-    // Block mid-hand repay so we don't pull chips out of an active bet.
-    if (room && room.roomType === 'poker' && room.game) {
-      const inHand = room.game.phase !== GAME_PHASES.WAITING && room.game.phase !== GAME_PHASES.SHOWDOWN
-      const seated = room.players?.has?.(player.id)
-      const folded = room.game.foldedPlayers?.has?.(player.id)
-      if (seated && inHand && !folded) {
-        return this.error('Repay blocked: finish or fold the current hand first.', player)
-      }
-    }
+    // 2026-05: the old "mid-hand repay blocked" gate is gone. Bank
+    // loans now move BANK money (not poker chips), so paying one off
+    // mid-hand can't interfere with any open bet. The block was the
+    // reason "I have the money and click Pay" silently failed.
 
     const result = player.repayLoan(bankId)
     if (!result.success) {
@@ -1118,6 +1117,11 @@ export class MessageHandler {
       case 'peek': result = room.itemEngine.peek(player.id, targetId); break
       case 'swap': result = room.itemEngine.swap(player.id, data?.picks); break
       case 'hack': result = room.itemEngine.hack(player.id, targetId); break
+      // Scam fires the popup-shuffle path. The popup itself lands
+      // via a separate `item:scam_popup` push to the target; the
+      // sender's cooldown starts immediately so they can't spam
+      // attempts.
+      case 'scam': result = room.itemEngine.initiateScam(player.id, targetId); break
       // Deck-rig powers. Each takes its payload from `data.payload`
       // (or `data.card` for the single-card cases) — the engine method
       // re-validates the shape so the wire format is enforced server-side.
@@ -1388,6 +1392,14 @@ export class MessageHandler {
       result = room.worldEngine.claim(player.id, data || {})
     } else if (type === 'world:pandemic') {
       result = room.worldEngine.releasePandemic(player.id, { handIndex: room.game?.handIndex || 0 })
+    } else if (type === 'world:offer') {
+      result = room.worldEngine.makeOffer(player.id, data || {})
+    } else if (type === 'world:accept_offer') {
+      result = room.worldEngine.acceptOffer(player.id, data || {})
+    } else if (type === 'world:decline_offer') {
+      result = room.worldEngine.declineOffer(player.id, data || {})
+    } else if (type === 'world:cancel_offer') {
+      result = room.worldEngine.cancelOffer(player.id, data || {})
     }
     if (result && !result.success) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeWorldError(result.error, result) } })
@@ -1496,12 +1508,13 @@ function humanizeCryptoError(code) {
     case 'bots_cannot_trade': return 'Bots can\'t trade crypto.'
     case 'coin_not_found': return 'That coin no longer exists.'
     case 'invalid_amount': return 'Invalid amount.'
-    case 'insufficient_chips': return 'Not enough chips in your stack.'
+    case 'insufficient_chips': return 'Not enough money in your bank.'
     case 'insufficient_float': return 'Not enough float available on that coin.'
     case 'no_position': return 'You don\'t hold any of that coin.'
     case 'already_minted': return 'You\'ve already minted a coin this session.'
     case 'no_coin': return 'You haven\'t minted a coin.'
     case 'already_rugged': return 'That coin has already been rugged.'
+    case 'coin_rugged': return 'That coin is rugged — can\'t trade it.'
     default: return code
   }
 }
@@ -1527,7 +1540,7 @@ function humanizeInfluenceError(code, ctx) {
     case 'unknown_op': return 'Unknown influence op.'
     case 'not_at_table': return 'Sit down first.'
     case 'bots_cannot_run_ops': return 'Bots don\'t do politics.'
-    case 'insufficient_chips': return ctx?.cost ? `Costs $${ctx.cost.toLocaleString()}. Not enough chips.` : 'Not enough chips.'
+    case 'insufficient_chips': return ctx?.cost ? `Costs $${ctx.cost.toLocaleString()}. Not enough money in bank.` : 'Not enough money in bank.'
     case 'cooldown': return ctx?.remaining ? `On cooldown — ${ctx.remaining} more hands.` : 'On cooldown.'
     case 'target_required': return 'Pick a stock target first.'
     case 'unknown_symbol': return 'No such ticker.'
@@ -1542,9 +1555,16 @@ function humanizeWorldError(code, ctx) {
     case 'bots_cannot_release': return 'Bots can\'t release pandemics.'
     case 'unknown_territory': return 'No such territory.'
     case 'already_owned': return 'You already own it.'
+    case 'already_owned_by_other': return 'Another player owns this — make an offer instead.'
     case 'already_active': return 'A pandemic is already in progress.'
     case 'cooldown': return ctx?.cooldownRemaining ? `Pandemic cooldown: ${ctx.cooldownRemaining} hands.` : 'Pandemic is on cooldown.'
-    case 'insufficient_chips': return ctx?.cost ? `Need $${ctx.cost.toLocaleString()}.` : 'Not enough chips.'
+    case 'insufficient_chips': return ctx?.cost ? `Need $${ctx.cost.toLocaleString()}.` : 'Not enough money.'
+    case 'not_owned': return 'No one owns this — claim it directly instead.'
+    case 'not_owner': return 'You\'re not the owner of this region.'
+    case 'not_your_offer': return 'That\'s not your offer.'
+    case 'offer_not_found': return 'That offer no longer exists.'
+    case 'invalid_price': return 'Offer price must be at least $1.'
+    case 'owner_gone': return 'The owner has left the table.'
     default: return code ? `World action failed: ${code}` : 'World action failed.'
   }
 }
@@ -1555,7 +1575,7 @@ function humanizeStockError(code, ctx) {
     case 'bots_cannot_trade': return 'Bots can\'t trade stocks.'
     case 'bots_cannot_sabotage': return 'Bots can\'t sabotage.'
     case 'unknown_symbol': return 'No such ticker.'
-    case 'insufficient_chips': return ctx?.cost ? `Need $${ctx.cost.toLocaleString()} to sabotage.` : 'Not enough chips.'
+    case 'insufficient_chips': return ctx?.cost ? `Need $${ctx.cost.toLocaleString()} in bank.` : 'Not enough money in bank.'
     case 'no_position': return 'You don\'t hold that stock.'
     case 'too_small': return 'Buy amount too small.'
     case 'cooldown': return ctx?.cooldownRemaining ? `Sabotage cooldown: ${ctx.cooldownRemaining} hands.` : 'Sabotage is on cooldown.'
@@ -1579,7 +1599,7 @@ function humanizeAssetError(code) {
     case 'not_at_table': return 'Sit down or spectate first.'
     case 'bots_cannot_trade': return 'Bots can\'t hold assets.'
     case 'unknown_asset': return 'No such asset.'
-    case 'insufficient_chips': return 'Not enough chips for that buy.'
+    case 'insufficient_chips': return 'Not enough money in bank for that buy.'
     case 'insufficient_units': return 'You don\'t hold that many units.'
     default: return code ? `Asset trade failed: ${code}` : 'Asset trade failed.'
   }

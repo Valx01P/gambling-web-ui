@@ -27,12 +27,12 @@
 import { MESSAGE_TYPES } from '../config/constants.js'
 
 const MIN_LOAN_AMOUNT       = 100        // can't loan trivial sums
-// 2026-05: rate cap raised to 5x (500%/turn). Per the design ask, peer
-// loans should be able to run at "any interest" the parties agree to —
-// loan-sharking is part of the game. We keep a sanity ceiling (5x is
-// already absurd) so a typo can't lock a player into infinite debt;
-// the owed-cap multiplier below still bounds total exposure.
-const MAX_RATE              = 5.0        // 500%/turn ceiling — effectively "any rate"
+// 2026-05: rate cap restored to a sane 10%/turn. Earlier ladder of
+// 500%/turn was a typo magnet that locked players into infinite debt
+// on a mis-click. Lenders pick anywhere in [0%, 10%] per hand;
+// borrowers can decline if they don't like it. The owed-cap
+// multiplier still bounds total exposure.
+const MAX_RATE              = 0.10       // 10%/turn ceiling
 const MIN_RATE              = 0          // gift loans (0%) allowed
 const LENDER_STAKE_CAP_PCT  = 0.50       // amount ≤ 50% of lender's stack
 const NEG_TIMEOUT_MS        = 5 * 60_000 // 5-minute negotiation timeout
@@ -60,7 +60,14 @@ export class PeerLoanEngine {
     if (!valid.ok) return valid
     const { initiator, target } = valid
 
-    const initiatorIsLender = initiator.chips > target.chips
+    // 2026-05: peer loans now flow through the BANK wallet (not the
+    // poker stack). Loan asks fund off-table money (stocks, crypto,
+    // assets etc), and the rebuy on bust eats into that same bank.
+    // Who's the lender is decided by bank balance — whoever's richer
+    // off-table is the one with money to lend.
+    const initiatorBank = initiator.bankBalance || 0
+    const targetBank    = target.bankBalance    || 0
+    const initiatorIsLender = initiatorBank > targetBank
     const lender   = initiatorIsLender ? initiator : target
     const borrower = initiatorIsLender ? target    : initiator
 
@@ -211,8 +218,10 @@ export class PeerLoanEngine {
       owed: neg.amount,
       takenAtHand: this.room.game?.handIndex || 0,
     }
-    lender.chips   = Math.max(0, lender.chips - neg.amount)
-    borrower.chips = (borrower.chips || 0) + neg.amount
+    // Move BANK money, not poker chips. The loan funds business
+    // ventures (stocks/crypto/assets), not the live stack.
+    lender.bankBalance   = (lender.bankBalance || 0) - neg.amount
+    borrower.bankBalance = (borrower.bankBalance || 0) + neg.amount
     lender.peerLoans   = [...(lender.peerLoans || []), loan]
     borrower.peerLoans = [...(borrower.peerLoans || []), loan]
 
@@ -238,9 +247,10 @@ export class PeerLoanEngine {
     return this.decline(actorId, { negotiationId })
   }
 
-  // Borrower-initiated early repayment. Amount may be partial — caps at
-  // the smaller of (owed, borrower.chips). The loan is removed once owed
-  // hits 0; surplus stays with the borrower.
+  // Borrower-initiated repayment. Drains BANK money first; if the
+  // borrower can't cover the full ask, the bank balance is allowed
+  // to go NEGATIVE (overdraft) per the design — they're then nudged
+  // to take a bank loan to dig out. Amount may be partial.
   repay(actorId, { loanId, amount }) {
     const borrower = this.room.players.get(actorId)
     if (!borrower) return { success: false, error: 'Not at the table.' }
@@ -250,11 +260,11 @@ export class PeerLoanEngine {
     const lender = this.room.players.get(loan.lenderId)
     // Default to paying the full owed balance if amount is missing/0.
     const want = Math.floor(Number(amount) || loan.owed)
-    const pay  = Math.max(0, Math.min(want, loan.owed, borrower.chips))
-    if (pay <= 0) return { success: false, error: 'Need chips to repay.' }
-
-    borrower.chips -= pay
-    if (lender) lender.chips += pay  // lender may have left — chips just disappear
+    const pay  = Math.max(1, Math.min(want, loan.owed))
+    // Overdraft: bank can dip below zero. The client surfaces the
+    // negative balance in red with a "Take a bank loan →" link.
+    borrower.bankBalance = (borrower.bankBalance || 0) - pay
+    if (lender) lender.bankBalance = (lender.bankBalance || 0) + pay
     loan.owed -= pay
 
     if (loan.owed <= 0) this._removeLoan(loan.id)
@@ -313,17 +323,18 @@ export class PeerLoanEngine {
       const lender   = this.room.players.get(loan.lenderId)
       const borrower = this.room.players.get(loan.borrowerId)
       if (!borrower) {
-        // Borrower is already gone (shouldn't happen if we hook leaves
-        // properly, but guard anyway). Lender just absorbs the loss.
         this._removeLoan(loan.id)
         continue
       }
-      const take = Math.min(loan.owed, borrower.chips || 0)
-      borrower.chips = Math.max(0, (borrower.chips || 0) - take)
-      if (lender) lender.chips += take
+      // Force-settle in the bank wallet. Borrower's bank can dip
+      // negative on leave (overdraft); they can dig out later via
+      // a bank loan if they're still around.
+      const take = loan.owed
+      borrower.bankBalance = (borrower.bankBalance || 0) - take
+      if (lender) lender.bankBalance = (lender.bankBalance || 0) + take
       this._removeLoan(loan.id)
       if (lender && borrower && take > 0) {
-        this._systemMessage(`${borrower.username} left — $${take.toLocaleString()} settled to ${lender.username}.`)
+        this._systemMessage(`${borrower.username} left — $${take.toLocaleString()} drawn from their bank to ${lender.username}.`)
       }
     }
     // Also cancel any negotiations this player was party to.
@@ -353,11 +364,14 @@ export class PeerLoanEngine {
     if (!Number.isFinite(n) || n < MIN_LOAN_AMOUNT) {
       return { ok: false, error: `Minimum loan is $${MIN_LOAN_AMOUNT}.` }
     }
-    const cap = Math.floor((lender.chips || 0) * LENDER_STAKE_CAP_PCT)
+    // Lender stake cap is now anchored to the BANK wallet — peer
+    // loans fund off-table money so the cap should track off-table
+    // wealth, not the poker stack.
+    const cap = Math.floor((lender.bankBalance || 0) * LENDER_STAKE_CAP_PCT)
     if (n > cap) {
       return {
         ok: false,
-        error: `Lender (${lender.username}) can only loan up to $${cap.toLocaleString()} (50% of their stack).`,
+        error: `Lender (${lender.username}) can only loan up to $${cap.toLocaleString()} (50% of their bank).`,
       }
     }
     return { ok: true, value: n }
@@ -366,7 +380,7 @@ export class PeerLoanEngine {
   _validateRate(rate) {
     const r = Number(rate)
     if (!Number.isFinite(r) || r < MIN_RATE || r > MAX_RATE) {
-      return { ok: false, error: `Rate must be between ${MIN_RATE}% and ${(MAX_RATE * 100).toFixed(0)}% per turn.` }
+      return { ok: false, error: `Rate must be between ${(MIN_RATE * 100).toFixed(0)}% and ${(MAX_RATE * 100).toFixed(0)}%/hand.` }
     }
     // Round to 0.1% increments to keep the wire numbers clean.
     return { ok: true, value: Math.round(r * 1000) / 1000 }

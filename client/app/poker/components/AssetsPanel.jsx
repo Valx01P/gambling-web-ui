@@ -51,6 +51,13 @@ export default function AssetsPanel({ assetsState, myChips, onBuy, onSell, joine
             </div>
           </div>
         </div>
+        {/* Bank balance always visible — buys spend from bank, so the
+            player needs to know what they can actually afford without
+            having to flip back to another tab. */}
+        <div className="mt-2 flex flex-wrap items-baseline justify-between gap-2 border-t border-zinc-800/80 pt-2 text-[10px] font-bold text-zinc-400">
+          <span>Bank balance: <span className="tabular-nums text-white">${fmtChipsCompact(myChips)}</span></span>
+          <span className="text-zinc-500">Purchases spend from your bank.</span>
+        </div>
         {marketMul < 1 && (
           <div className="mt-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] font-bold text-red-200">
             Market is depressed by an active shock (pandemic / sabotage). Recovers ~4%/hand.

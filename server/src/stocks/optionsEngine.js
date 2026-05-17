@@ -49,13 +49,20 @@ export class OptionsEngine {
   }
 
   // Heuristic premium per contract (i.e., for 100 underlying shares).
-  // Tuned so an ATM 3-hand contract costs roughly volatility × price × 30,
-  // OTM strikes are progressively cheaper. Returns chips.
+  //
+  // 2026-05 retune: dropped the time-value multiplier from 12 → 1.5
+  // because options were pricing at ~12% of underlying value for ATM
+  // contracts on blue-chip stocks (a $1250 stock's ATM call costing
+  // $18,000 per contract — equivalent to buying 14 shares outright,
+  // which defeats the point of options as a leveraged play). Real-
+  // world short-dated ATM options are roughly 1-3% of underlying;
+  // 1.5x lands ATM premiums at ~1.8% for blue chips and ~7% for
+  // high-vol penny/meme tickers, which keeps the IV pump on
+  // upcoming-earnings tickers feeling meaningful without making
+  // every contract a small mortgage.
   _premium({ type, price, strike, volatility }) {
     const distance = Math.abs(strike - price) / price
-    // Time value scales mostly with vol; we treat 3 hands as the
-    // implicit time term.
-    const timeValue = price * volatility * 12
+    const timeValue = price * volatility * 1.5
     // Intrinsic if already ITM (call when strike < price, put when
     // strike > price).
     const intrinsic = type === 'call'
@@ -112,8 +119,10 @@ export class OptionsEngine {
     const n = Math.max(1, Math.floor(Number(contracts) || 0))
     const premium = this._premium({ type, price: stock.price, strike: strikeNum, volatility: this._volatilityFor(stock) })
     const total = premium * n
-    if (player.chips < total) return { success: false, error: 'insufficient_chips', cost: total }
-    player.chips -= total
+    // Options premiums settle from the bank wallet, never the poker
+    // stack. Closing/settling proceeds land in the bank too.
+    if ((player.bankBalance || 0) < total) return { success: false, error: 'insufficient_chips', cost: total }
+    player.bankBalance -= total
     const id = `opt_${++this._contractSeq}`
     this._posFor(playerId).push({
       id,
@@ -153,7 +162,7 @@ export class OptionsEngine {
     })
     const CLOSE_HAIRCUT = 0.92    // 8% spread when closing early
     const proceeds = Math.max(0, Math.floor(livePremium * ct.contracts * CLOSE_HAIRCUT))
-    player.chips += proceeds
+    player.bankBalance = (player.bankBalance || 0) + proceeds
     arr.splice(idx, 1)
     this._broadcastSnapshots()
     return { success: true, proceeds, contractId: id }
@@ -174,7 +183,7 @@ export class OptionsEngine {
           ? Math.max(0, price - ct.strike)
           : Math.max(0, ct.strike - price)
         const payout = Math.floor(intrinsic * CONTRACT_MULTIPLIER * ct.contracts)
-        if (player && payout > 0) player.chips += payout
+        if (player && payout > 0) player.bankBalance = (player.bankBalance || 0) + payout
         const net = payout - (ct.premium * ct.contracts)
         settled.push({ playerId: pid, contract: ct, payout, net })
         if (player) {
@@ -246,7 +255,7 @@ export class OptionsEngine {
           ? Math.max(0, price - ct.strike)
           : Math.max(0, ct.strike - price)
         const payout = Math.floor(intrinsic * CONTRACT_MULTIPLIER * ct.contracts)
-        if (payout > 0) player.chips += payout
+        if (payout > 0) player.bankBalance = (player.bankBalance || 0) + payout
       }
     }
     this.positions.delete(playerId)

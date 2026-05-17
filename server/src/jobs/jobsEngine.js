@@ -260,7 +260,9 @@ export class JobEngine {
       return { success: true, applied: true, succeeded: false, title: job.title, reward: 0, reason }
     }
     job.claimedByPlayers.add(playerId)
-    player.chips += job.reward
+    // Job rewards land in the bank — same as every other passive
+    // money source (assets yield, stock proceeds, etc).
+    player.bankBalance = (player.bankBalance || 0) + job.reward
     this._broadcastState()
     return { success: true, applied: true, succeeded: true, reward: job.reward, title: job.title }
   }

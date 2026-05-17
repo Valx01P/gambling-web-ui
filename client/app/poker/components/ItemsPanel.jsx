@@ -54,6 +54,14 @@ const ITEM_DEFS = [
     needsTarget: true,
     description: 'Drain a random 5-15% of a target\'s chip stack directly into yours. No popup, no opt-out.',
   },
+  {
+    id: 'scam',
+    name: 'Scam Popup',
+    icon: '🎣',
+    color: 'amber',
+    needsTarget: true,
+    description: 'Hit a target with a "click yes to send chips" popup. They can decline if they\'re paying attention — but if they fumble the shuffle, 10% of their stack goes to you. Humans only.',
+  },
   // ─── Deck-rig powers ────────────────────────────────────────────
   {
     id: 'river_card',
@@ -261,7 +269,7 @@ export default function ItemsPanel({
       <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
         <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Loadout</div>
         <div className="mt-1 text-[11px] font-bold text-zinc-300 leading-snug">
-          Six tools, each on its own cooldown. The bar under each item fills
+          Seven tools, each on its own cooldown. The bar under each item fills
           every hand — full bar = ready. Peek + hack work on bots too.
         </div>
       </div>
@@ -300,8 +308,8 @@ export default function ItemsPanel({
                       Ready
                     </span>
                   ) : (
-                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                      Recharging
+                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500 tabular-nums">
+                      {state.cooldownHandsRemaining} {state.cooldownHandsRemaining === 1 ? 'hand' : 'hands'} left
                     </span>
                   )}
                 </div>
@@ -311,8 +319,16 @@ export default function ItemsPanel({
                 it doesn't kiss the header. flex-1 below pushes the
                 action button down regardless of how long this is. */}
             <div className="mt-2 text-[11px] font-medium text-zinc-300 leading-snug">{def.description}</div>
-            {/* Cooldown progress bar — fixed position. */}
-            <div className="mt-2 h-1 overflow-hidden rounded-full bg-zinc-800">
+            {/* Cooldown progress bar + a textual recharge cycle label
+                so the player can see at a glance how long this item
+                takes to come back, not just a faceless progress bar. */}
+            <div className="mt-2 flex items-center justify-between gap-2 text-[9px] font-black uppercase tracking-widest text-zinc-500 tabular-nums">
+              <span>Recharges every {refreshHands} {refreshHands === 1 ? 'hand' : 'hands'}</span>
+              {!state.ready && (
+                <span className="text-zinc-400">{state.cooldownHandsRemaining}/{refreshHands}</span>
+              )}
+            </div>
+            <div className="mt-1 h-1 overflow-hidden rounded-full bg-zinc-800">
               <div
                 className={`h-full rounded-full transition-all duration-300 ${state.ready ? c.dot.replace('shadow-', 'shadow-').split(' ')[0] : c.dot.split(' ')[0]}`}
                 style={{ width: `${progress * 100}%` }}

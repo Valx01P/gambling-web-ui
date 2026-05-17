@@ -1734,6 +1734,18 @@ export class PokerGame {
       // stake at that point and the realized delta lands in `chips`).
       profit: p.chips + (this.playerTotalBets.get(p.id) || 0) + (p.openSideBetStake || 0) - (p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS),
       buyIn: p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS,
+      // Alias under the toJSON name too, so the seat-click popover
+      // can read either field name uniformly across gameState and
+      // room_update broadcasts.
+      pokerBuyIn: p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS,
+      // Bank wallet + starting balance — exposed on every seat-view
+      // so the seat-click popover (which derives from gameState
+      // players in real time) sees the live bank totals. Without
+      // these, the popover falls back to bankBalance=0 and bank
+      // P/L stays frozen at the starting delta even when bankState
+      // (the bank widget's source) updates correctly.
+      bankBalance: typeof p.bankBalance === 'number' ? p.bankBalance : 0,
+      bankStartBalance: typeof p.bankStartBalance === 'number' ? p.bankStartBalance : 0,
       openSideBetStake: p.openSideBetStake || 0,
       lastAction: this.playerActions.get(p.id) || null,
       folded: this.foldedPlayers.has(p.id),

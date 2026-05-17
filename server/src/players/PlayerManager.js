@@ -30,6 +30,16 @@ export class Player {
     this.username = username || `Player_${id.substring(0, 6)}`
     this.chips = POKER_CONFIG.STARTING_CHIPS
     this.pokerBuyIn = POKER_CONFIG.STARTING_CHIPS
+    // ── Bank account ──────────────────────────────────────────────
+    // Separate persistent wallet for everything OFF the poker table:
+    // stocks, options, crypto, assets, jobs, world yields. Auto-funds
+    // a 1000-chip rebuy when the player busts at the table, so the
+    // poker stack always tops back up to a fixed size and the player's
+    // "investing money" stays cleanly separated from their "betting
+    // money". P/L splits the same way: the seat nameplate shows chip
+    // P/L (chips - pokerBuyIn), the popover surfaces bank P/L too.
+    this.bankBalance = POKER_CONFIG.BANK_START_BALANCE
+    this.bankStartBalance = POKER_CONFIG.BANK_START_BALANCE
     // Off-table reserves. Chips the player has set aside — not at risk
     // in the current hand. The budget mechanic (see pokerBudget below)
     // moves chips between `this.chips` (live on the table) and
@@ -255,24 +265,26 @@ export class Player {
     this.loans.push(loan)
     this.loanedTotal += LOAN_AMOUNT
     this.lifetimeBorrowed += LOAN_AMOUNT
-    this.chips += LOAN_AMOUNT
-    this.pokerBuyIn += LOAN_AMOUNT
-    return { success: true, bank, loan, loanedTotal: this.loanedTotal, chips: this.chips }
+    // 2026-05: bank loans now credit the BANK wallet (off-table money)
+    // not the poker stack. Borrowed money funds investments, debt
+    // payoffs, rebuys when busted — same surface every other source of
+    // off-table cash lands on.
+    this.bankBalance = (this.bankBalance || 0) + LOAN_AMOUNT
+    return { success: true, bank, loan, loanedTotal: this.loanedTotal, bankBalance: this.bankBalance }
   }
 
   repayLoan(bankId) {
     const idx = this.loans.findIndex(l => l.bankId === bankId)
     if (idx === -1) return { success: false, error: 'No loan from that bank' }
     const loan = this.loans[idx]
-    if (this.chips < loan.owed) {
-      return { success: false, error: `Need $${loan.owed.toLocaleString()} to pay back; you only have $${this.chips.toLocaleString()}.` }
+    if ((this.bankBalance || 0) < loan.owed) {
+      return { success: false, error: `Need $${loan.owed.toLocaleString()} in bank to pay back; you only have $${(this.bankBalance || 0).toLocaleString()}.` }
     }
     const principal = Math.max(0, loan.principal)
     const interestPortion = Math.max(0, loan.owed - principal)
-    this.chips -= loan.owed
-    this.pokerBuyIn -= principal
-    // The (owed - principal) interest portion came out of chips without a
-    // matching pokerBuyIn deduction, so it correctly hits P/L as an expense.
+    this.bankBalance -= loan.owed
+    // No pokerBuyIn adjustment — bank loans live entirely in the bank
+    // wallet, so poker P/L (chips − pokerBuyIn) is unaffected by them.
     this.loans.splice(idx, 1)
     this.loanedTotal -= loan.originalPrincipal ?? principal
     this.lifetimeInterestPaid += interestPortion
@@ -336,13 +348,15 @@ export class Player {
       const delta = loan.owed - before
       events.push({ kind: 'interest', bankName: loan.bankName, amount: delta, owedAfter: loan.owed })
 
-      if (loan.autoPay > 0 && this.chips > 0) {
-        const pay = Math.min(loan.autoPay, loan.owed, this.chips)
+      // Auto-pay draws from the BANK wallet too. Bank loans live in
+      // the bank's accounting universe end-to-end — never touches
+      // the poker stack.
+      if (loan.autoPay > 0 && (this.bankBalance || 0) > 0) {
+        const pay = Math.min(loan.autoPay, loan.owed, this.bankBalance)
         if (pay > 0) {
           const interestPortion = Math.min(pay, Math.max(0, loan.owed - loan.principal))
           const principalPortion = pay - interestPortion
-          this.chips -= pay
-          this.pokerBuyIn -= principalPortion
+          this.bankBalance -= pay
           loan.owed -= pay
           loan.principal -= principalPortion
           this.lifetimeInterestPaid += interestPortion
@@ -504,7 +518,13 @@ export class Player {
       // Chips parked in unresolved side-bet positions. Surfaced so the
       // spectator bankroll badge can fold them into the P/L display
       // (unresolved bets aren't realized losses, see luckStats.js).
-      openSideBetStake: this.openSideBetStake || 0
+      openSideBetStake: this.openSideBetStake || 0,
+      // ── Bank account ──────────────────────────────────────────
+      // The non-poker wallet — exposed on every snapshot so the
+      // client's Bank tile + popover can render the balance and
+      // bank-P/L without a separate fetch.
+      bankBalance: this.bankBalance ?? 0,
+      bankStartBalance: this.bankStartBalance ?? 0,
     }
   }
 }
