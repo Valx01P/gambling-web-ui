@@ -51,17 +51,28 @@ const TIER_SUCCESS = {
   planetary:   0.08,
 }
 
-// Payout-keyed hard ceiling. Independent of tier — a "blue collar"
-// gig that happens to roll a 600k reward should still feel like a
-// long shot. Applied as a CAP via Math.min, so a job whose template
-// already specifies a worse rate (e.g. a manually-tuned 5%) keeps the
-// lower number. Sub-100k jobs aren't capped and run on the tier rate.
-function rewardCappedSuccess(reward, baseSuccess) {
-  let cap = 1
-  if (reward > 10_000_000)     cap = 0.01   // > $10M — 1% lottery odds
-  else if (reward > 1_000_000) cap = 0.05   // $1M-$10M
-  else if (reward > 100_000)   cap = 0.10   // $100K-$1M
-  return Math.min(baseSuccess, cap)
+// Payout-keyed success rate. Independent of tier — the rolled reward
+// fully determines the odds, finer-grained than the old tier defaults
+// so a 25k bluecollar gig and a 95k bluecollar gig don't share a rate.
+// `baseSuccess` is kept as a fallback floor: a template that
+// hand-tunes itself to a stricter rate (e.g. an 8% planetary heist)
+// wins via Math.min so we never make a deliberately-hard gig easier
+// just because it lands in a friendlier bucket.
+function successForReward(reward, baseSuccess) {
+  let rate
+  if      (reward >= 10_000_000) rate = 0.001  // > $10M — pure lottery
+  else if (reward >=  5_000_000) rate = 0.005  // $5M-$10M
+  else if (reward >=  1_000_000) rate = 0.01   // $1M-$5M
+  else if (reward >=    500_000) rate = 0.03   // $500K-$1M
+  else if (reward >=    200_000) rate = 0.05   // $200K-$500K
+  else if (reward >=    100_000) rate = 0.10   // $100K-$200K
+  else if (reward >=     50_000) rate = 0.20   // $50K-$100K
+  else if (reward >=     40_000) rate = 0.30   // $40K-$50K
+  else if (reward >=     30_000) rate = 0.40   // $30K-$40K
+  else if (reward >=     20_000) rate = 0.50   // $20K-$30K
+  else if (reward >=     10_000) rate = 0.60   // $10K-$20K
+  else                            rate = 0.70  // < $10K
+  return Math.min(baseSuccess, rate)
 }
 
 const JOB_TEMPLATES = [
@@ -245,10 +256,10 @@ export class JobEngine {
         flavor: t.flavor,
         tier: t.tier,
         reward,
-        // Per-job success rate, capped against the rolled reward.
+        // Per-job success rate, derived from the rolled reward bucket.
         // Stable for the life of this board roll so a player sees the
         // same odds the whole hand.
-        successPercent: rewardCappedSuccess(reward, baseSuccess),
+        successPercent: successForReward(reward, baseSuccess),
         imageUrl: t.imageUrl || null,
         // Per-player attempt history for THIS board only. Each player can
         // attempt every gig once: claimedByPlayers locks out re-applies on

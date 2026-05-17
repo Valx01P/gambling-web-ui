@@ -37,10 +37,9 @@ import { MESSAGE_TYPES } from '../config/constants.js'
 const ITEM_COOLDOWN_HANDS = {
   peek: 6,
   swap: 8,
-  // 2026-05: scam drops to a 1-hand refresh per user request. Combined
-  // with "stack multiple popups on the receiver" (see ScamPopupModal)
-  // it turns scam into a per-hand griefing tool instead of a special.
-  scam: 1,
+  // 2026-05: scam → 2-hand refresh (settled here after iterating from
+  // 1 → 4 → 2; per-hand was too oppressive, 4 felt slow).
+  scam: 2,
   hack: 3,
   // Deck-rig powers — kept on long cooldowns because they're
   // strictly stronger than chip-takers.
@@ -57,10 +56,9 @@ const ITEM_COOLDOWN_HANDS = {
   pin_hack: 4,
 }
 
-// Scam cooldown is fixed at 1 hand now (was 2). Per user request:
-// "refresh every turn".
-const SCAM_COOLDOWN_MIN_HANDS = 1
-const SCAM_COOLDOWN_MAX_HANDS = 1
+// Scam cooldown is fixed at 2 hands now.
+const SCAM_COOLDOWN_MIN_HANDS = 2
+const SCAM_COOLDOWN_MAX_HANDS = 2
 
 const HACK_MIN_PERCENT = 0.05
 const HACK_MAX_PERCENT = 0.15
