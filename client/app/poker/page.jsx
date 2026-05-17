@@ -84,7 +84,16 @@ const STATS_MODE_STORAGE_KEY = 'poker_stats_mode_on'
 const HUD_ENABLED_STORAGE_KEY = 'poker_investment_hud_enabled'
 // Last blind level the user successfully applied to a table. Used as the
 // preferred default when they next create / propose at a table.
+// Legacy key that used to remember the last blinds level a user
+// applied and silently re-propose it on every join. That auto-propose
+// turned out to be the "everyone goes all-in for no reason" bug —
+// a stale high-stakes pref would re-apply on a 1k-chip table and force
+// everyone all-in just to post blinds. The key is preserved as a
+// constant only to clear leftover values on load.
 const BLIND_LEVEL_PREF_STORAGE_KEY = 'poker_blind_level_pref'
+if (typeof window !== 'undefined') {
+  try { window.localStorage.removeItem(BLIND_LEVEL_PREF_STORAGE_KEY) } catch {}
+}
 
 // User-selected felt color id. Defaults to 'emerald' (the original look).
 // The id maps to TABLE_COLOR_PALETTES below — never trust this value
@@ -654,19 +663,9 @@ export default function PokerPage() {
   }, [tableColorId])
   const tablePalette = useMemo(() => tableColorPalette(tableColorId), [tableColorId])
 
-  // "Check in the dark" — client-side action queue. The player commits
-  // to checking on the NEXT street while it's still someone else's turn.
-  // When the queued phase has passed AND it's now their turn AND the
-  // action is legal (toCall === 0), we fire it through the normal send()
-  // pipeline. Doing this client-side rather than server-side keeps the
-  // PokerGame state machine untouched — the queue is just a UX shortcut
-  // around the existing action buttons.
-  //
-  // Cleared automatically when: the hand ends, the player folds, the
-  // phase the queue was set at is reached again (i.e. server didn't
-  // advance — defensive), or the player explicitly cancels.
-  const [darkAction, setDarkAction] = useState(null)
-  const darkActionFiredRef = useRef(false)
+  // (Removed: "Check in the dark" client-side action queue. Any auto-
+  // fire pre-action path is gone; the user must click their own action
+  // button on every street.)
 
   // Session-scoped notification toasts. Each entry: {id, kind, fromName,
   // body, createdAt}. Auto-dismissed via per-entry timeouts so they
@@ -1562,25 +1561,14 @@ export default function PokerPage() {
           //   4. We're the only human seated (so the server's solo path
           //      auto-applies without a multi-human vote).
           // Multi-human tables intentionally fall back to the existing
-          // proposal flow — we don't auto-propose new blinds to other
-          // humans without their input.
-          if (!msg.data.isSpectator && typeof window !== 'undefined') {
-            try {
-              const prefId = window.localStorage.getItem(BLIND_LEVEL_PREF_STORAGE_KEY)
-              const pref = prefId && BLIND_LEVELS.find(l => l.id === prefId)
-              const seats = msg.data.gameState?.players || []
-              const me = seats.find(p => p.id === playerIdRef.current)
-              const otherHumans = seats.filter(p => !p?.isBot && p?.id !== playerIdRef.current && p?.isConnected !== false)
-              const gs = msg.data.gameState
-              const isFresh = gs && pref
-                && me && !me.isBot
-                && (gs.smallBlind !== pref.small || gs.bigBlind !== pref.big)
-                && otherHumans.length === 0
-              if (isFresh) {
-                send('poker_propose_blinds', { small: pref.small, big: pref.big })
-              }
-            } catch {}
-          }
+          // Auto-propose-blinds-on-join intentionally removed. Tables
+          // now always start at the server default (5/10) and only
+          // change when the user explicitly proposes a new level via
+          // the Tools menu. Previously this block read a stale level
+          // out of localStorage and silently re-applied it, which —
+          // if the user had ever touched the high-stakes ladder —
+          // produced "everyone all-in to post the blind" behavior on
+          // every fresh join.
           // Hydrate the side-bets panel with whatever markets are live at
           // join time — fresh joiners see the same prop set as everyone else.
           if (msg.data.sideBets) setSideBetsState(msg.data.sideBets)
@@ -1944,14 +1932,10 @@ export default function PokerPage() {
           setPendingBlindsProposal(null)
           if (msg.data?.outcome === 'applied') {
             addSys(`Blinds set to $${msg.data.small}/$${msg.data.big}.`)
-            // Remember whatever blinds the user just applied as their
-            // preference. The lobby reads this back at table-create time
-            // so a returning player lands at "their" stakes by default.
-            // Stored as the BLIND_LEVELS id (e.g. '100_200') for stability.
-            const match = BLIND_LEVELS.find(l => l.small === msg.data.small && l.big === msg.data.big)
-            if (match) {
-              try { window.localStorage.setItem(BLIND_LEVEL_PREF_STORAGE_KEY, match.id) } catch {}
-            }
+            // Intentionally NOT persisted. Auto-restore of the last
+            // blinds level was the source of the all-in-on-post bug;
+            // every new table now starts at the 5/10 default and only
+            // changes on a fresh, explicit proposal.
           } else if (msg.data?.outcome === 'rejected') {
             addSys(`Blinds proposal rejected${msg.data.byName ? ' by ' + msg.data.byName : ''}.`)
           } else if (msg.data?.outcome === 'expired') {
@@ -2220,48 +2204,11 @@ export default function PokerPage() {
     return () => window.removeEventListener('gwu:open-table-chat', handler)
   }, [])
 
-  // Auto-fire any queued "check in the dark" once these conditions all
-  // line up:
-  //   • we're at the same WS connection that armed the queue
-  //   • a queue exists and hasn't been fired yet
-  //   • the table has advanced past the phase where the queue was set
-  //     (so "in the dark" actually means a fresh street, not the same
-  //     round of betting we were already on)
-  //   • it's now our turn
-  //   • the action is still legal (toCall must be 0 for a check)
-  //   • we're not folded / waiting next hand
-  // Otherwise: if any of the safety conditions trip (we folded, the
-  // hand ended, someone else bet making check illegal) we silently
-  // clear the queue and let the user act manually.
-  useEffect(() => {
-    if (!darkAction) return
-    if (darkActionFiredRef.current) return
-    const phaseNow = gameState?.phase
-    const handOver = phaseNow === 'waiting' || phaseNow === 'showdown'
-    if (handOver || myPlayer?.folded || myPlayer?.waitingNextHand) {
-      setDarkAction(null)
-      return
-    }
-    // Only fire on a different phase than the one we armed on. If
-    // the user armed during preflop, we won't fire until flop+.
-    if (phaseNow === darkAction.queuedAtPhase) return
-    if (!isMyTurn) return
-    const myBet = myPlayer?.bet || 0
-    const cur = gameState?.currentBet || 0
-    const toCall = Math.max(0, cur - myBet)
-    if (darkAction.type === 'check' && toCall > 0) {
-      // Someone bet before our turn — the queued check is illegal.
-      setDarkAction(null)
-      return
-    }
-    darkActionFiredRef.current = true
-    if (darkAction.type === 'check') {
-      send('poker_check')
-    }
-    setDarkAction(null)
-    // Reset the fired flag on the next tick so a future queue can fire.
-    setTimeout(() => { darkActionFiredRef.current = false }, 0)
-  }, [darkAction, isMyTurn, gameState?.phase, gameState?.currentBet, myPlayer?.bet, myPlayer?.folded, myPlayer?.waitingNextHand])
+  // "Check in the dark" / pre-action queue intentionally removed —
+  // it was firing checks (and chaining into surprise all-ins for some
+  // users) without an explicit per-street confirmation. The table is
+  // now strictly action-on-your-turn-only: nothing fires until the
+  // human clicks Fold/Check/Call/Raise/All-In themselves.
   // Self's peer loans, extracted from whichever side of the table we're
   // on (seated or spectating). Pulled out of liquidatedSummary's deps so
   // unrelated gameState churn (bets/folds by other seats) doesn't invalidate
@@ -5454,32 +5401,8 @@ export default function PokerPage() {
             <div className={`text-[11px] font-semibold text-center leading-tight ${statusClass}`}>
               {statusText}
             </div>
-            {/* "Check in the dark" toggle. Only meaningful when:
-                  • the hand is live and we're not currently active
-                  • there's a NEXT street to act on (river has nothing after)
-                  • we're not folded / waiting next hand
-                Click arms the queue; the effect above auto-fires the
-                check when our turn lands on a new street. Re-click to
-                cancel before it fires. */}
-            {inHand && !isMyTurn && !myPlayer?.folded && !isWaitingNextHand
-                  && (phase === 'preflop' || phase === 'flop' || phase === 'turn') && (
-              <button
-                type="button"
-                onClick={() => setDarkAction(prev =>
-                  prev && prev.type === 'check'
-                    ? null
-                    : { type: 'check', queuedAtPhase: phase }
-                )}
-                className={`text-[10px] font-black uppercase tracking-widest rounded-md px-2 py-1 transition-colors ${
-                  darkAction?.type === 'check'
-                    ? 'border border-amber-400/60 bg-amber-500/20 text-amber-100'
-                    : 'border border-zinc-600/60 bg-zinc-900/60 text-zinc-400 hover:bg-zinc-800'
-                }`}
-                title="Auto-check on the next street, unless someone bets first"
-              >
-                {darkAction?.type === 'check' ? '✓ Check in the dark armed' : 'Check in the dark'}
-              </button>
-            )}
+            {/* Check-in-the-dark / pre-action toggle removed — the
+                table is now strictly action-on-your-turn-only. */}
             <div className="grid grid-cols-2 gap-1.5">
               <button
                 onClick={() => send('poker_fold')}
