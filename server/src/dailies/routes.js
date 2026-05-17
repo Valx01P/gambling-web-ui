@@ -19,10 +19,11 @@ import { ACHIEVEMENTS } from '../achievements/catalog.js'
 // the default and is always unlocked. Keep this list in lockstep with
 // client/app/lib/skinPresets.js — the client renders the lock state.
 // 2026-05: cosmetics are no longer gated by daily completions. All
-// preset ids are open to everyone. The array is left at length 11 so
-// the index check below (`tier = SKIN_UNLOCK_TIERS[skinId]`) still
+// preset ids are open to everyone. The array is sized to length 12
+// (slot 10 = custom gradient, slot 11 = custom solid color) so the
+// index check below (`tier = SKIN_UNLOCK_TIERS[skinId]`) still
 // rejects out-of-range ids with `undefined → bad_skin_id`.
-const SKIN_UNLOCK_TIERS = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+const SKIN_UNLOCK_TIERS = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
 function publicDaily(daily, progress) {
   if (!daily) return null
@@ -93,8 +94,13 @@ export function dailiesRoutes() {
 
   // Skin selection. The client validates against its presets list; the
   // server re-validates the id range and shape of any custom payload.
+  // Two custom shapes coexist:
+  //   slot 10 → { colors: ['#hex', '#hex', ...], direction: 'to right' }
+  //   slot 11 → { color: '#hex' }   (solid, no gradient)
+  // The customSkin column is JSONB so it stores either shape. The
+  // client's resolveSkinCss branches on skinId to pick the renderer.
   router.post('/me/skin', authRequired, async (req, res) => {
-    const skinId = Math.max(0, Math.min(10, Math.floor(Number(req.body?.skinId))))
+    const skinId = Math.max(0, Math.min(11, Math.floor(Number(req.body?.skinId))))
     if (!Number.isFinite(skinId)) return res.status(400).json({ error: 'bad_skin_id' })
 
     // Unlock gate: server-side validation of the tier requirement so the
@@ -107,7 +113,6 @@ export function dailiesRoutes() {
 
     let custom = null
     if (skinId === 10) {
-      // Custom skin payload — strict shape: 2 or 3 hex colors + a direction.
       const colors = Array.isArray(req.body?.colors)
         ? req.body.colors.filter(c => typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c)).slice(0, 3)
         : []
@@ -116,6 +121,12 @@ export function dailiesRoutes() {
         : 'to right'
       if (colors.length < 2) return res.status(400).json({ error: 'need_two_colors' })
       custom = { colors, direction }
+    } else if (skinId === 11) {
+      const color = typeof req.body?.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(req.body.color)
+        ? req.body.color
+        : null
+      if (!color) return res.status(400).json({ error: 'need_color' })
+      custom = { color }
     }
 
     await query(

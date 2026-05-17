@@ -2,6 +2,7 @@ import { GAME_PHASES, MESSAGE_TYPES, POKER_CONFIG } from "../config/constants.js
 import {
   getBotById,
   listTopUniqueEloBots,
+  listGamblerBots,
   listNeuralBotsByOwner,
   listDeepMlpBotsByOwner,
   listManualBotsByOwner,
@@ -101,6 +102,9 @@ export class MessageHandler {
 
         case MESSAGE_TYPES.POKER_KICK_VOTE:
           return this.handleKickVote(player, data)
+
+        case MESSAGE_TYPES.PLAYER_SKIN_UPDATE:
+          return this.handleSkinUpdate(player, data)
 
         case MESSAGE_TYPES.AUTH_HELLO:
           return this.handleAuthHello(player, data)
@@ -710,22 +714,32 @@ export class MessageHandler {
     if (!room || room.roomType !== 'poker') {
       return this.error('Not at a poker table', player)
     }
-    // Fill every empty seat. We compute the slot count server-side instead
-    // of trusting a client param so the room can never over-seat past
-    // MAX_PLAYERS. Fetch slotsLeft + buffer so duplicates (bots already at
-    // the table) can be skipped and we still hit the target.
     const slotsLeft = Math.max(0, POKER_CONFIG.MAX_PLAYERS - room.players.size)
     if (slotsLeft === 0) {
       return this.error(room.isArena ? 'Arena is full.' : 'Table is full.', player)
     }
-    const fetchN = Math.min(20, slotsLeft + POKER_CONFIG.MAX_PLAYERS)
+    // Auto-fill now pulls the 5 app/gambler bots and seats a random
+    // subset. Previously this used listTopUniqueEloBots (the ELO-sorted
+    // public leaderboard), which produced a stale "always the same
+    // bots" feel and pulled in random user-made bots whose strategy
+    // wasn't always present at a fresh table. Routing through the
+    // gambler squad guarantees a known, consistent lineup of loose-
+    // aggressive players ready to gamble. Different shuffle per call →
+    // different seat order each time.
     let bots
-    try { bots = await listTopUniqueEloBots({ limit: fetchN }) }
+    try { bots = await listGamblerBots() }
     catch (err) {
-      console.error('[autofill] bot lookup failed:', err.message)
-      return this.error('Could not load top bots.', player)
+      console.error('[autofill] gambler bot lookup failed:', err.message)
+      return this.error('Could not load app bots.', player)
     }
-    if (!bots.length) return this.error('No public bots available.', player)
+    if (!bots.length) return this.error('App bots not seeded yet — try again in a moment.', player)
+    // Fisher-Yates shuffle in place. autoFillWithTopBots walks the
+    // array in order and stops once seats are full, so the shuffle is
+    // the entire mechanism of "pick randomly".
+    for (let i = bots.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      const tmp = bots[i]; bots[i] = bots[j]; bots[j] = tmp
+    }
     const result = await room.autoFillWithTopBots(player.id, bots)
     if (!result.success) {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
@@ -876,6 +890,44 @@ export class MessageHandler {
       player.send({ type: MESSAGE_TYPES.ERROR, data: { message: errs[result?.error] || 'Kick failed.' } })
     }
     return result
+  }
+
+  // Skin push from the client right after a successful POST /api/me/skin.
+  // The REST endpoint already wrote the DB; this handler refreshes the
+  // live Player object so room_update broadcasts the new skin to every
+  // other seat. Without it, the change sits in the DB and other seats
+  // keep rendering the old skin until the player reconnects.
+  async handleSkinUpdate(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || room.roomType !== 'poker') return // silent — page-level call is fine without a room
+    if (!player.userId) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Sign in to save a skin.' } })
+      return
+    }
+    const skinId = Math.max(0, Math.min(11, Math.floor(Number(data?.skinId))))
+    if (!Number.isFinite(skinId)) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Bad skinId.' } })
+      return
+    }
+    let customSkin = null
+    if (skinId === 10 && data?.customSkin && typeof data.customSkin === 'object') {
+      const colors = Array.isArray(data.customSkin.colors)
+        ? data.customSkin.colors.filter(c => typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c)).slice(0, 3)
+        : []
+      const direction = typeof data.customSkin.direction === 'string' && data.customSkin.direction.length <= 16
+        ? data.customSkin.direction
+        : 'to right'
+      if (colors.length >= 2) customSkin = { colors, direction }
+    } else if (skinId === 11 && data?.customSkin && typeof data.customSkin === 'object') {
+      const color = typeof data.customSkin.color === 'string'
+        && /^#[0-9a-fA-F]{6}$/.test(data.customSkin.color)
+        ? data.customSkin.color
+        : null
+      if (color) customSkin = { color }
+    }
+    player.skinId = skinId
+    player.customSkin = customSkin
+    if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
   }
 
   handleToggleContestMode(player, data) {

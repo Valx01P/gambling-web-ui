@@ -3,6 +3,7 @@ import { initialNeuralState, normalizeState } from './neuralPolicy.js'
 import { VARIANTS as NEURAL_VARIANTS } from './neural/registry.js'
 import { initialSuperState, MODES as SUPER_MODES } from './super/transitions.js'
 import { STARTING_RATING } from './runtime/eloEngine.js'
+import { GAMBLER_STRATEGIES } from './gambler/strategies.js'
 
 const PUBLIC_FIELDS = `
   b.id, b.owner_user_id, b.name, b.color, b.text_color, b.avatar_url, b.rules, b.phrases, b.is_public,
@@ -11,6 +12,7 @@ const PUBLIC_FIELDS = `
   b.is_neural, b.neural_tier, b.neural_kind, b.neural_state,
   b.is_super, b.super_member_ids, b.super_state,
   b.is_oracle,
+  b.is_gambler,
   b.elo, b.hands_played, b.hands_voluntary, b.hands_won,
   b.showdowns_played, b.showdowns_won,
   b.bluffs_attempted, b.bluffs_succeeded, b.bluff_wins, b.chips_won_total,
@@ -30,6 +32,7 @@ const LIST_FIELDS = `
   b.is_neural, b.neural_tier, b.neural_kind, b.neural_state,
   b.is_super, b.super_member_ids, b.super_state,
   b.is_oracle,
+  b.is_gambler,
   b.elo, b.hands_played, b.hands_voluntary, b.hands_won,
   b.showdowns_played, b.showdowns_won,
   b.bluffs_attempted, b.bluffs_succeeded, b.bluff_wins, b.chips_won_total,
@@ -75,6 +78,10 @@ function toApi(row, ownerName = null) {
     // opponent's hole cards + true equity vs known holdings, not inferred
     // ranges). Off-quota from the 10-manual cap. Permanent like clones.
     isOracle: Boolean(row.is_oracle),
+    // Gambler bots — 5-bot loose-aggressive squad auto-provisioned per
+    // user (migration 030). Off-quota; private by default; surfaces as
+    // its own category in the Add Bots picker via botCategories.js.
+    isGambler: Boolean(row.is_gambler),
     stats: {
       handsPlayed: row.hands_played,
       handsVoluntary: row.hands_voluntary ?? 0,
@@ -315,6 +322,88 @@ export async function provisionOracleBotForUser(ownerUserId) {
     `,
     [ownerUserId, ORACLE_DEFAULT_CODE]
   )
+}
+
+// Stable UUID for the synthetic "App" user that owns the global
+// gambler-bot squad. Treated like any other user row by the DB but
+// never authenticates — google_sub is a sentinel, password_hash NULL.
+// Hidden from search / DMs / follows via excludeSystemUser() helpers
+// where it matters. Pinned constant so the seed is idempotent across
+// boots / restarts.
+export const SYSTEM_BOT_USER_ID = '00000000-0000-0000-0000-0000000a1b0c'
+const SYSTEM_BOT_GOOGLE_SUB = 'system:gambler-app'
+const SYSTEM_BOT_EMAIL = 'gambler@app.local'
+const SYSTEM_BOT_DISPLAY = 'App'
+
+// Provision the 5-bot gambler squad as GLOBAL app bots — not per user.
+// Owned by the synthetic SYSTEM_BOT_USER_ID, is_public = TRUE so every
+// user sees them in the picker. Off-quota for everyone (no user owns
+// them, so countNonCloneBotsByOwner never counts them). Idempotent via
+// the partial unique index on (owner_user_id, name) WHERE is_gambler.
+//
+// Called once at server boot. Doesn't run during runMigrations because
+// JSONB code blobs are painful to embed in SQL; this seeder hydrates
+// the rows from GAMBLER_STRATEGIES instead.
+export async function provisionGlobalGamblerBots() {
+  // System user — fixed UUID + sentinel google_sub keep this row
+  // distinct from any real account. ON CONFLICT (id) DO NOTHING means
+  // re-running the seeder is cheap and safe.
+  await query(
+    `
+    INSERT INTO users (id, google_sub, email, display_name)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (id) DO NOTHING
+    `,
+    [SYSTEM_BOT_USER_ID, SYSTEM_BOT_GOOGLE_SUB, SYSTEM_BOT_EMAIL, SYSTEM_BOT_DISPLAY]
+  )
+  // Cleanup: an earlier revision of this seeder ran per-user and left
+  // is_gambler = TRUE rows owned by real users. They shouldn't exist
+  // any more — gambler bots are app-owned globally. Strip them on
+  // every boot so dev environments don't carry over the old layout.
+  await query(
+    `DELETE FROM bots WHERE is_gambler = TRUE AND owner_user_id <> $1`,
+    [SYSTEM_BOT_USER_ID]
+  )
+  for (const s of GAMBLER_STRATEGIES) {
+    await query(
+      `
+      INSERT INTO bots (
+        owner_user_id, name, color, text_color,
+        rules, phrases, is_public,
+        code, code_enabled,
+        is_gambler
+      )
+      VALUES ($1, $2, $3, $4, '[]'::jsonb, '{}'::jsonb, TRUE,
+              $5, TRUE,
+              TRUE)
+      ON CONFLICT (owner_user_id, name) WHERE is_gambler = TRUE DO NOTHING
+      `,
+      [SYSTEM_BOT_USER_ID, s.name, s.color, s.textColor || 'auto', s.code]
+    )
+  }
+  // Self-heal: gambler bots are SYSTEM-OWNED. Users can't customize
+  // them (they're not in "Your bots" — they show in the "App bots"
+  // section, app-authored and shared globally). So on every boot,
+  // refresh the code to match the in-source GAMBLER_STRATEGIES. Two
+  // benefits:
+  //   • a deploy with strategy fixes (e.g. the postflop-threshold
+  //     recalibration in this file's 2026-05 revision) takes effect
+  //     immediately — no manual reseed.
+  //   • we only UPDATE when the code actually differs, so this is a
+  //     cheap no-op on a stable build.
+  for (const s of GAMBLER_STRATEGIES) {
+    await query(
+      `
+      UPDATE bots
+         SET code = $3, code_enabled = TRUE, updated_at = NOW()
+       WHERE owner_user_id = $1
+         AND is_gambler = TRUE
+         AND name = $2
+         AND code IS DISTINCT FROM $3
+      `,
+      [SYSTEM_BOT_USER_ID, s.name, s.code]
+    )
+  }
 }
 
 // Default code for the Oracle bot — uses ctx.exactEquity (omniscient
@@ -1534,14 +1623,15 @@ export async function resetBotStats({ botId, ownerUserId }) {
 }
 
 // Counts only the user's manual bots — excludes clones, neural slots,
-// super bots, AND the Oracle slot. Each of those is on its own quota.
-// The name stays "NonClone" for backward compat with call sites; the
-// predicate is the source of truth.
+// super bots, the Oracle slot, AND the auto-provisioned gambler squad.
+// Each of those is on its own quota. The name stays "NonClone" for
+// backward compat with call sites; the predicate is the source of truth.
 export async function countNonCloneBotsByOwner(ownerUserId) {
   const { rows } = await query(
     `SELECT COUNT(*)::int AS count FROM bots
        WHERE owner_user_id = $1 AND is_clone = FALSE
-         AND is_neural = FALSE AND is_super = FALSE AND is_oracle = FALSE`,
+         AND is_neural = FALSE AND is_super = FALSE AND is_oracle = FALSE
+         AND is_gambler = FALSE`,
     [ownerUserId]
   )
   return rows[0]?.count || 0
@@ -1713,6 +1803,30 @@ export async function listPublicBots({ limit = 50, offset = 0 } = {}) {
      LIMIT $1 OFFSET $2
     `,
     [safeLimit, safeOffset]
+  )
+  return rows.map(r => toApi(r, r.owner_display_name))
+}
+
+// The full gambler "app bots" squad, in arbitrary DB order. The
+// auto-fill tool shuffles client-side rather than relying on
+// ORDER BY RANDOM() so the query plan is cache-friendly. 5 rows
+// total; the caller is expected to seat a subset of them.
+//
+// CRITICAL: uses PUBLIC_FIELDS, not LIST_FIELDS — we need `b.code`
+// on every row because the auto-fill path constructs BotPlayer
+// directly from this list (no per-bot getBotById hydration), and a
+// missing `code` falls through to "no code yet → fold/check" in the
+// BotPlayer constructor. With only 5 rows the per-row payload cost
+// of the heavier projection is negligible.
+export async function listGamblerBots() {
+  const { rows } = await query(
+    `
+    SELECT ${PUBLIC_FIELDS}, u.display_name AS owner_display_name
+      FROM bots b
+      JOIN users u ON u.id = b.owner_user_id
+     WHERE b.is_gambler = TRUE AND b.is_public = TRUE
+    `,
+    []
   )
   return rows.map(r => toApi(r, r.owner_display_name))
 }

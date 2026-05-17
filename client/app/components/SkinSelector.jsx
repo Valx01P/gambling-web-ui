@@ -4,9 +4,10 @@ import { memo, useEffect, useState } from 'react'
 import { SKIN_PRESETS, isUnlocked, resolveSkinCss } from '../lib/skinPresets'
 import { api } from '../lib/api'
 
-// Skin picker panel. Lifetime daily count gates which presets are
-// unlockable; slot 10 ("Custom") is the gradient editor — exposes 2-3
-// color slots + a direction picker so the player can build their own.
+// Skin picker panel. Two custom slots — id 10 is a gradient editor
+// (2-3 colors + direction), id 11 is a solid color. Each custom slot's
+// draft is persisted to localStorage so switching between them (or
+// flipping back to a preset and returning) restores your last colors.
 //
 // Selection is server-authoritative: client POSTs to /api/dailies/me/skin,
 // server validates the unlock tier + payload shape, response updates the
@@ -22,13 +23,32 @@ const DIRECTIONS = [
   { value: 'to top',    label: '↑' },
 ]
 
-// Original app defaults for the custom slot. Used by the Revert button
-// — clicking it twice restores the user's custom gradient editor back
-// to these values + persists that to the server. Kept separate from
-// the useState initial so the revert is a fixed target, not "whatever
-// was loaded when the picker first mounted."
-const CUSTOM_DEFAULT_COLORS = ['#7c3aed', '#22d3ee']
-const CUSTOM_DEFAULT_DIRECTION = 'to right'
+// Original app defaults for the two custom slots. Used by the Revert
+// button — clicking it twice restores the editor (and the active
+// custom on the server) back to these values. Kept separate from
+// useState initial so revert is a fixed target.
+const GRADIENT_DEFAULT_COLORS = ['#7c3aed', '#22d3ee']
+const GRADIENT_DEFAULT_DIRECTION = 'to right'
+const SOLID_DEFAULT_COLOR = '#0ea5e9'
+
+// localStorage keys. Each custom slot persists its OWN last config so
+// switching skinId 10 ↔ 11 doesn't lose either editor's state.
+const LS_GRADIENT_KEY = 'gwu:skin:gradient'
+const LS_SOLID_KEY = 'gwu:skin:solid'
+
+function loadJson(key, fallback) {
+  if (typeof window === 'undefined') return fallback
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : fallback
+  } catch { return fallback }
+}
+function saveJson(key, value) {
+  if (typeof window === 'undefined') return
+  try { window.localStorage.setItem(key, JSON.stringify(value)) } catch {}
+}
 
 const SkinSelector = memo(function SkinSelector({
   currentSkinId = 0,
@@ -38,17 +58,52 @@ const SkinSelector = memo(function SkinSelector({
   onApplied,    // (skinId, customSkin) => void  — called after server save
 }) {
   const [pendingId, setPendingId] = useState(currentSkinId)
-  const [customColors, setCustomColors] = useState(
-    Array.isArray(currentCustomSkin?.colors) && currentCustomSkin.colors.length
-      ? currentCustomSkin.colors
-      : [...CUSTOM_DEFAULT_COLORS]
-  )
-  const [customDirection, setCustomDirection] = useState(currentCustomSkin?.direction || CUSTOM_DEFAULT_DIRECTION)
+
+  // Hydrate each custom editor's draft state from localStorage first,
+  // then fall back to whatever the server has saved (currentCustomSkin
+  // — which only carries ONE shape at a time, matching the active
+  // skinId). This way fresh sessions see the server's last applied
+  // colors, but switching slots in-session restores each editor's
+  // last-touched draft from localStorage.
+  const [gradientColors, setGradientColors] = useState(() => {
+    const ls = loadJson(LS_GRADIENT_KEY, null)
+    if (ls && Array.isArray(ls.colors) && ls.colors.length >= 2) return ls.colors
+    if (currentSkinId === 10 && Array.isArray(currentCustomSkin?.colors) && currentCustomSkin.colors.length) {
+      return currentCustomSkin.colors
+    }
+    return [...GRADIENT_DEFAULT_COLORS]
+  })
+  const [gradientDirection, setGradientDirection] = useState(() => {
+    const ls = loadJson(LS_GRADIENT_KEY, null)
+    if (ls && typeof ls.direction === 'string') return ls.direction
+    if (currentSkinId === 10 && typeof currentCustomSkin?.direction === 'string') {
+      return currentCustomSkin.direction
+    }
+    return GRADIENT_DEFAULT_DIRECTION
+  })
+  const [solidColor, setSolidColor] = useState(() => {
+    const ls = loadJson(LS_SOLID_KEY, null)
+    if (ls && typeof ls.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(ls.color)) return ls.color
+    if (currentSkinId === 11 && typeof currentCustomSkin?.color === 'string') {
+      return currentCustomSkin.color
+    }
+    return SOLID_DEFAULT_COLOR
+  })
+
+  // Persist drafts on every change. Save the slot's payload exactly as
+  // the server expects it — that way "restore from localStorage" can
+  // just shove the parsed JSON back into state.
+  useEffect(() => {
+    saveJson(LS_GRADIENT_KEY, { colors: gradientColors, direction: gradientDirection })
+  }, [gradientColors, gradientDirection])
+  useEffect(() => {
+    saveJson(LS_SOLID_KEY, { color: solidColor })
+  }, [solidColor])
+
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   // Two-click revert: first click sets `confirmRevert` for ~2s; if a
   // second click lands in that window we actually reset + persist.
-  // Single click outside the window is a no-op (cancels the arming).
   const [confirmRevert, setConfirmRevert] = useState(false)
   useEffect(() => {
     if (!confirmRevert) return
@@ -63,15 +118,18 @@ const SkinSelector = memo(function SkinSelector({
       setConfirmRevert(true)
       return
     }
-    // Confirmed — reset the editor + persist defaults to the server.
     setConfirmRevert(false)
-    setCustomColors([...CUSTOM_DEFAULT_COLORS])
-    setCustomDirection(CUSTOM_DEFAULT_DIRECTION)
-    if (signedIn && pendingId === 10) {
-      applySkin(10, {
-        colors: [...CUSTOM_DEFAULT_COLORS],
-        direction: CUSTOM_DEFAULT_DIRECTION,
-      })
+    if (pendingId === 10) {
+      setGradientColors([...GRADIENT_DEFAULT_COLORS])
+      setGradientDirection(GRADIENT_DEFAULT_DIRECTION)
+      if (signedIn) {
+        applySkin(10, { colors: [...GRADIENT_DEFAULT_COLORS], direction: GRADIENT_DEFAULT_DIRECTION })
+      }
+    } else if (pendingId === 11) {
+      setSolidColor(SOLID_DEFAULT_COLOR)
+      if (signedIn) {
+        applySkin(11, { color: SOLID_DEFAULT_COLOR })
+      }
     }
   }
 
@@ -87,23 +145,34 @@ const SkinSelector = memo(function SkinSelector({
     setSaving(true)
     setError(null)
     try {
-      const body = skinId === 10
-        ? { skinId, colors: custom?.colors || customColors, direction: custom?.direction || customDirection }
-        : { skinId }
+      // Build the per-slot payload shape the server's /api/me/skin
+      // route expects: gradient = colors+direction, solid = color.
+      let body
+      if (skinId === 10) {
+        body = {
+          skinId,
+          colors: custom?.colors || gradientColors,
+          direction: custom?.direction || gradientDirection,
+        }
+      } else if (skinId === 11) {
+        body = { skinId, color: custom?.color || solidColor }
+      } else {
+        body = { skinId }
+      }
       const json = await api.setSkin(body)
       onApplied?.(json.skinId, json.customSkin || null)
     } catch (err) {
-      // apiFetch surfaces server errors as { detail, message } objects.
       setError(err?.detail || err?.message || 'Could not save skin.')
     } finally {
       setSaving(false)
     }
   }
 
-  // Pre-built preview for the custom slot — uses the current draft colors,
-  // not whatever's saved on the server, so the preview updates live as the
-  // user fiddles with the pickers.
-  const customCss = `linear-gradient(${customDirection}, ${customColors.join(', ')})`
+  // Pre-built previews for the two custom slots — uses the current
+  // draft, not whatever's saved on the server, so the preview updates
+  // live as the user fiddles with the pickers.
+  const gradientPreviewCss = `linear-gradient(${gradientDirection}, ${gradientColors.join(', ')})`
+  const solidPreviewCss = solidColor
 
   return (
     <div className="space-y-3">
@@ -118,7 +187,11 @@ const SkinSelector = memo(function SkinSelector({
         {SKIN_PRESETS.map(preset => {
           const unlocked = isUnlocked(preset.id, dailiesCompleted)
           const active = pendingId === preset.id
-          const css = preset.id === 10 ? customCss : preset.css
+          const css = preset.id === 10
+            ? gradientPreviewCss
+            : preset.id === 11
+              ? solidPreviewCss
+              : preset.css
           return (
             <button
               key={preset.id}
@@ -126,7 +199,7 @@ const SkinSelector = memo(function SkinSelector({
               onClick={() => {
                 if (!unlocked) return
                 setPendingId(preset.id)
-                if (preset.id !== 10) applySkin(preset.id)
+                if (preset.id < 10) applySkin(preset.id)
               }}
               disabled={!unlocked || saving}
               title={unlocked ? preset.label : `Unlocks at ${preset.unlocksAt} dailies`}
@@ -151,20 +224,20 @@ const SkinSelector = memo(function SkinSelector({
               <input
                 key={i}
                 type="color"
-                value={customColors[i] || '#000000'}
+                value={gradientColors[i] || '#000000'}
                 onChange={(e) => {
-                  const next = [...customColors]
+                  const next = [...gradientColors]
                   next[i] = e.target.value
-                  setCustomColors(next.filter(Boolean))
+                  setGradientColors(next.filter(Boolean))
                 }}
                 className="h-8 w-10 cursor-pointer rounded border border-zinc-600 bg-transparent"
               />
             ))}
             <button
               type="button"
-              onClick={() => setCustomColors(customColors.slice(0, Math.max(2, customColors.length - 1)))}
+              onClick={() => setGradientColors(gradientColors.slice(0, Math.max(2, gradientColors.length - 1)))}
               className="ml-auto rounded border border-zinc-600 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-800"
-              disabled={customColors.length <= 2}
+              disabled={gradientColors.length <= 2}
             >
               −
             </button>
@@ -174,9 +247,9 @@ const SkinSelector = memo(function SkinSelector({
               <button
                 key={d.value}
                 type="button"
-                onClick={() => setCustomDirection(d.value)}
+                onClick={() => setGradientDirection(d.value)}
                 className={`h-7 w-7 rounded border text-sm transition-colors ${
-                  customDirection === d.value
+                  gradientDirection === d.value
                     ? 'border-amber-400 bg-amber-500/20 text-amber-100'
                     : 'border-zinc-700 bg-zinc-800/60 text-zinc-300 hover:bg-zinc-700'
                 }`}
@@ -187,19 +260,13 @@ const SkinSelector = memo(function SkinSelector({
             ))}
             <button
               type="button"
-              onClick={() => applySkin(10, { colors: customColors, direction: customDirection })}
+              onClick={() => applySkin(10, { colors: gradientColors, direction: gradientDirection })}
               disabled={saving}
               className="ml-auto rounded-md bg-amber-600 px-3 py-1 text-xs font-black text-white hover:bg-amber-500 disabled:opacity-50"
             >
               {saving ? 'Saving…' : 'Apply'}
             </button>
           </div>
-          {/* Revert — two-click confirm so a misclick doesn't wipe a
-              gradient the user spent time tuning. First click arms;
-              the button morphs into "Click again to revert" for ~2s.
-              Second click within the window resets editor state AND
-              persists defaults to the server (so the live nameplate
-              swaps back too). */}
           <button
             type="button"
             onClick={handleRevertClick}
@@ -211,6 +278,45 @@ const SkinSelector = memo(function SkinSelector({
             }`}
           >
             {confirmRevert ? 'Click again to revert' : 'Revert to default gradient'}
+          </button>
+        </div>
+      )}
+
+      {pendingId === 11 && isUnlocked(11, dailiesCompleted) && (
+        <div className="rounded-md border border-zinc-700/60 bg-zinc-900/50 p-2.5 space-y-2">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-300">Custom solid color</div>
+          <div className="flex items-center gap-2">
+            <input
+              type="color"
+              value={solidColor}
+              onChange={(e) => setSolidColor(e.target.value)}
+              className="h-10 w-16 cursor-pointer rounded border border-zinc-600 bg-transparent"
+              aria-label="Pick a solid color"
+            />
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] font-bold text-zinc-400">Hex</div>
+              <div className="text-sm font-black text-white tabular-nums">{solidColor.toUpperCase()}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => applySkin(11, { color: solidColor })}
+              disabled={saving}
+              className="rounded-md bg-amber-600 px-3 py-1 text-xs font-black text-white hover:bg-amber-500 disabled:opacity-50"
+            >
+              {saving ? 'Saving…' : 'Apply'}
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={handleRevertClick}
+            disabled={saving}
+            className={`w-full rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-widest transition-colors disabled:opacity-50 ${
+              confirmRevert
+                ? 'border-red-400/70 bg-red-500/20 text-red-100 hover:bg-red-500/30'
+                : 'border-zinc-700 bg-zinc-900/60 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800'
+            }`}
+          >
+            {confirmRevert ? 'Click again to revert' : 'Revert to default color'}
           </button>
         </div>
       )}

@@ -7,6 +7,7 @@ import { BetChips, PotChips } from '../components/ChipStack'
 import { EMOTE_OPTIONS, EmoteIcon, SeatEmotes, SeatYells, getEmoteOptions } from '../components/PokerEmotes'
 import ProfileSelector, { getProfileAvatar, ProfileAvatar } from '../components/ProfileSelector'
 import HomeBackLink from '../components/HomeBackLink'
+import { setBackgroundFelt } from '../components/FuzzyBackground'
 import RouteNavCluster from '../components/RouteNavCluster'
 // AccountMenu (profile + DMs + notifications) is mounted globally via
 // AccountDock in the root layout. The table header keeps the Tools and
@@ -101,23 +102,73 @@ if (typeof window !== 'undefined') {
 // silently revert to the default.
 const TABLE_COLOR_STORAGE_KEY = 'poker_table_felt_color'
 
-// Felt color palette. Each entry is a single dark base color rendered
-// as a radial shade (lighter center, darker edges) — mirrors the
-// original emerald felt's depth treatment, no rainbow gradients. The
-// user asked for solid dark colors with the same shading style, so the
-// gradient stops here are all derived from the same hue.
+// Felt color palette. Five built-in options + up to five user-defined
+// custom slots (see TABLE_CUSTOM_COLORS_KEY). Each entry is a single
+// deep base color rendered as a radial shade (lighter center, darker
+// edges). The `bgRgb` triple is what FuzzyBackground tints its static
+// noise toward when this color is active — picks a base noticeably
+// darker than the felt itself so the page reads as one consistent
+// tone without looking flat. PER-PLAYER, persisted via localStorage;
+// the server doesn't know about table color at all.
 const TABLE_COLOR_PALETTES = [
-  { id: 'emerald',  label: 'Emerald',  swatch: '#14472c', center: '#1a5c3a', mid: '#14472c', edge: '#0f3521', vignette: '#0a2a18', border: 'rgba(6, 78, 59, 0.4)' },
-  { id: 'crimson',  label: 'Crimson',  swatch: '#7a1d1d', center: '#a31d1d', mid: '#7a1d1d', edge: '#591212', vignette: '#3a0a0a', border: 'rgba(127, 29, 29, 0.4)' },
-  { id: 'sapphire', label: 'Sapphire', swatch: '#1e3a8a', center: '#2845b3', mid: '#1e3a8a', edge: '#172a66', vignette: '#0c1838', border: 'rgba(30, 58, 138, 0.4)' },
-  { id: 'royal',    label: 'Royal',    swatch: '#4c1d95', center: '#6324b8', mid: '#4c1d95', edge: '#371565', vignette: '#1f0a3d', border: 'rgba(76, 29, 149, 0.4)' },
-  { id: 'slate',    label: 'Slate',    swatch: '#1f2937', center: '#293548', mid: '#1f2937', edge: '#161e2b', vignette: '#0d1219', border: 'rgba(31, 41, 55, 0.5)' },
-  { id: 'amber',    label: 'Amber',    swatch: '#78350f', center: '#9c4a16', mid: '#78350f', edge: '#55260b', vignette: '#2f1505', border: 'rgba(120, 53, 15, 0.4)' },
-  { id: 'teal',     label: 'Teal',     swatch: '#134e4a', center: '#1a665e', mid: '#134e4a', edge: '#0d3a36', vignette: '#062321', border: 'rgba(19, 78, 74, 0.4)' },
-  { id: 'rose',     label: 'Rose',     swatch: '#831843', center: '#a8205a', mid: '#831843', edge: '#5e0e2e', vignette: '#36071a', border: 'rgba(131, 24, 67, 0.4)' },
+  { id: 'emerald',  label: 'Emerald',  swatch: '#14472c', center: '#1a5c3a', mid: '#14472c', edge: '#0f3521', vignette: '#0a2a18', border: 'rgba(6, 78, 59, 0.4)',   bgRgb: [31, 94, 64] },
+  { id: 'forest',   label: 'Forest',   swatch: '#0a3d2a', center: '#0f4d35', mid: '#0a3d2a', edge: '#062a1d', vignette: '#031711', border: 'rgba(10, 61, 42, 0.45)', bgRgb: [14, 60, 40] },
+  { id: 'sapphire', label: 'Sapphire', swatch: '#1e3a8a', center: '#2845b3', mid: '#1e3a8a', edge: '#172a66', vignette: '#0c1838', border: 'rgba(30, 58, 138, 0.4)', bgRgb: [22, 38, 96] },
+  { id: 'crimson',  label: 'Crimson',  swatch: '#7a1d1d', center: '#a31d1d', mid: '#7a1d1d', edge: '#591212', vignette: '#3a0a0a', border: 'rgba(127, 29, 29, 0.4)', bgRgb: [92, 22, 22] },
+  { id: 'royal',    label: 'Royal',    swatch: '#4c1d95', center: '#6324b8', mid: '#4c1d95', edge: '#371565', vignette: '#1f0a3d', border: 'rgba(76, 29, 149, 0.4)', bgRgb: [60, 23, 110] },
 ]
 const DEFAULT_TABLE_COLOR_ID = 'emerald'
-function tableColorPalette(id) {
+const TABLE_CUSTOM_COLORS_KEY = 'poker_table_custom_colors'
+const TABLE_CUSTOM_SLOTS = 5
+const TABLE_CUSTOM_PREFIX = 'custom-'
+
+// Build the gradient stops + bg tint from a single user-picked hex.
+// Center = brighter than the base, edge/vignette = progressively
+// darker — mirrors the hand-tuned built-ins (e.g. emerald's center is
+// ~1.18x its mid). bgRgb sits a touch darker than the base so the
+// FuzzyBackground noise reads as the "off-table" environment, not a
+// flat clone of the felt.
+function hexToRgb(hex) {
+  const m = /^#?([a-f0-9]{6})$/i.exec(hex || '')
+  if (!m) return [20, 71, 44]
+  const v = parseInt(m[1], 16)
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255]
+}
+function rgbToHex(r, g, b) {
+  const clamp = (n) => Math.max(0, Math.min(255, Math.round(n)))
+  return '#' + [r, g, b].map(n => clamp(n).toString(16).padStart(2, '0')).join('')
+}
+function scaleRgb(rgb, factor) {
+  return rgb.map(c => Math.max(0, Math.min(255, c * factor)))
+}
+function derivePaletteFromHex(hex, id, label) {
+  const rgb = hexToRgb(hex)
+  const center = scaleRgb(rgb, 1.18)
+  const mid = rgb
+  const edge = scaleRgb(rgb, 0.72)
+  const vignette = scaleRgb(rgb, 0.45)
+  const bg = scaleRgb(rgb, 0.72).map(Math.round)
+  return {
+    id, label: label || 'Custom',
+    swatch: rgbToHex(...mid),
+    center: rgbToHex(...center),
+    mid: rgbToHex(...mid),
+    edge: rgbToHex(...edge),
+    vignette: rgbToHex(...vignette),
+    border: `rgba(${rgb.join(', ')}, 0.4)`,
+    bgRgb: bg,
+  }
+}
+// Resolve any id (built-in or custom-N) to a fully-derived palette.
+// Unknown ids fall back to the default emerald palette so a stale
+// localStorage payload can't dead-end the page.
+function tableColorPalette(id, customColors) {
+  if (typeof id === 'string' && id.startsWith(TABLE_CUSTOM_PREFIX)) {
+    const idx = parseInt(id.slice(TABLE_CUSTOM_PREFIX.length), 10)
+    const entry = Array.isArray(customColors) ? customColors[idx] : null
+    if (entry?.hex) return derivePaletteFromHex(entry.hex, id, entry.label || `Custom ${idx + 1}`)
+    return TABLE_COLOR_PALETTES[0]
+  }
   return TABLE_COLOR_PALETTES.find(p => p.id === id) || TABLE_COLOR_PALETTES[0]
 }
 // Zoom-related constants come from useZoom — single source of truth.
@@ -563,6 +614,21 @@ export default function PokerPage() {
   const playerIdRef = useRef('')
   const gameStateRef = useRef(null)
   const tableMenuRef = useRef(null)
+  // Width of the Tools + Lobby pair (measured live via ResizeObserver
+  // below). Used to size the equity widget so it spans the same
+  // horizontal band as that pair. State, not ref, because the widget
+  // needs to re-render when the value changes.
+  const navPairRef = useRef(null)
+  const [navPairWidth, setNavPairWidth] = useState(0)
+  useEffect(() => {
+    const el = navPairRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const sync = () => setNavPairWidth(el.offsetWidth || 0)
+    sync()
+    const ro = new ResizeObserver(sync)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   const pokerPanelRef = useRef(null)
   const throwTimersRef = useRef(new Map())
   const emoteTimersRef = useRef(new Map())
@@ -630,20 +696,65 @@ export default function PokerPage() {
     try { return window.localStorage.getItem(STATS_MODE_STORAGE_KEY) === '1' }
     catch { return false }
   })
-  // Felt color id from TABLE_COLOR_PALETTES. Persisted per-browser; not
-  // server-synced (purely a local cosmetic).
-  const [tableColorId, setTableColorId] = useState(() => {
+  // Felt color is PER-PLAYER, not shared. Persisted via localStorage so
+  // the same player's pick follows them across tables, arenas, and
+  // private rooms. Two keys: the active color id and the array of up
+  // to 5 user-defined custom colors. Custom slot ids look like
+  // 'custom-0' … 'custom-4'; if a slot is empty (no hex), selecting
+  // it falls back to the default emerald.
+  const [customColors, setCustomColorsRaw] = useState(() => {
+    if (typeof window === 'undefined') return []
+    try {
+      const raw = window.localStorage.getItem(TABLE_CUSTOM_COLORS_KEY)
+      const parsed = raw ? JSON.parse(raw) : null
+      if (!Array.isArray(parsed)) return []
+      // Sanitize: keep only entries with a valid 6-digit hex; cap at 5.
+      return parsed
+        .filter(e => e && typeof e.hex === 'string' && /^#?[a-f0-9]{6}$/i.test(e.hex))
+        .slice(0, TABLE_CUSTOM_SLOTS)
+        .map((e, i) => ({ hex: e.hex.startsWith('#') ? e.hex : `#${e.hex}`, label: e.label || `Custom ${i + 1}` }))
+    } catch { return [] }
+  })
+  const setCustomColors = (next) => {
+    setCustomColorsRaw(next)
+    if (typeof window === 'undefined') return
+    try { window.localStorage.setItem(TABLE_CUSTOM_COLORS_KEY, JSON.stringify(next)) } catch {}
+  }
+  const [tableColorId, setTableColorIdRaw] = useState(() => {
     if (typeof window === 'undefined') return DEFAULT_TABLE_COLOR_ID
     try {
       const saved = window.localStorage.getItem(TABLE_COLOR_STORAGE_KEY)
-      return TABLE_COLOR_PALETTES.some(p => p.id === saved) ? saved : DEFAULT_TABLE_COLOR_ID
+      if (!saved) return DEFAULT_TABLE_COLOR_ID
+      if (TABLE_COLOR_PALETTES.some(p => p.id === saved)) return saved
+      // Custom slot is valid only if its localStorage entry exists.
+      if (saved.startsWith(TABLE_CUSTOM_PREFIX)) return saved
+      return DEFAULT_TABLE_COLOR_ID
     } catch { return DEFAULT_TABLE_COLOR_ID }
   })
+  const setTableColorId = (id) => {
+    if (TABLE_COLOR_PALETTES.some(p => p.id === id)) {
+      setTableColorIdRaw(id)
+    } else if (typeof id === 'string' && id.startsWith(TABLE_CUSTOM_PREFIX)) {
+      setTableColorIdRaw(id)
+    }
+  }
   useEffect(() => {
     if (typeof window === 'undefined') return
     try { window.localStorage.setItem(TABLE_COLOR_STORAGE_KEY, tableColorId) } catch {}
   }, [tableColorId])
-  const tablePalette = useMemo(() => tableColorPalette(tableColorId), [tableColorId])
+  const tablePalette = useMemo(
+    () => tableColorPalette(tableColorId, customColors),
+    [tableColorId, customColors]
+  )
+
+  // Push the active felt color out to FuzzyBackground (mounted at the
+  // root layout, outside this page tree) via a module-level pub/sub.
+  // Cleanup on unmount resets it to default so the background goes
+  // back to the original tone when the user leaves /poker.
+  useEffect(() => {
+    setBackgroundFelt(tablePalette.bgRgb)
+    return () => setBackgroundFelt(null)
+  }, [tablePalette.bgRgb])
 
   // (Removed: "Check in the dark" client-side action queue. Any auto-
   // fire pre-action path is gone; the user must click their own action
@@ -684,13 +795,12 @@ export default function PokerPage() {
       sessionNotifTimersRef.current.clear()
     }
   }, [])
-  const [statsExpansion, setStatsExpansion] = useState('minimized')
   const statsPanelRef = useRef(null)
   // Stable handler so the memoized StatsPanel doesn't re-render every tick
-  // from a fresh inline arrow reference.
+  // from a fresh inline arrow reference. (StatsPanel collapsed to a single
+  // compact view in 2026-05 — no more expansion states, just close.)
   const closeStatsPanel = useCallback(() => {
     setStatsMode(false)
-    setStatsExpansion('minimized')
     try { window.localStorage.removeItem(STATS_MODE_STORAGE_KEY) } catch {}
   }, [])
   const [tableList, setTableList] = useState([])
@@ -949,7 +1059,6 @@ export default function PokerPage() {
       } else if (e.key === STATS_MODE_STORAGE_KEY) {
         const on = e.newValue === '1'
         setStatsMode(on)
-        if (!on) setStatsExpansion('minimized')
       } else if (e.key === HUD_ENABLED_STORAGE_KEY) {
         setHudEnabled(e.newValue !== '0')
       }
@@ -1609,7 +1718,6 @@ export default function PokerPage() {
           }
           if (msg.data.isSpectator) {
             setStatsMode(false)
-            setStatsExpansion('minimized')
           }
           // Seed the disconnected-set from the snapshot — a fresh joiner
           // arriving mid-grace for another player needs to see the
@@ -2315,8 +2423,11 @@ export default function PokerPage() {
   // mid-recompute. Big win on slower devices.
   const deferredGameState = useDeferredValue(gameState)
   const statistics = useMemo(
-    () => statsMode ? buildPokerStatistics(deferredGameState, playerId, { includeDetails: statsExpansion === 'detailed' }) : null,
-    [statsMode, statsExpansion, deferredGameState, playerId]
+    // includeDetails was tied to the now-removed "detailed" expansion
+    // state; the compact widget never needs the heavy made-hand-range /
+    // outs / threats computation, so this stays false.
+    () => statsMode ? buildPokerStatistics(deferredGameState, playerId, { includeDetails: false }) : null,
+    [statsMode, deferredGameState, playerId]
   )
   const allInOddsByPlayer = useMemo(() => {
     if (!statistics?.allIn?.players) return new Map()
@@ -2736,7 +2847,6 @@ export default function PokerPage() {
   function toggleStatsMode() {
     setStatsMode(prev => {
       const next = !prev
-      if (next) setStatsExpansion('minimized')
       try {
         if (next) window.localStorage.setItem(STATS_MODE_STORAGE_KEY, '1')
         else window.localStorage.removeItem(STATS_MODE_STORAGE_KEY)
@@ -2772,18 +2882,10 @@ export default function PokerPage() {
     })
   }
 
-  // Click outside the stats panel auto-minimizes it (instead of closing).
-  // The panel stays mounted and visible — just shrinks to its compact pill.
-  useEffect(() => {
-    if (!statsMode) return
-    if (statsExpansion === 'minimized') return
-    function handlePointerDown(e) {
-      if (statsPanelRef.current?.contains(e.target)) return
-      setStatsExpansion('minimized')
-    }
-    document.addEventListener('pointerdown', handlePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePointerDown)
-  }, [statsMode, statsExpansion])
+  // Outside-click auto-minimize was here back when the equity widget
+  // had Normal / Detailed expansion modes. Both expansions were
+  // removed in 2026-05 — the widget is now a single compact pill, so
+  // there's nothing to collapse and this effect is no longer needed.
 
   // useCallback so the SpectatorPanel's React.memo can actually skip renders
   // when the parent re-renders for unrelated reasons (chat msg, sys msg, etc).
@@ -3096,6 +3198,12 @@ export default function PokerPage() {
             in the same frame. The parent row reserves right-side
             padding so its left cluster never slides under these chips. */}
         <RouteNavCluster>
+          {/* Wrapper ref captures the natural width of the Tools +
+              Lobby pair so the equity widget below can size to match
+              it exactly. Inner gap-2 matches RouteNavCluster's own
+              gap; the cluster's outer gap still spaces this wrapper
+              from the signed-out Sign-in chip. */}
+          <div ref={navPairRef} className="flex items-center gap-2">
           <div ref={tableMenuRef} className="relative">
             <button
               type="button"
@@ -3193,6 +3301,7 @@ export default function PokerPage() {
                         </button>
                       </div>
                     </div>
+
 
                     {/* ── MARKETS ─────────────────────────────────── */}
                     {/* Basic Info (How to Play, Current Hand, Session,
@@ -3314,6 +3423,138 @@ export default function PokerPage() {
                       don't visually run together. On md+ the divide-x
                       handles separation. */}
                   <div className="flex flex-col border-t border-zinc-800 md:border-t-0">
+                    {/* ── FELT COLOR ────────────────────────────────
+                        5 built-ins + 5 custom slots, per-player and
+                        persisted via localStorage so the choice
+                        follows the user to every table / arena /
+                        private room. The empty custom slots show a
+                        "+" that opens the native HTML5 color picker;
+                        filled slots apply on click and have a ×
+                        overlay to clear. */}
+                    <div className="px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Felt color</div>
+                    <div className="px-3 py-2">
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {TABLE_COLOR_PALETTES.map(p => {
+                          const active = p.id === tableColorId
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => setTableColorId(p.id)}
+                              title={p.label}
+                              aria-label={`Set felt to ${p.label}`}
+                              className={`relative h-7 w-7 mx-auto rounded-full border transition-transform ${active ? 'ring-2 ring-zinc-500 scale-110 border-zinc-700' : 'border-zinc-600 hover:scale-110'}`}
+                              style={{ background: p.swatch }}
+                            />
+                          )
+                        })}
+                      </div>
+                      <div className="mt-1 text-center text-[9px] font-black uppercase tracking-widest text-zinc-500">Defaults</div>
+
+                      <div className="mt-2 grid grid-cols-5 gap-1.5">
+                        {Array.from({ length: TABLE_CUSTOM_SLOTS }).map((_, i) => {
+                          const entry = customColors[i]
+                          const slotId = `${TABLE_CUSTOM_PREFIX}${i}`
+                          const active = tableColorId === slotId
+                          if (!entry) {
+                            // Empty slot — clicking opens the native
+                            // color picker. We render a hidden
+                            // <input type="color"> per slot and route
+                            // the click through a label so the picker
+                            // launches without our own wrapper button
+                            // swallowing the event.
+                            return (
+                              <label
+                                key={i}
+                                className="relative h-7 w-7 mx-auto rounded-full border border-dashed border-zinc-600 text-zinc-400 flex items-center justify-center text-xs font-black cursor-pointer hover:text-white hover:border-zinc-400"
+                                title={`Save a custom color into slot ${i + 1}`}
+                              >
+                                +
+                                <input
+                                  type="color"
+                                  className="absolute inset-0 h-full w-full opacity-0 cursor-pointer"
+                                  // Default the picker to emerald so an
+                                  // accidental open + close doesn't slam
+                                  // pure black into the slot.
+                                  defaultValue="#14472c"
+                                  onChange={(e) => {
+                                    const hex = e.target.value
+                                    if (!/^#[a-f0-9]{6}$/i.test(hex)) return
+                                    const next = customColors.slice()
+                                    next[i] = { hex, label: `Custom ${i + 1}` }
+                                    setCustomColors(next)
+                                    setTableColorId(slotId)
+                                  }}
+                                />
+                              </label>
+                            )
+                          }
+                          return (
+                            <div key={i} className="relative h-7 w-7 mx-auto">
+                              <button
+                                type="button"
+                                onClick={() => setTableColorId(slotId)}
+                                title={`${entry.label || `Custom ${i + 1}`} · ${entry.hex}`}
+                                aria-label={`Apply custom color ${i + 1}`}
+                                className={`h-7 w-7 rounded-full border transition-transform ${active ? 'ring-2 ring-zinc-500 scale-110 border-zinc-700' : 'border-zinc-600 hover:scale-110'}`}
+                                style={{ background: entry.hex }}
+                              />
+                              {/* Edit affordance — overlapping color
+                                  picker input. Lets the user re-pick
+                                  without first clearing the slot. */}
+                              <label
+                                className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border border-zinc-900 bg-zinc-800 text-[8px] leading-[10px] text-zinc-200 flex items-center justify-center cursor-pointer hover:bg-zinc-700"
+                                title="Edit color"
+                              >
+                                ✎
+                                <input
+                                  type="color"
+                                  className="absolute inset-0 h-full w-full opacity-0 cursor-pointer"
+                                  defaultValue={entry.hex}
+                                  onChange={(e) => {
+                                    const hex = e.target.value
+                                    if (!/^#[a-f0-9]{6}$/i.test(hex)) return
+                                    const next = customColors.slice()
+                                    next[i] = { hex, label: entry.label || `Custom ${i + 1}` }
+                                    setCustomColors(next)
+                                    if (active) {
+                                      // Force a re-render of the felt
+                                      // by reapplying the same id —
+                                      // tablePalette already re-derives
+                                      // from customColors, so no work.
+                                    }
+                                  }}
+                                />
+                              </label>
+                              {/* Clear (×) — only when active doesn't
+                                  matter; user might want to reset a
+                                  slot they're not currently using. */}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  const next = customColors.slice()
+                                  next[i] = null
+                                  // Compact nulls AFTER the cleared
+                                  // index? Don't — keep slot indices
+                                  // stable so the user's spatial
+                                  // memory survives a clear.
+                                  setCustomColors(next)
+                                  if (active) setTableColorId(DEFAULT_TABLE_COLOR_ID)
+                                }}
+                                title="Clear this slot"
+                                aria-label={`Clear custom color slot ${i + 1}`}
+                                className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border border-zinc-900 bg-zinc-800 text-[9px] leading-[10px] text-zinc-200 flex items-center justify-center hover:bg-red-500/30 hover:text-red-100"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                      <div className="mt-1 text-center text-[9px] font-black uppercase tracking-widest text-zinc-500">Custom slots</div>
+                    </div>
+
                     {/* ── ACTIONS ─────────────────────────────────── */}
                     <div className="px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Actions</div>
                     {/* Bank is open to spectators too — they can take loans and
@@ -3417,7 +3658,11 @@ export default function PokerPage() {
                               />
                             </div>
                           )}
-                          {/* ── ★ Auto-fill (public top bots) ── */}
+                          {/* ── ★ Auto-fill (random app bots) ──
+                              Pulls from the 5-bot Gambler squad (the
+                              shared "🎲 App bots" set) and seats a
+                              random subset. Server-side shuffle so
+                              every fill produces a different lineup. */}
                           {(!isSpectator || isArena) && (
                             <div className="px-3 py-1">
                               <ConfirmPopoverButton
@@ -3425,9 +3670,9 @@ export default function PokerPage() {
                                   label: `★ Auto-Fill ${openSlots} Empty Seat${openSlots === 1 ? '' : 's'}`,
                                   fullLabel: '★ Auto-Fill · Full',
                                   color: 'text-amber-200',
-                                  description: `Seats ${openSlots} top-rated public bot${openSlots === 1 ? '' : 's'} from the leaderboard into your open seat${openSlots === 1 ? '' : 's'}. They'll each start with the same chip stack as you (1000 minimum). Different ELOs to give you a mixed lobby.`,
+                                  description: `Seats ${openSlots} random bot${openSlots === 1 ? '' : 's'} from the 🎲 App bots squad (Splashy, Chaser, Maniac, Sticky, Hunter — loose, gamble-happy, draw-chasing). They'll each start with the same chip stack as you (1000 minimum). Different shuffle every time you click.`,
                                   confirmLabel: `Seat ${openSlots} bot${openSlots === 1 ? '' : 's'}`,
-                                  kickAndAction: 'seat top-rated public bots',
+                                  kickAndAction: 'seat random app bots',
                                   action: () => send('poker_auto_fill_bots')
                                 })}
                               />
@@ -3604,6 +3849,7 @@ export default function PokerPage() {
             <span aria-hidden="true" className="text-base leading-none sm:text-lg">&lt;</span>
             <span className="hidden sm:inline">{leaveTableArmed ? 'Confirm leave' : 'Lobby'}</span>
           </button>
+          </div>
         </RouteNavCluster>
       </div>
 
@@ -3807,8 +4053,14 @@ export default function PokerPage() {
             // "Your bots", never both there and in the public strip.
             const mineIds = new Set(botRoster.mine.map(b => b.id))
             const publicOnly = botRoster.public.filter(b => !mineIds.has(b.id))
+            // Pull gambler "app bots" into their own top-level section
+            // — they're public but app-owned (synthetic system user),
+            // not user-authored, so they shouldn't blend into either
+            // "Your bots" or the user-made "Public roster".
+            const appBots = publicOnly.filter(b => b.isGambler)
+            const publicUserMade = publicOnly.filter(b => !b.isGambler)
             const mineGroups = subgroupsFromBuckets(bucketByCategory(botRoster.mine))
-            const publicGroups = subgroupsFromBuckets(bucketByCategory(publicOnly))
+            const publicGroups = subgroupsFromBuckets(bucketByCategory(publicUserMade))
             const selectedCount = addBotSelection.size
             // Seated bots — live snapshot from the game state. Lets users
             // see (and kick) bots currently at the table without
@@ -3991,6 +4243,27 @@ export default function PokerPage() {
                   >
                     No bots yet — <span className="underline">build your first one →</span>
                   </a>
+                )}
+
+                {/* ── App bots ── Globally-shared "🎲 Gambler" squad
+                    seeded at server boot. Same pill rendering as your
+                    bots / public roster but pinned in its own card
+                    above Public roster so it reads as a built-in
+                    feature, not a regular user's submissions. */}
+                {appBots.length > 0 && (
+                  <div className="space-y-2 rounded-lg border border-rose-500/40 bg-rose-950/20 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-black uppercase tracking-widest text-rose-200">🎲 App bots</div>
+                      <span className="text-[9px] font-black uppercase tracking-widest text-rose-300/70">
+                        Built-in — usable by everyone
+                      </span>
+                    </div>
+                    <PillStrip
+                      label="Gambler"
+                      accent="text-rose-200"
+                      bots={appBots}
+                    />
+                  </div>
                 )}
 
                 {/* ── Public roster ── */}
@@ -4323,8 +4596,12 @@ export default function PokerPage() {
                   {(() => {
                     const mineIds = new Set(botRoster.mine.map(b => b.id))
                     const publicOnly = botRoster.public.filter(b => !mineIds.has(b.id))
+                    // Same app-bot split as the Add Bots picker: gambler
+                    // bots show in their own card above Public roster.
+                    const appBots = publicOnly.filter(b => b.isGambler)
+                    const publicUserMade = publicOnly.filter(b => !b.isGambler)
                     const mineGroups = subgroupsFromBuckets(bucketByCategory(botRoster.mine))
-                    const publicGroups = subgroupsFromBuckets(bucketByCategory(publicOnly))
+                    const publicGroups = subgroupsFromBuckets(bucketByCategory(publicUserMade))
                     const selectedCount = arenaPickQueue.length
 
                     function PillStrip({ label, accent, bots, ownerLabelFn }) {
@@ -4406,9 +4683,16 @@ export default function PokerPage() {
                           </div>
                         )}
 
+                        {appBots.length > 0 && (
+                          <div className="space-y-2 rounded-md border border-rose-500/40 bg-rose-950/20 p-2">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-rose-200">🎲 App bots</div>
+                            <PillStrip label="Gambler" accent="text-rose-200" bots={appBots} />
+                          </div>
+                        )}
+
                         <div className="space-y-2 rounded-md border border-zinc-700/70 bg-zinc-950/30 p-2">
                           <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Public roster</div>
-                          {!botRoster.loading && publicOnly.length === 0 && (
+                          {!botRoster.loading && publicUserMade.length === 0 && (
                             <div className="text-[10px] font-bold text-zinc-500 text-center py-1">No public bots yet.</div>
                           )}
                           {publicGroups.map(g => (
@@ -4707,6 +4991,12 @@ export default function PokerPage() {
                 // updates immediately — server already wrote it; the next
                 // room_update will confirm.
                 setBankState(prev => ({ ...prev, skinId, customSkin }))
+                // Push the change to the room so every OTHER seat
+                // re-renders. The REST endpoint above only persists to
+                // DB; without this push the live Player object on the
+                // server keeps the old skin and other seats never see
+                // the update until the user reconnects.
+                send('player:skin_update', { skinId, customSkin })
               }}
             />
           )}
@@ -5779,27 +6069,18 @@ export default function PokerPage() {
             <div className="relative mx-auto max-w-7xl">
               <div
                 ref={statsPanelRef}
-                // The equity widget's right edge stays in lockstep
-                // with the Tools/Lobby cluster header:
-                //   • signed-IN  → 3.5rem/4rem to clear the dock's
-                //                  avatar.
-                //   • signed-OUT → 0.75rem/1rem gutter (the dock has
-                //                  nothing to render in that state on
-                //                  this route, so the cluster — and
-                //                  this widget — sit flush to the
-                //                  viewport edge).
-                className={`pointer-events-auto absolute top-0 ${authUser ? 'right-14 sm:right-16' : 'right-3 sm:right-4'} ${
-                  statsExpansion === 'minimized'
-                    ? 'w-[210px]'
-                    : statsExpansion === 'detailed'
-                      ? 'w-[calc(100vw-8rem)] max-w-[420px]'
-                      : 'w-[calc(100vw-8rem)] max-w-[320px]'
-                }`}
+                // Right edge matches the Tools/Lobby cluster's gutter
+                // (auth-aware, same as RouteNavCluster). Width is
+                // measured live from the Tools + Lobby pair so the
+                // widget is exactly as wide as those two buttons
+                // together, regardless of font/zoom. Falls back to a
+                // sane default until the first ResizeObserver tick
+                // lands so the widget isn't 0-width on first paint.
+                className={`pointer-events-auto absolute top-0 ${authUser ? 'right-14 sm:right-16' : 'right-3 sm:right-4'}`}
+                style={{ width: navPairWidth > 0 ? navPairWidth : undefined }}
               >
                 <StatsPanel
                   statistics={statistics}
-                  expansion={statsExpansion}
-                  onSetExpansion={setStatsExpansion}
                   onClose={closeStatsPanel}
                 />
               </div>

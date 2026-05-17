@@ -33,7 +33,9 @@ export const SKIN_PRESETS = [
   { id: 9,  unlocksAt: 0, label: 'Neon',
     css: 'linear-gradient(135deg, #be185d 0%, #4338ca 100%)' },
   { id: 10, unlocksAt: 0, label: 'Custom',
-    css: null /* resolved at render-time from the user's saved customSkin */ },
+    css: null /* gradient — resolved at render-time from the user's saved customSkin */ },
+  { id: 11, unlocksAt: 0, label: 'Solid',
+    css: null /* solid — resolved at render-time from the user's saved customSkin */ },
 ]
 
 // Convert a {colors:[...], direction:'...'} payload into a CSS background.
@@ -48,8 +50,18 @@ export function customSkinCss(custom) {
   return `linear-gradient(${dir}, ${colors})`
 }
 
+// Convert a {color:'#hex'} payload into a CSS background. Same
+// defensive fallback as customSkinCss — bad input → default skin.
+export function solidSkinCss(custom) {
+  if (!custom || typeof custom.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(custom.color)) {
+    return SKIN_PRESETS[0].css
+  }
+  return custom.color
+}
+
 export function resolveSkinCss(skinId, customSkin) {
   if (skinId === 10) return customSkinCss(customSkin)
+  if (skinId === 11) return solidSkinCss(customSkin)
   const preset = SKIN_PRESETS.find(s => s.id === skinId) || SKIN_PRESETS[0]
   return preset.css || SKIN_PRESETS[0].css
 }

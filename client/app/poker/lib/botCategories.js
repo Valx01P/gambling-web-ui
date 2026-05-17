@@ -36,17 +36,21 @@ export function nonMlpNeuralLabel(kind) {
   }
 }
 
-// Bucket a flat bot list into the same six categories the /poker/bots
+// Bucket a flat bot list into the same categories the /poker/bots
 // page renders as section shelves. Returns named groups so the picker
 // can render labeled strips. The is_oracle check runs FIRST so an
 // oracle bot (which has none of the other kind flags set) gets its
 // own slot instead of falling through into `rule` — without that case
 // the Oracle would appear under "Rule / code" and be indistinguishable
-// from a user's hand-coded bots.
+// from a user's hand-coded bots. is_gambler is checked next: gambler
+// bots are technically code-bots (they have a `code` body), but the
+// product wants them in their own visible category — without an early
+// branch they'd land in `rule` alongside the user's hand-rolled bots.
 export function bucketByCategory(bots) {
-  const buckets = { oracle: [], mlp: [], otherNeural: [], super: [], clone: [], rule: [] }
+  const buckets = { oracle: [], gambler: [], mlp: [], otherNeural: [], super: [], clone: [], rule: [] }
   for (const b of bots) {
     if (b.isOracle) buckets.oracle.push(b)
+    else if (b.isGambler) buckets.gambler.push(b)
     else if (b.isSuper) buckets.super.push(b)
     else if (b.isClone) buckets.clone.push(b)
     else if (isMlpFamily(b)) buckets.mlp.push(b)
@@ -58,11 +62,14 @@ export function bucketByCategory(bots) {
 
 // Ordered list of subgroups with display metadata. Skipped if empty.
 // Oracle is at the top of the list — it's the marquee per-user slot,
-// users should see it first in every picker. Fuchsia accent matches
-// the ★ ORACLE badge on the My Bots list.
+// users should see it first in every picker. Gambler sits right below
+// it (loose-aggressive squad, auto-provisioned alongside Oracle). The
+// rose accent makes them visually distinct from both the fuchsia
+// Oracle and the purple MLP family.
 export function subgroupsFromBuckets(buckets) {
   return [
     { key: 'oracle',      bots: buckets.oracle,      label: '★ Oracle',     accent: 'text-fuchsia-200' },
+    { key: 'gambler',     bots: buckets.gambler,     label: '🎲 Gambler',   accent: 'text-rose-200' },
     { key: 'mlp',         bots: buckets.mlp,         label: 'MLP family',   accent: 'text-purple-200' },
     { key: 'otherNeural', bots: buckets.otherNeural, label: 'Other neural', accent: 'text-cyan-200' },
     { key: 'super',       bots: buckets.super,       label: 'Super',        accent: 'text-violet-200' },

@@ -195,6 +195,11 @@ async function getMyBotsCached(userId) {
     // the partial unique index on (owner_user_id) WHERE is_oracle = TRUE.
     try { await provisionOracleBotForUser(userId) }
     catch (err) { console.warn('[bots] oracle provisioning failed:', err.message) }
+    // The gambler squad is provisioned GLOBALLY at server boot (see
+    // provisionGlobalGamblerBots in server.js + botRepository.js), not
+    // here — those bots are owned by a synthetic system user, not the
+    // viewer. Don't seed them per-user; the user would end up with a
+    // private copy in "Your bots".
     const bots = await listBotsByOwner(userId)
     const payload = { bots, limit: MAX_BOTS_PER_USER, publicLimit: MAX_PUBLIC_BOTS_PER_USER }
     _mineCache.set(userId, { fetchedAt: Date.now(), payload, refreshing: null })

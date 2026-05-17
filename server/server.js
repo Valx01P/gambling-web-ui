@@ -7,6 +7,7 @@ import { runMigrations } from './src/db/migrate.js'
 import { closePool, query as dbQuery } from './src/db/pool.js'
 import { expireOldTableInvites } from './src/dms/dmsRepository.js'
 import { pushToUser } from './src/notifications/dispatcher.js'
+import { provisionGlobalGamblerBots } from './src/bots/botRepository.js'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -122,6 +123,14 @@ async function start() {
       // Surface but don't crash — the WS poker game still works without DB.
       // Bot endpoints will 500 until migrations succeed.
     }
+    // Global "app bot" seed — 5 gambler bots owned by a synthetic
+    // system user, public, visible to every user under their own
+    // "🎲 App bots" picker section. Idempotent; self-heals stale code
+    // on every boot so deployed strategies stay in sync with the
+    // checked-in GAMBLER_STRATEGIES. Logged-but-not-fatal: a failure
+    // here just means new users don't see the squad until next boot.
+    try { await provisionGlobalGamblerBots() }
+    catch (err) { console.warn('[bots] global gambler seed failed:', err.message) }
     // Run once at boot, then daily. setInterval is safe here because each
     // call is a single bounded DELETE against an indexed column.
     pruneAuditLog().catch(() => {})

@@ -9,19 +9,29 @@ import JsonLd, { breadcrumbJsonLd } from '../components/JsonLd'
 const BASE = process.env.NEXT_PUBLIC_SITE_URL || 'https://pokerxyz.io'
 
 export const metadata = {
-  title: "Play poker — pokerxyz",
-  description: "No-limit hold'em with 5-seat tables, JavaScript bots, ELO rankings, and bot-vs-bot arenas. Free chips, real strategy, open lobby.",
+  // Title template in app/layout.jsx adds "· pokerxyz" suffix — keep
+  // this stack under ~50 chars so SERPs don't truncate the brand.
+  title: "Live Poker Tables · Play Free with Friends",
+  description:
+    "Free no-limit Texas hold'em — open lobby, 5-seat tables, fake chips. " +
+    "Invite friends, fill empty seats with custom JavaScript bots, run a bot-vs-bot arena, " +
+    "or grind your ELO solo. Side bets, peer loans, banking, all in the browser, no downloads.",
   alternates: { canonical: '/poker' },
+  keywords: [
+    'play poker with friends', 'free poker', "no-limit hold'em",
+    "texas hold'em online", 'multiplayer poker', 'poker bot table',
+    'fake chips poker', 'browser poker', 'no download poker',
+  ],
   openGraph: {
-    title: 'Play poker on pokerxyz',
-    description: "Five-handed no-limit hold'em. Add your own bots. Watch them duel.",
+    title: "Live Poker Tables · pokerxyz",
+    description: "Free no-limit hold'em with friends or programmable bots. Open lobby, fake chips.",
     url: '/poker',
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Play poker on pokerxyz',
-    description: "Five-handed no-limit hold'em with programmable bots.",
+    title: "Live Poker Tables · pokerxyz",
+    description: "Free no-limit hold'em with friends or programmable bots.",
   },
 }
 

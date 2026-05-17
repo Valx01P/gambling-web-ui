@@ -24,5 +24,14 @@ export default function sitemap() {
       changeFrequency: 'daily',
       priority: 0.8,
     },
+    {
+      url: `${base}/feed`,
+      lastModified: now,
+      // Feed mutates fast (every new post / comment), so hint Googlebot
+      // to revisit aggressively. Real recrawl cadence is heuristic-driven
+      // on Google's side, this is just a nudge.
+      changeFrequency: 'hourly',
+      priority: 0.6,
+    },
   ]
 }

@@ -208,25 +208,14 @@ export default function BotProfilePopover({
       </div>
 
       <div className="mt-2 flex gap-2">
-        {/* 2026-05: Edit Bot was removed from this popover at the user's
-            request — editing live at the table was confusing (the bot's
-            seat doesn't pick up code changes until next hand, and the
-            recalc-stats flow has a stale-load race). Owners go through
-            /poker/bots to edit instead. The view-only link is kept for
-            public bots so anyone can inspect a bot's logic without
-            leaving the table flow. */}
-        {/* Anonymous viewers used to mis-tap this link constantly, dropping
-            them out of the table flow into an editor they couldn't use.
-            Gate on viewerUserId so it only shows to signed-in users. */}
-        {!!viewerUserId && !isOwner && seat.botIsPublic && seat.botId && (
-          <a
-            href={`/poker/bots/${seat.botId}`}
-            className="flex-1 rounded-md border border-zinc-500/60 bg-zinc-800 px-2 py-1 text-center text-[11px] font-black uppercase tracking-widest text-white hover:bg-zinc-700"
-            onClick={(e) => e.stopPropagation()}
-          >
-            View bot →
-          </a>
-        )}
+        {/* "View bot →" and "Edit Bot" both removed from this popover.
+            Edit Bot first (live-edit at the table had a stale-load race
+            + the seated bot doesn't pick up code changes until next
+            hand). View bot was removed afterward — surfacing other
+            users' (or app-bot) internals from the seat click read as
+            confusing and never panned out as a feature. Owners and
+            curious users go through /poker/bots from the Tools menu.
+            Only the Kick action stays here. */}
         {/* Kick — only rendered when the server would actually accept
             the action (parent computes the rule). Server rules:
               • you added the bot → kick immediately

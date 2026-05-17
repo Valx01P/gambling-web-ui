@@ -163,6 +163,12 @@ export const MESSAGE_TYPES = {
   // per 3-min window; thresholds: 3-4 players → 2 votes, 5 → 3.
   POKER_KICK_VOTE: 'poker_kick_vote',
 
+  // Player skin push. Sent right after a successful POST /api/me/skin so
+  // the room's in-memory Player object refreshes (otherwise the change
+  // sits in the DB but other seats never see it until the player
+  // reconnects). data: { skinId, customSkin? }.
+  PLAYER_SKIN_UPDATE: 'player:skin_update',
+
   // Auth handshake — client sends a JWT after connect so the server knows
   // which signed-in user this socket belongs to (needed for arena creation).
   AUTH_HELLO: 'auth_hello',

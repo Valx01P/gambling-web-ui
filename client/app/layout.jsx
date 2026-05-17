@@ -19,15 +19,31 @@ export const googleSansCode = localFont({
 export const metadata = {
   metadataBase: new URL('https://pokerxyz.io'),
   title: {
-    default: "pokerxyz — No-limit hold'em with bots you can program",
-    // Used by per-route metadata via the title.template merge rules.
-    template: '%s — pokerxyz',
+    // Headline keyword stack at the front, brand last. Search results
+    // truncate around 60 chars — this lands at ~58 so nothing important
+    // gets clipped on Google or Bing SERPs.
+    default: "Play Poker with Friends & Build Poker Bots · pokerxyz",
+    template: '%s · pokerxyz',
   },
-  description: "Multiplayer poker tables, JavaScript bots, bot-vs-bot arenas, ELO rankings, and a full banking system. Fake chips, real strategy.",
+  description:
+    "Play free no-limit Texas hold'em with friends using fake chips, " +
+    "or write your own JavaScript poker bots and watch them duel in bot-vs-bot arenas. " +
+    "Live tables, programmable AI, ELO rankings, and a full banking system — all in the browser, no downloads, no real money.",
   applicationName: 'pokerxyz',
+  // Keyword list seeds Bing + a handful of vertical search engines. Less
+  // load-bearing than the title/description, but cheap to keep current
+  // and useful for our long-tail queries (bot builder / fake chips / etc.).
   keywords: [
-    'poker', "no-limit hold'em", 'texas holdem', 'javascript bot', 'poker bot',
-    'bot arena', 'elo', 'multiplayer poker', 'free poker', 'browser poker',
+    // Core poker terms
+    'play poker online', 'play poker with friends', 'free poker',
+    "no-limit hold'em", "texas hold'em", 'multiplayer poker', 'browser poker',
+    'online poker free', 'poker with fake chips', 'poker no real money',
+    // The platform's defining feature
+    'poker bot builder', 'build poker bot', 'javascript poker bot',
+    'programmable poker bot', 'poker AI', 'poker bot arena', 'bot vs bot poker',
+    // Game features
+    'poker ELO', 'poker leaderboard', 'poker training', 'poker simulator',
+    'open lobby poker', 'free poker tables', 'no download poker',
   ],
   authors: [{ name: 'pokerxyz' }],
   creator: 'pokerxyz',
@@ -36,22 +52,34 @@ export const metadata = {
   manifest: '/manifest.webmanifest',
   formatDetection: { telephone: false, email: false, address: false },
   openGraph: {
-    title: "pokerxyz",
-    description: "No-limit hold'em with bots you can program.",
+    title: "Play Poker with Friends & Build Poker Bots · pokerxyz",
+    description:
+      "Free no-limit hold'em with friends, fake chips, and JavaScript bots you can " +
+      "program yourself. Bot-vs-bot arenas, ELO rankings, no downloads.",
     url: 'https://pokerxyz.io',
     siteName: 'pokerxyz',
     type: 'website',
     locale: 'en_US',
+    // og:image is auto-attached by Next.js from app/opengraph-image.js.
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'pokerxyz',
-    description: "No-limit hold'em with bots you can program.",
+    title: "Play Poker with Friends & Build Poker Bots · pokerxyz",
+    description:
+      "Free no-limit hold'em with friends. Program your own poker bots in JavaScript. " +
+      "Bot-vs-bot arenas, ELO, fake chips, real strategy.",
+    // twitter:image is auto-attached by Next.js from app/twitter-image.js.
   },
   robots: {
     index: true,
     follow: true,
-    googleBot: { index: true, follow: true, 'max-image-preview': 'large' },
+    googleBot: {
+      index: true,
+      follow: true,
+      'max-image-preview': 'large',
+      'max-snippet': -1,
+      'max-video-preview': -1,
+    },
   },
 }
 

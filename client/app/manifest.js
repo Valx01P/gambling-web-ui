@@ -4,9 +4,11 @@
 
 export default function manifest() {
   return {
-    name: "pokerxyz — No-limit hold'em with bots you can program",
+    name: "Play Poker with Friends & Build Poker Bots · pokerxyz",
     short_name: 'pokerxyz',
-    description: "Multiplayer no-limit Texas hold'em with JavaScript bots, ELO rankings, and bot-vs-bot arenas.",
+    description:
+      "Free no-limit Texas hold'em with friends and programmable JavaScript poker bots. " +
+      "Open lobby, fake chips, bot-vs-bot arenas, ELO rankings — all in the browser.",
     start_url: '/',
     display: 'standalone',
     background_color: '#020617',
@@ -14,9 +16,16 @@ export default function manifest() {
     orientation: 'any',
     categories: ['games', 'entertainment'],
     icons: [
-      // The /icon.svg route Next emits is already SVG-based, so it covers
-      // every density without a separate raster pipeline.
+      // SVG for modern browsers (renders crisp at every density).
       { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+      // 512px PNG from app/icon.js — Chrome's installable-PWA shelf,
+      // Android home-screen shortcut, and the SERP favicon thumbnail
+      // all want a raster at this size. Marked `maskable` so Android
+      // can apply its adaptive icon shape without clipping the spade.
+      { src: '/icon', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+      // 180px iOS touch icon from app/apple-icon.js. Listed in the
+      // manifest too so Lighthouse PWA audits don't ding us.
+      { src: '/apple-icon', sizes: '180x180', type: 'image/png', purpose: 'any' },
     ],
   }
 }
