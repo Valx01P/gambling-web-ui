@@ -1468,26 +1468,15 @@ export class PokerRoom {
     }
   }
 
-  // Sweep any human seat's chips above CHIP_STACK_MAX into the bank
-  // wallet. Runs between hands so the table stack always tops out at
-  // the same 1k size — winners' excess becomes "investing money" in
-  // the bank, not a runaway poker stack that distorts blinds vs. stack
-  // ratios. Bots and arena seats are exempt (no bank to sweep into).
-  _sweepStackOverflow() {
-    const cap = POKER_CONFIG.CHIP_STACK_MAX
-    if (!Number.isFinite(cap) || cap <= 0) return
-    for (const p of this.players.values()) {
-      if (p.isBot) continue
-      const overflow = (p.chips || 0) - cap
-      if (overflow <= 0) continue
-      p.chips = cap
-      p.bankBalance = (p.bankBalance || 0) + overflow
-      this.broadcast({
-        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
-        data: { message: `${p.username}'s stack capped at $${cap.toLocaleString()} — $${overflow.toLocaleString()} swept to bank.` }
-      })
-    }
-  }
+  // Buy-in ceiling (`CHIP_STACK_MAX`) is now only the INITIAL seat /
+  // rebuy size — not a runtime cap. Players who win chips at the table
+  // keep them at the table; the post-hand sweep that used to move
+  // excess into the bank wallet was removed per user request. Chip
+  // gains from items (scam / hack) are zero-sum at the table and so
+  // don't affect total seat wealth in aggregate. Bank-side activities
+  // (stocks / crypto / side bets / loans) never deposit into chips
+  // directly, so nothing outside poker pumps the on-table stack.
+  _sweepStackOverflow() { /* no-op — kept for callsite parity */ }
 
   _cleanupBrokeBots() {
     if (this._cleanupGuard) return

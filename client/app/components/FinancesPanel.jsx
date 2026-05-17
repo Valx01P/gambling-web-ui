@@ -75,11 +75,12 @@ function FinancesPanelImpl({
   // "If everything settles now" stack value:
   //   chips + parked + lent_out + crypto_value − bank_owed − peer_owed
   //
-  // chips ALREADY reflect chips paid for crypto positions (buy deducted)
-  // and chips parked in side bets (buy moved to openSideBetStake) —
-  // subtracting cost basis here would double-count. Bank/peer debts are
-  // known liabilities, not P/L: taking a loan should NOT turn the panel
-  // red, since the chips went up by the same amount.
+  // chips reflects the on-table stack. `openSideBetStake` is bank money
+  // locked in unresolved side bets (debit moved out of bankBalance into
+  // the stake field, returns on void or resolves into a different number
+  // on win/loss). Bank/peer debts are known liabilities, not P/L: taking
+  // a loan should NOT turn the panel red, since the bank balance went up
+  // by the same amount.
   const stackIfLiquidated = myChips
     + openSideBetStake
     + peer.owedIn
@@ -114,13 +115,13 @@ function FinancesPanelImpl({
       </div>
 
       <div className="rounded-lg border border-zinc-700/60 bg-zinc-950/40 p-3">
-        <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-zinc-500">Current chips</div>
+        <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-zinc-500">Liquid bankroll</div>
         <Row label="On the table" value={`$${fmtChips(myChips)}`} valueClass="text-white" />
         <Row
           label="Parked in side bets"
           value={`$${fmtChips(openSideBetStake)}`}
           valueClass={openSideBetStake > 0 ? 'text-amber-200' : 'text-zinc-500'}
-          hint="Chips locked until each prop resolves"
+          hint="Bank money locked until each prop resolves"
         />
       </div>
 

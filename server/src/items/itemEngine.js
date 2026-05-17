@@ -35,24 +35,32 @@ import { MESSAGE_TYPES } from '../config/constants.js'
 // you only get to scam/hack once every 8 hands, the table feels
 // passive. Faster reload keeps the griefing chip-stream flowing.
 const ITEM_COOLDOWN_HANDS = {
-  peek: 4,
-  swap: 6,
-  scam: 2,
+  peek: 6,
+  swap: 8,
+  // 2026-05: scam drops to a 1-hand refresh per user request. Combined
+  // with "stack multiple popups on the receiver" (see ScamPopupModal)
+  // it turns scam into a per-hand griefing tool instead of a special.
+  scam: 1,
   hack: 3,
   // Deck-rig powers — kept on long cooldowns because they're
   // strictly stronger than chip-takers.
   river_card: 8,
   next_card: 8,
   rig_hand: 16,
+  // 2026-05 specials. crash_coin nukes any chosen market coin 95%;
+  // crash_holdings wipes a target's crypto + stock positions 95%.
+  crash_coin: 2,
+  crash_holdings: 5,
+  // PIN-hack: shows target a 4-digit PIN for 2s, then asks them to
+  // retype it within 10s under "your account has been compromised"
+  // pressure. Miss it → hacker drains 10-50% of their bank.
+  pin_hack: 4,
 }
 
-// Scam cooldown is fixed at 2 hands now (was randomized 2-3 to break
-// up popup spam). Per user request: every item gets a single, exact
-// refresh window so the in-UI "Recharges every N hands" label tells
-// the truth — a 2-3 range would have to read as either 2 or 3 and the
-// pre-roll value isn't known until use.
-const SCAM_COOLDOWN_MIN_HANDS = 2
-const SCAM_COOLDOWN_MAX_HANDS = 2
+// Scam cooldown is fixed at 1 hand now (was 2). Per user request:
+// "refresh every turn".
+const SCAM_COOLDOWN_MIN_HANDS = 1
+const SCAM_COOLDOWN_MAX_HANDS = 1
 
 const HACK_MIN_PERCENT = 0.05
 const HACK_MAX_PERCENT = 0.15
@@ -70,7 +78,20 @@ const SCAM_EXPIRY_MS = 30_000
 // another way to take chips from another seat. Refreshes every ~3
 // hands (see SCAM_COOLDOWN_*); the popup auto-blocks after 30s of
 // no response so an AFK target can't pin the sender's cooldown.
-const ITEM_IDS = ['peek', 'swap', 'scam', 'hack', 'river_card', 'next_card', 'rig_hand']
+const ITEM_IDS = [
+  'peek', 'swap', 'scam', 'hack',
+  'river_card', 'next_card', 'rig_hand',
+  // Market-griefing specials. crash_coin: pick any coin and tank it 95%.
+  // crash_holdings: pick a target player and wipe 95% of their crypto +
+  // stock positions. Both route their server effects through the
+  // respective engines (CryptoEngine / StockEngine).
+  'crash_coin', 'crash_holdings',
+  // Social-engineering special. See initiatePinHack — flashes a 4-digit
+  // PIN at the target, then under fake "account compromised" pressure
+  // demands they retype it within 10s. Failed recall drains 10-50%
+  // of their bank balance into the hacker's bank.
+  'pin_hack',
+]
 
 // Card validation tables. Used by swap() to reject malformed picks
 // from the client. Kept here (not imported from the deck module) so
@@ -90,6 +111,8 @@ export class ItemEngine {
     // scamId → { senderId, senderUsername, targetId, targetUsername, amount, createdAt }
     this.pendingScams = new Map()
     this._scamSeq = 0
+    // pinHackId → { senderId, senderUsername, targetId, targetUsername, pin, amount, createdAt }
+    this.pendingPinHacks = new Map()
   }
 
   _cooldownFor(itemId) {
@@ -357,6 +380,173 @@ export class ItemEngine {
     if (!result.success) return result
     this._markUsed(playerId, 'rig_hand')
     return { success: true }
+  }
+
+  // ─── crash_coin (2-hand cooldown) ──────────────────────────────────────
+  // Nukes the chosen coin's price ~95% in one tick. Different from a rug:
+  // the rug requires you to own the coin and pays the owner a cut of
+  // outsiders' cost basis; crash_coin works on ANY market coin (no
+  // ownership required) and doesn't drain holders — it just tanks the
+  // chart. Holders sell into the floor if they want out.
+  crashCoin(playerId, coinId) {
+    if (this._isOnCooldown(playerId, 'crash_coin')) return { success: false, error: 'cooldown' }
+    if (!this.room.cryptoEngine) return { success: false, error: 'crypto_unavailable' }
+    const sender = this.room.players.get(playerId) || this.room.spectators?.get?.(playerId)
+    if (!sender) return { success: false, error: 'not_at_table' }
+    if (sender.isBot) return { success: false, error: 'bots_cant_use_items' }
+    const result = this.room.cryptoEngine.crashCoin(coinId)
+    if (!result.success) return result
+    this._markUsed(playerId, 'crash_coin')
+    this.broadcast({
+      type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+      data: { message: `📉 ${sender.username} crashed $${result.symbol} ${result.dropPct}%.` }
+    })
+    return { success: true, ...result }
+  }
+
+  // ─── crash_holdings (5-hand cooldown) ──────────────────────────────────
+  // Wipes 95% of the target player's open crypto + stock positions. No
+  // chip transfer — the value evaporates. A no-position target sees no
+  // effect, the cooldown still burns. Bot targets are skipped (no real
+  // money there to grief).
+  crashHoldings(playerId, targetId) {
+    if (this._isOnCooldown(playerId, 'crash_holdings')) return { success: false, error: 'cooldown' }
+    if (playerId === targetId) return { success: false, error: 'cant_target_self' }
+    const sender = this.room.players.get(playerId) || this.room.spectators?.get?.(playerId)
+    const target = this.room.players.get(targetId) || this.room.spectators?.get?.(targetId)
+    if (!sender || !target) return { success: false, error: 'target_not_at_table' }
+    if (sender.isBot) return { success: false, error: 'bots_cant_use_items' }
+    if (target.isBot) return { success: false, error: 'cant_target_bots' }
+
+    const cryptoSummary = this.room.cryptoEngine?.crashHoldingsFor?.(targetId) || { coins: 0, valueLost: 0 }
+    const stockSummary = this.room.stockEngine?.crashHoldingsFor?.(targetId) || { positions: 0, valueLost: 0 }
+    const totalLost = (cryptoSummary.valueLost || 0) + (stockSummary.valueLost || 0)
+    const hitCount = (cryptoSummary.coins || 0) + (stockSummary.positions || 0)
+
+    this._markUsed(playerId, 'crash_holdings')
+    if (hitCount === 0) {
+      // Still log so the sender knows the special fired but found nothing.
+      sender.send({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `💥 You crashed ${target.username}'s holdings — they had nothing open.` }
+      })
+      return { success: true, hitCount: 0, totalLost: 0 }
+    }
+    this.broadcast({
+      type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+      data: {
+        message: `💥 ${sender.username} crashed ${target.username}'s holdings — $${Math.round(totalLost).toLocaleString()} wiped across ${hitCount} position${hitCount === 1 ? '' : 's'}.`
+      }
+    })
+    return { success: true, hitCount, totalLost: Math.round(totalLost) }
+  }
+
+  // ─── pin_hack (8-hand cooldown) ────────────────────────────────────────
+  // Social-engineering minigame. The target sees a 4-digit PIN for ~2s,
+  // then a fake "account compromised, retype your PIN" panel demands
+  // they re-enter it within 10s. Failure (wrong PIN or timeout) drains
+  // 10-50% of the target's BANK balance into the hacker's bank. The
+  // hacker's cooldown burns immediately; the response window is policed
+  // by a server-side timer so an AFK target can't sit on the popup
+  // forever. Bots are immune (no popup interaction).
+  initiatePinHack(playerId, targetId) {
+    if (this._isOnCooldown(playerId, 'pin_hack')) return { success: false, error: 'cooldown' }
+    if (playerId === targetId) return { success: false, error: 'cant_target_self' }
+    const sender = this.room.players.get(playerId)
+    const target = this.room.players.get(targetId)
+    if (!sender || !target) return { success: false, error: 'target_not_at_table' }
+    if (sender.isBot) return { success: false, error: 'bots_cant_use_items' }
+    if (target.isBot) return { success: false, error: 'cant_target_bots' }
+    if (!target.isConnected) return { success: false, error: 'target_offline' }
+    if ((target.bankBalance || 0) <= 0) return { success: false, error: 'target_broke' }
+
+    // Pick the dollar slice up front so the target reads a stable number
+    // through both phases. 10-50% of CURRENT bank — captured at trigger
+    // time, not at resolve time, so a wallet that swings during the 12s
+    // window doesn't change the stakes mid-flow.
+    const pct = 0.10 + Math.random() * 0.40
+    const amount = Math.max(1, Math.floor((target.bankBalance || 0) * pct))
+    const pin = String(1000 + Math.floor(Math.random() * 9000))
+    const pinHackId = `pinhack_${++this._scamSeq}`
+    if (!this.pendingPinHacks) this.pendingPinHacks = new Map()
+    this.pendingPinHacks.set(pinHackId, {
+      senderId: playerId,
+      senderUsername: sender.username,
+      targetId,
+      targetUsername: target.username,
+      pin,
+      amount,
+      createdAt: Date.now(),
+    })
+    this._markUsed(playerId, 'pin_hack')
+
+    // Push the popup to the victim. Client handles the two-phase UI
+    // (memorize → input). The full 12s timeout (2s show + 10s input)
+    // is enforced server-side too so a tab close or network drop still
+    // resolves cleanly.
+    target.send({
+      type: 'item:pin_hack_popup',
+      data: { pinHackId, senderUsername: sender.username, pin, amount }
+    })
+
+    setTimeout(() => {
+      const stillPending = this.pendingPinHacks.get(pinHackId)
+      if (!stillPending) return
+      this.pendingPinHacks.delete(pinHackId)
+      this._applyPinHackOutcome(stillPending, /* matched= */ false, /* reason= */ 'timeout')
+    }, 12_000).unref?.()
+
+    return { success: true, pinHackId }
+  }
+
+  resolvePinHack(targetId, pinHackId, guess) {
+    if (!this.pendingPinHacks) return { success: false, error: 'unknown_pin_hack' }
+    const pending = this.pendingPinHacks.get(pinHackId)
+    if (!pending) return { success: false, error: 'unknown_pin_hack' }
+    if (pending.targetId !== targetId) return { success: false, error: 'not_target' }
+    this.pendingPinHacks.delete(pinHackId)
+    const matched = String(guess).trim() === pending.pin
+    this._applyPinHackOutcome(pending, matched, matched ? 'matched' : 'wrong_pin')
+    return { success: true, matched }
+  }
+
+  _applyPinHackOutcome(pending, matched, reason) {
+    const sender = this.room.players.get(pending.senderId)
+                || this.room.spectators?.get?.(pending.senderId)
+                || null
+    const target = this.room.players.get(pending.targetId)
+                || this.room.spectators?.get?.(pending.targetId)
+                || null
+    if (!sender || !target) return
+    if (matched) {
+      target.send({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `🛡 You remembered the PIN — ${pending.senderUsername}'s hack failed.` }
+      })
+      sender.send({
+        type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+        data: { message: `🛡 ${pending.targetUsername} remembered the PIN. Your hack bounced.` }
+      })
+      return
+    }
+    // Failed: drain the captured slice, capped at target's current bank
+    // (which may have moved during the 12s window).
+    const available = Math.max(0, target.bankBalance || 0)
+    const transfer = Math.min(pending.amount, available)
+    target.bankBalance = available - transfer
+    sender.bankBalance = (sender.bankBalance || 0) + transfer
+    const reasonLabel = reason === 'timeout' ? 'ran out of time' : 'fumbled the PIN'
+    this.broadcast({
+      type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+      data: {
+        message: `🪪 ${pending.targetUsername} ${reasonLabel} — ${pending.senderUsername} drained $${transfer.toLocaleString()} from their bank.`
+      }
+    })
+    // Push a fresh room update so both clients' bank widgets reflect
+    // the transfer without waiting on the next hand tick.
+    if (typeof this.room?.broadcastRoomUpdate === 'function') {
+      this.room.broadcastRoomUpdate()
+    }
   }
 
   // ─── lifecycle ─────────────────────────────────────────────────────────

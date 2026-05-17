@@ -14,12 +14,11 @@ export const POKER_CONFIG = {
   // hand" cleanly distinct from "my stock portfolio is down" so the
   // P/L badges read honestly.
   BANK_START_BALANCE: 5000,
-  // Hard cap on the on-table poker stack. Wins that would push a seat
-  // above this size sweep the excess into the bank wallet so every
-  // hand is played at the same scale of stacks. Combined with the
-  // 5000 chip-stack maximum on blinds (50/100), the table economy
-  // stays a tight one-buy-in game regardless of how rich the player's
-  // bank account gets from outside investments.
+  // Initial buy-in / rebuy size. Pre-2026-05 this was a hard runtime
+  // cap that swept winnings into the bank — that sweep was removed so
+  // a player who runs hot at the table can keep stacking. The value
+  // still applies to: (1) the size of the initial seat, (2) the auto-
+  // rebuy when a stack hits zero, (3) blind-level sanity checks.
   CHIP_STACK_MAX: 1000,
   SMALL_BLIND: 5,
   BIG_BLIND: 10,
@@ -199,6 +198,13 @@ export const MESSAGE_TYPES = {
   ITEM_RESULT: 'item:result',
   ITEM_SCAM_POPUP: 'item:scam_popup',
   ITEM_SCAM_RESOLVE: 'item:scam_resolve',
+  // pin_hack — two-phase social-engineering minigame. Server pushes
+  // the popup to the target with `{pinHackId, senderUsername, pin,
+  // amount}`; the client renders the memorize-then-input flow and
+  // sends ITEM_PIN_HACK_RESOLVE with `{pinHackId, guess}`. Server
+  // also auto-resolves on a 12s timeout (drain happens server-side).
+  ITEM_PIN_HACK_POPUP: 'item:pin_hack_popup',
+  ITEM_PIN_HACK_RESOLVE: 'item:pin_hack_resolve',
   ITEMS_STATE: 'items:state',
 
   // Achievement events — fired when a signed-in user crosses a milestone

@@ -239,6 +239,36 @@ export class StockEngine {
     return this.room.players?.get?.(playerId) || this.room.spectators?.get?.(playerId) || null
   }
 
+  // Target-player wipe used by the crash_holdings item (see ItemEngine).
+  // Wipes 95% of the SHARES on each of the target's open stock
+  // positions. Doesn't touch the ticker price — the broader market is
+  // untouched, only this player loses out. Returns `{positions, valueLost}`.
+  crashHoldingsFor(targetId) {
+    const bag = this.holdings.get(targetId)
+    if (!bag || bag.size === 0) return { positions: 0, valueLost: 0 }
+    let hitCount = 0
+    let valueLost = 0
+    for (const [symbol, pos] of bag) {
+      if (!pos || !(pos.shares > 0)) continue
+      const stock = this.stocks.get(symbol)
+      if (!stock) continue
+      const before = pos.shares
+      const after = before * 0.05
+      pos.shares = after
+      const lostShares = before - after
+      valueLost += lostShares * (stock.price || 0)
+      hitCount += 1
+    }
+    // Push a fresh per-player snapshot to the victim so their panel
+    // re-renders the wiped share counts without waiting for the next
+    // hand-end tick.
+    if (hitCount > 0) {
+      const victim = this._findPlayer(targetId)
+      if (victim) this.sendSnapshotTo(victim)
+    }
+    return { positions: hitCount, valueLost }
+  }
+
   _bagFor(playerId) {
     let bag = this.holdings.get(playerId)
     if (!bag) { bag = new Map(); this.holdings.set(playerId, bag) }

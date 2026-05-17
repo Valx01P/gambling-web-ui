@@ -29,6 +29,7 @@ const TOOL_FOR_TYPE = {
   // Items & powers
   [MESSAGE_TYPES.ITEM_USE]: 'items',
   [MESSAGE_TYPES.ITEM_SCAM_RESOLVE]: 'items',
+  [MESSAGE_TYPES.ITEM_PIN_HACK_RESOLVE]: 'items',
   // Real estate
   'asset:buy': 'assets',
   'asset:sell': 'assets',
@@ -249,6 +250,8 @@ export class MessageHandler {
           return this.handleItemUse(player, data)
         case MESSAGE_TYPES.ITEM_SCAM_RESOLVE:
           return this.handleItemScamResolve(player, data)
+        case MESSAGE_TYPES.ITEM_PIN_HACK_RESOLVE:
+          return this.handleItemPinHackResolve(player, data)
 
         case 'asset:buy':
         case 'asset:sell':
@@ -1280,6 +1283,14 @@ export class MessageHandler {
       case 'river_card': result = room.itemEngine.useRiverCard(player.id, data?.card); break
       case 'next_card':  result = room.itemEngine.useNextCard(player.id, data?.card); break
       case 'rig_hand':   result = room.itemEngine.useRigHand(player.id, data?.payload); break
+      // Market-griefing specials. crash_coin tanks one chosen coin 95%
+      // (no ownership required); crash_holdings wipes 95% of a target
+      // player's crypto + stock SHARES (chart prices untouched).
+      case 'crash_coin':     result = room.itemEngine.crashCoin(player.id, data?.coinId); break
+      case 'crash_holdings': result = room.itemEngine.crashHoldings(player.id, targetId); break
+      // PIN-hack: kicks off the two-phase popup on the target. The
+      // resolve message comes back via a separate WS type below.
+      case 'pin_hack':       result = room.itemEngine.initiatePinHack(player.id, targetId); break
       default:
         player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Unknown item.' } })
         return { success: false }
@@ -1310,6 +1321,10 @@ export class MessageHandler {
         && typeof room.broadcastRoomUpdate === 'function') {
       room.broadcastRoomUpdate()
     }
+    // crash_holdings doesn't move chips (the loss is locked in the
+    // target's bag), but the victim's snapshot needs the fresh share
+    // counts. cryptoEngine + stockEngine already push their own
+    // state on the wipe — no extra broadcast needed here.
     return result
   }
 
@@ -1326,6 +1341,17 @@ export class MessageHandler {
       room.broadcastRoomUpdate()
     }
     return result
+  }
+
+  handleItemPinHackResolve(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || !room.itemEngine) return { success: false }
+    const pinHackId = typeof data?.pinHackId === 'string' ? data.pinHackId : null
+    const guess = data?.guess == null ? '' : String(data.guess)
+    if (!pinHackId) return { success: false }
+    // _applyPinHackOutcome handles its own broadcastRoomUpdate on
+    // failure, so we don't need to push one from here.
+    return room.itemEngine.resolvePinHack(player.id, pinHackId, guess)
   }
 
   handleInfluenceRun(player, data) {
@@ -1674,13 +1700,13 @@ function humanizeCryptoError(code) {
 // Pretty-print engine error codes for the toast popups on the client.
 function humanizeSideBetError(code) {
   if (typeof code !== 'string') return 'Side bet failed.'
-  if (code.startsWith('min_bet_')) return `Minimum side bet is ${code.split('_').pop()} chips.`
+  if (code.startsWith('min_bet_')) return `Minimum side bet is $${code.split('_').pop()}.`
   switch (code) {
     case 'invalid_side': return 'Pick YES or NO.'
     case 'prop_not_found': return 'That market is no longer available.'
     case 'prop_closed': return 'That market has already resolved.'
     case 'not_seated': return 'You must be seated at the table to place side bets.'
-    case 'insufficient_chips': return 'Not enough chips in your stack.'
+    case 'insufficient_bank': return 'Not enough money in your bank for that side bet.'
     case 'no_position': return 'You don\'t hold a position on that market.'
     case 'invalid_shares': return 'Invalid share count.'
     default: return code
@@ -1772,6 +1798,7 @@ function humanizeItemError(code) {
     case 'no_deck': return 'Deck is unavailable.'
     case 'not_at_table': return 'Sit down first.'
     case 'unknown_scam': return 'That scam offer has expired.'
+    case 'unknown_pin_hack': return 'That hack attempt already resolved.'
     // Deck-rig power errors
     case 'invalid_card': return 'Pick a valid card from the deck.'
     case 'duplicate_card': return 'You can\'t use the same card twice in one rig.'
@@ -1780,6 +1807,10 @@ function humanizeItemError(code) {
     case 'river_already_dealt': return 'River has already been dealt — too late.'
     case 'no_more_cards': return 'No more cards left to come out this hand.'
     case 'already_rigged': return 'Someone else already rigged this hand — wait for it to play out.'
+    // crash_coin / crash_holdings
+    case 'coin_not_found': return 'That coin isn\'t in the market anymore.'
+    case 'already_rugged': return 'That coin already rugged — nothing left to crash.'
+    case 'crypto_unavailable': return 'The crypto market isn\'t live at this table.'
     default: return code ? `Item failed: ${code}` : 'Item failed.'
   }
 }

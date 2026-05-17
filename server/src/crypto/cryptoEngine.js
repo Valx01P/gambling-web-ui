@@ -562,6 +562,52 @@ export class CryptoMarketEngine {
     }
   }
 
+  // Crash any coin in the market by 95% in one tick. Used by the
+  // crash_coin item (see ItemEngine). Different from rug: no owner
+  // required, no holder drain, no contagion — just a clean candle that
+  // tanks the chart. Holders can still try to sell into the floor.
+  // Returns `{success, symbol, dropPct, fromPrice, toPrice}` on success.
+  crashCoin(coinId) {
+    const coin = this.coins.get(coinId)
+    if (!coin) return { success: false, error: 'coin_not_found' }
+    if (coin.rugged) return { success: false, error: 'already_rugged' }
+    const fromPrice = coin.price
+    const dropPct = 95
+    const toPrice = Math.max(RUG_PRICE_FLOOR, coin.price * 0.05)
+    coin.price = toPrice
+    pushHistory(coin, coin.price)
+    this._broadcastState({ reason: 'crash', coinId })
+    return { success: true, symbol: coin.symbol || 'COIN', dropPct, fromPrice, toPrice }
+  }
+
+  // Target-player wipe used by the crash_holdings item. Walks the
+  // target's holding bag and erases 95% of the SHARES on each open
+  // position. The on-chart price is untouched — only this player loses
+  // out (think: their wallet got hacked, not the market). Returns
+  // `{coins, valueLost}` so the item engine can report a single line.
+  crashHoldingsFor(targetId) {
+    const bag = this.holdings.get(targetId)
+    if (!bag || bag.size === 0) return { coins: 0, valueLost: 0 }
+    let hitCount = 0
+    let valueLost = 0
+    for (const [coinId, pos] of bag) {
+      if (!pos || !(pos.shares > 0)) continue
+      const coin = this.coins.get(coinId)
+      if (!coin) continue
+      const before = pos.shares
+      const after = before * 0.05
+      pos.shares = after
+      // Cost basis tracks the original buy total — leave it alone so
+      // a sale at the wiped share count shows the realized loss in the
+      // P/L badge instead of artificially "reducing" the cost.
+      const lostShares = before - after
+      valueLost += lostShares * (coin.price || 0)
+      hitCount += 1
+    }
+    if (hitCount > 0) this._broadcastState({ reason: 'crash_holdings', targetId })
+    return { coins: hitCount, valueLost }
+  }
+
   // ─── Internals ──────────────────────────────────────────────────────────
 
   _findPlayer(playerId) {

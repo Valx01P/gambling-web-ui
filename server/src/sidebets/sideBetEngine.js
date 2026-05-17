@@ -1,8 +1,14 @@
 // Per-room side-bet engine. Owns the live YES/NO markets for the current
-// hand and mutates `player.chips` directly (server is authoritative — same
-// trust model as the main betting engine in PokerGame). Buy/sell happen at
-// the same fair price; the house-edge spread was removed in 2026-05 (EDGE
-// constant kept at 0 so the clamp call sites can stay symmetric).
+// hand and mutates `player.bankBalance` directly (server is authoritative
+// — same trust model as the main betting engine in PokerGame). Stakes,
+// proceeds, and resolution credits all flow through the OFF-table BANK
+// wallet; the 1000-chip stack is reserved for the poker bet itself.
+// (Pre-2026-05 these flowed through `player.chips`, which capped side-bet
+// exposure to the seat's stack — see `openSideBetStake` for the locked
+// portion the Finances panel still displays.)
+// Buy/sell happen at the same fair price; the house-edge spread was
+// removed in 2026-05 (EDGE constant kept at 0 so the clamp call sites
+// can stay symmetric).
 //
 // Lifecycle:
 //   handStart       → clear leftover, spawn 3-5 props
@@ -205,16 +211,23 @@ export class SideBetEngine {
 
     const player = this._findPlayer(playerId)
     if (!player) return { success: false, error: 'not_seated' }
-    if (player.chips < intAmount) return { success: false, error: 'insufficient_chips' }
+    // Side bets are paid out of the off-table BANK wallet, not the
+    // poker stack. The stack is capped at 1000 chips and is what's
+    // wagered on the hand — using it for prop bets meant you couldn't
+    // open more side-bet exposure than the seat allowed. Bank is the
+    // right pool: that's where stocks, options, crypto, jobs, peer
+    // loans, and bank loans all settle.
+    const available = player.bankBalance ?? 0
+    if (available < intAmount) return { success: false, error: 'insufficient_bank' }
 
     const price = side === 'yes' ? prop.buyYesPrice : prop.buyNoPrice
     const shares = intAmount / price
 
-    // The stake leaves `chips` (so it can't be double-spent on a poker bet)
-    // but moves into `openSideBetStake`, which the P/L formula adds back in.
-    // Until the position is sold or resolves, the player's profit display
-    // is unaffected — placing a bet shouldn't show as a realized loss.
-    player.chips -= intAmount
+    // The stake leaves `bankBalance` and is tracked in
+    // `openSideBetStake` so the Finances panel can show "X locked in
+    // open side bets" — that money returns to the bank on void, or
+    // settles into a different number on win/loss.
+    player.bankBalance = available - intAmount
     player.openSideBetStake = (player.openSideBetStake || 0) + intAmount
 
     let bag = this.positions.get(playerId)
@@ -276,14 +289,16 @@ export class SideBetEngine {
 
     const player = this._findPlayer(playerId)
     if (!player) return { success: false, error: 'not_seated' }
-    player.chips += proceeds
+    // Proceeds settle into the BANK wallet, the same place the stake
+    // came from. Keeps the side-bet engine fully bank-routed end-to-end.
+    player.bankBalance = (player.bankBalance ?? 0) + proceeds
 
     position.shares -= actualShares
     // Track cost basis pro-rata so partial sells leave reasonable accounting.
     // `fractionSold` is shares-just-sold / shares-before-this-sell, which
     // tells us how much of the original costPaid to retire (and pull out of
     // the player's openSideBetStake — the realized portion of the bet is
-    // now back in `chips` as proceeds, so it shouldn't double-count).
+    // now back in `bankBalance` as proceeds, so it shouldn't double-count).
     const fractionSold = position.shares <= 1e-9 ? 1 : (actualShares / (actualShares + position.shares))
     const costRemoved = Math.floor(position.costPaid * fractionSold)
     position.costPaid = Math.max(0, position.costPaid - costRemoved)
@@ -345,12 +360,14 @@ export class SideBetEngine {
           label = 'loss'
         }
         if (player) {
-          if (credit > 0) player.chips += credit
+          // Wins, voids, and mark-to-market settlements all credit the
+          // BANK wallet — same pool the stake left from.
+          if (credit > 0) player.bankBalance = (player.bankBalance ?? 0) + credit
           // The cost basis exits openSideBetStake at resolution regardless
-          // of outcome — the bet is no longer open. For a win, chips
+          // of outcome — the bet is no longer open. For a win, bank
           // already absorbed the credit; for a loss, the stake is gone;
-          // for a void, chips absorbed the refund. In every case the P/L
-          // delta is (chips_after + 0_stake) − (chips_before + stake) =
+          // for a void, bank absorbed the refund. In every case the P/L
+          // delta is (bank_after + 0_stake) − (bank_before + stake) =
           // (credit − costPaid), which is the correct realized outcome.
           player.openSideBetStake = Math.max(0, (player.openSideBetStake || 0) - pos.costPaid)
         }
@@ -485,8 +502,8 @@ export class SideBetEngine {
     // Prefer the game's seated array (hot-path during a hand). Fall back to
     // the room's player map for mid-hand seat changes; then to spectators
     // since they're allowed to place side bets too. The same Player object
-    // is mutated in every case — chips and openSideBetStake live on the
-    // Player instance regardless of seated/spectator status.
+    // is mutated in every case — bankBalance and openSideBetStake live on
+    // the Player instance regardless of seated/spectator status.
     return this.game.players.find(p => p.id === playerId)
       || this.room?.players?.get?.(playerId)
       || this.room?.spectators?.get?.(playerId)

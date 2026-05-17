@@ -50,6 +50,7 @@ import ItemsPanel from './components/ItemsPanel'
 import { setDockBotSpeed } from '../components/AccountDock'
 import PeekRevealModal from './components/PeekRevealModal'
 import ScamPopupModal from './components/ScamPopupModal'
+import PinHackModal from './components/PinHackModal'
 import AssetsPanel from './components/AssetsPanel'
 import JobsPanel from './components/JobsPanel'
 import StocksPanel from './components/StocksPanel'
@@ -946,10 +947,20 @@ export default function PokerPage() {
   // the result here to render the reveal modal. Cleared when the user
   // dismisses the modal.
   const [itemPeekResult, setItemPeekResult] = useState(null)
-  // Active scam popup pushed at us by another player. Resolved by clicking
-  // Accept or Block (or letting the server's 30s expiry fire). Shape:
-  // { scamId, senderUsername, amount }
-  const [scamPopup, setScamPopup] = useState(null)
+  // Active scam popups pushed at us by other players. Multiple can be
+  // open at once (the server's per-sender cooldown went down to 1 hand,
+  // so quick attackers can chain); each gets its own screen corner so
+  // they don't stack opaque overlays. Resolved by clicking Accept or
+  // Block (or letting the server's 30s expiry fire on each). Entry shape:
+  //   { scamId, senderUsername, amount }
+  const [scamPopups, setScamPopups] = useState([])
+  // Active pin_hack popup landed on us — only one at a time (the
+  // server enforces an 8-hand cooldown per sender so concurrent hits
+  // from the same hacker are impossible; if two different hackers
+  // chain attempts, the second pushes the first off-screen, which is
+  // fine since the first's 12s clock is still ticking server-side).
+  // Shape: { pinHackId, senderUsername, pin, amount }.
+  const [pinHackPopup, setPinHackPopup] = useState(null)
   // Persistent top-left finance widget. Once opened it stays visible across
   // hands so the player can keep an eye on unrealized P/L as side bets and
   // crypto prices move. Local-only UI state, never broadcast — but the
@@ -1565,16 +1576,36 @@ export default function PokerPage() {
             addSys(`Scam sent — waiting for them to click…`)
           }
           break
-        case 'item:scam_popup':
-          // Someone is trying to scam us. Render the shifting-button
-          // modal. If we already have a popup pending, ignore the
-          // second (the server's cooldown should prevent this but
-          // defensive). Auto-clears on server-side 30s expiry.
-          if (msg.data?.scamId) {
-            setScamPopup({
-              scamId: msg.data.scamId,
+        case 'item:pin_hack_popup':
+          // pin_hack landed on us. Pop the two-phase modal; the
+          // server's 12s timeout (2s show + 10s input) handles the
+          // failure path if we don't respond in time. A late server
+          // response after the user tabbed away will land here but the
+          // modal won't be open — that's fine, the server already
+          // drained the slice and pushed a system message.
+          if (msg.data?.pinHackId && msg.data?.pin) {
+            setPinHackPopup({
+              pinHackId: msg.data.pinHackId,
               senderUsername: msg.data.senderUsername || 'someone',
-              amount: msg.data.amount || 0
+              pin: String(msg.data.pin),
+              amount: msg.data.amount || 0,
+            })
+          }
+          break
+        case 'item:scam_popup':
+          // Someone is trying to scam us. Multiple in flight at once
+          // is supported now — the receiver sees a corner-anchored
+          // popup for each attempt. Server-side 30s expiry clears each
+          // independently; we just dedupe on scamId in case a redeliver
+          // arrives.
+          if (msg.data?.scamId) {
+            setScamPopups(prev => {
+              if (prev.some(p => p.scamId === msg.data.scamId)) return prev
+              return [...prev, {
+                scamId: msg.data.scamId,
+                senderUsername: msg.data.senderUsername || 'someone',
+                amount: msg.data.amount || 0
+              }]
             })
           }
           break
@@ -5087,6 +5118,10 @@ export default function PokerPage() {
               itemsState={itemsState}
               players={gameState?.players || []}
               myPlayerId={playerId}
+              // crash_coin's inline picker reads the live coin list out
+              // of crypto state — same source the Crypto Market panel
+              // uses, so the items panel never shows a stale roster.
+              cryptoCoins={cryptoState?.coins || []}
               // Server flag exposed in the game-state envelope. When
               // true another player has rig_hand queued for the next
               // hand — the modal renders a warning banner + disables
@@ -5802,23 +5837,60 @@ export default function PokerPage() {
         />
       )}
 
-      {/* Scam popup — landed on us because another player used their
-          Scam item. Sea of Accept buttons + one Block; buttons reshuffle
-          every ~600ms so a hasty click can hit Accept. */}
-      {scamPopup && (
-        <ScamPopupModal
-          senderUsername={scamPopup.senderUsername}
-          amount={scamPopup.amount}
-          onAccept={() => {
-            send('item:scam_resolve', { scamId: scamPopup.scamId, accepted: true })
-            setScamPopup(null)
-          }}
-          onBlock={() => {
-            send('item:scam_resolve', { scamId: scamPopup.scamId, accepted: false })
-            setScamPopup(null)
+      {/* PIN-hack popup — landed on us because another player used
+          pin_hack. The two-phase modal handles its own countdown; the
+          server enforces the same 12s deadline so an AFK target still
+          resolves cleanly into a drain. We clear local state when the
+          user submits; the server's response message confirms the
+          outcome via the toast. */}
+      {pinHackPopup && (
+        <PinHackModal
+          senderUsername={pinHackPopup.senderUsername}
+          pin={pinHackPopup.pin}
+          amount={pinHackPopup.amount}
+          onSubmit={(guess) => {
+            send('item:pin_hack_resolve', { pinHackId: pinHackPopup.pinHackId, guess })
+            setPinHackPopup(null)
           }}
         />
       )}
+
+      {/* Scam popups — landed on us because other players used their
+          Scam item. Sea of Accept buttons + one Block; buttons reshuffle
+          every 400ms so a hasty click can hit Accept. Multiple in flight
+          render at different corners so they're each addressable.
+          The first popup keeps the centered/backdrop look so a single
+          attacker still gets the dramatic full-screen treatment. */}
+      {scamPopups.map((scam, idx) => {
+        // Five corner/edge slots — enough to cover the typical "one
+        // scammer per opponent" case (max 4 opponents at a 5-seat table).
+        // Slot 0 is the centered/backdrop mode for a single-attacker
+        // burst; slots 1+ peel off to corners.
+        const CORNER_SLOTS = [
+          null,
+          { top: '4rem', right: '1rem' },
+          { top: '4rem', left: '1rem' },
+          { bottom: '5rem', right: '1rem' },
+          { bottom: '5rem', left: '1rem' },
+        ]
+        const position = CORNER_SLOTS[Math.min(idx, CORNER_SLOTS.length - 1)]
+        return (
+          <ScamPopupModal
+            key={scam.scamId}
+            senderUsername={scam.senderUsername}
+            amount={scam.amount}
+            position={position}
+            onAccept={() => {
+              send('item:scam_resolve', { scamId: scam.scamId, accepted: true })
+              setScamPopups(prev => prev.filter(p => p.scamId !== scam.scamId))
+            }}
+            onBlock={() => {
+              send('item:scam_resolve', { scamId: scam.scamId, accepted: false })
+              setScamPopups(prev => prev.filter(p => p.scamId !== scam.scamId))
+            }}
+          />
+        )
+      })}
 
       {/* Floating feed window — opened from the Tools menu. Movable,
           resizable, persisted position/size. Reuses PostCard + PostComposer
@@ -6294,7 +6366,12 @@ export default function PokerPage() {
                   <SideBetsPanel
                     sideBets={sideBetsState}
                     myPlayerId={playerId}
-                    myStack={myPlayer?.chips ?? bankState.chips ?? 0}
+                    // Side bets are funded from the off-table BANK
+                    // wallet (the poker stack is 1000 chips, too small
+                    // to express any meaningful prop bet). Pass the
+                    // bank balance — the panel's input clamps + the
+                    // "you have" label both key off this number.
+                    myStack={bankState.bankBalance ?? 0}
                     onPlace={placeSideBet}
                     onSell={sellSideBet}
                     expanded={sideBetsExpanded}

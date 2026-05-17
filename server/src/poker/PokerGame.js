@@ -1727,12 +1727,13 @@ export class PokerGame {
       bet: this.playerBets.get(p.id) || 0,
       totalBet: this.playerTotalBets.get(p.id) || 0,
       // P/L = chips on hand + chips committed to the current pot + chips
-      // staked on open side bets − initial buy-in. The open side-bet stake
-      // is included so placing a prop bet doesn't immediately *look* like a
-      // loss — it's just chips parked in a market, mark-to-market is hidden
-      // until the position is sold or the prop resolves (engine drains the
-      // stake at that point and the realized delta lands in `chips`).
-      profit: p.chips + (this.playerTotalBets.get(p.id) || 0) + (p.openSideBetStake || 0) - (p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS),
+      // POKER P/L only: chips on the table + chips currently in the
+      // pot from this hand − initial buy-in. Side bets used to be
+      // deducted from chips, so we added `openSideBetStake` back here
+      // to avoid a placed bet looking like a poker loss. As of
+      // 2026-05 side bets debit BANK instead, so the open stake
+      // belongs to the bank-side calc and is no longer added here.
+      profit: p.chips + (this.playerTotalBets.get(p.id) || 0) - (p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS),
       buyIn: p.pokerBuyIn || POKER_CONFIG.STARTING_CHIPS,
       // Alias under the toJSON name too, so the seat-click popover
       // can read either field name uniformly across gameState and

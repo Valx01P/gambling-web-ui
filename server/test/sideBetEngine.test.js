@@ -55,8 +55,8 @@ function spawnUntil(engine, game, type, maxTries = 40) {
 test('engine spawns ≥3 props on hand start and emits one state broadcast', () => {
   const game = makeFakeGame({
     players: [
-      { id: 'p1', chips: 1000, username: 'alice' },
-      { id: 'p2', chips: 1000, username: 'bob' }
+      { id: 'p1', chips: 1000, bankBalance: 5000, username: 'alice' },
+      { id: 'p2', chips: 1000, bankBalance: 5000, username: 'bob' }
     ]
   })
   const { engine, broadcasts } = makeEngine(game)
@@ -72,17 +72,20 @@ test('engine spawns ≥3 props on hand start and emits one state broadcast', () 
   }
 })
 
-test('buy YES, then prop resolves YES → chips reflect the payout, position cleared', () => {
-  const player = { id: 'p1', chips: 1000, username: 'alice' }
-  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, username: 'bob' }] })
+test('buy YES, then prop resolves YES → bank reflects the payout, chips untouched', () => {
+  const player = { id: 'p1', chips: 1000, bankBalance: 5000, username: 'alice' }
+  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, bankBalance: 5000, username: 'bob' }] })
   const { engine } = makeEngine(game)
   engine.onHandStart()
   const aceProp = spawnUntil(engine, game, 'ace_on_board')
 
   const buyResult = engine.placeBet('p1', aceProp.id, 'yes', 100)
   assert.equal(buyResult.success, true)
-  // Player paid 100 chips → stack now 900.
-  assert.equal(player.chips, 900)
+  // Player paid 100 from BANK → bankBalance now 4900. The on-table
+  // chip stack is untouched — side bets no longer eat into the seat's
+  // poker stake.
+  assert.equal(player.bankBalance, 4900)
+  assert.equal(player.chips, 1000)
   const sharesBought = buyResult.shares
   assert.ok(sharesBought > 0)
 
@@ -96,21 +99,23 @@ test('buy YES, then prop resolves YES → chips reflect the payout, position cle
   engine.onStateChange()
 
   // Prop should be resolved YES → 1 chip per share, rounded.
+  // Credit lands in BANK, not on the table.
   assert.equal(aceProp.status, 'resolved')
   assert.equal(aceProp.outcome, 'yes')
   const expectedCredit = Math.round(sharesBought)
-  assert.equal(player.chips, 900 + expectedCredit, `expected 900 + ${expectedCredit}, got ${player.chips}`)
+  assert.equal(player.bankBalance, 4900 + expectedCredit, `expected 4900 + ${expectedCredit}, got ${player.bankBalance}`)
+  assert.equal(player.chips, 1000)
 })
 
-test('buy YES, prop resolves NO → player loses stake (no credit)', () => {
-  const player = { id: 'p1', chips: 1000, username: 'alice' }
-  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, username: 'bob' }] })
+test('buy YES, prop resolves NO → player loses stake from bank (no credit)', () => {
+  const player = { id: 'p1', chips: 1000, bankBalance: 5000, username: 'alice' }
+  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, bankBalance: 5000, username: 'bob' }] })
   const { engine } = makeEngine(game)
   engine.onHandStart()
   const aceProp = spawnUntil(engine, game, 'ace_on_board')
 
   engine.placeBet('p1', aceProp.id, 'yes', 100)
-  assert.equal(player.chips, 900)
+  assert.equal(player.bankBalance, 4900)
 
   // River out with no aces.
   game.communityCards.push(
@@ -126,17 +131,18 @@ test('buy YES, prop resolves NO → player loses stake (no credit)', () => {
 
   assert.equal(aceProp.status, 'resolved')
   assert.equal(aceProp.outcome, 'no')
-  assert.equal(player.chips, 900, 'lost stake stays gone')
+  assert.equal(player.bankBalance, 4900, 'lost bank stake stays gone')
+  assert.equal(player.chips, 1000, 'poker stack untouched by side bet')
 })
 
-test('void refunds the original stake for SEATED players', () => {
-  const player = { id: 'p1', chips: 1000, username: 'alice' }
-  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, username: 'bob' }] })
+test('void refunds the original stake to bank for SEATED players', () => {
+  const player = { id: 'p1', chips: 1000, bankBalance: 5000, username: 'alice' }
+  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, bankBalance: 5000, username: 'bob' }] })
   const { engine } = makeEngine(game)
   engine.onHandStart()
   const aceProp = spawnUntil(engine, game, 'ace_on_board')
   engine.placeBet('p1', aceProp.id, 'yes', 200)
-  assert.equal(player.chips, 800)
+  assert.equal(player.bankBalance, 4800)
 
   // Hand ends fold-out style: phase advances to showdown but the board
   // never gets to 5 cards. Engine's onHandEnd should VOID + refund for
@@ -146,7 +152,8 @@ test('void refunds the original stake for SEATED players', () => {
 
   assert.equal(aceProp.status, 'resolved')
   assert.equal(aceProp.outcome, 'void')
-  assert.equal(player.chips, 1000, 'seated stake refunded')
+  assert.equal(player.bankBalance, 5000, 'seated stake refunded to bank')
+  assert.equal(player.chips, 1000, 'poker stack untouched')
 })
 
 test('void marks-to-market for SPECTATORS (no refund-rescue)', () => {
@@ -155,11 +162,11 @@ test('void marks-to-market for SPECTATORS (no refund-rescue)', () => {
   // market had at that moment. Set up a spectator (not in game.players)
   // and place a bet on their behalf; on void the credit must equal
   // round(shares * sellYesPrice), not costPaid.
-  const seatedPlayer = { id: 'p1', chips: 5000, username: 'alice' }
-  const spectator   = { id: 's1', chips: 5000, username: 'bob' }
-  const game = makeFakeGame({ players: [seatedPlayer, { id: 'p2', chips: 5000, username: 'pat' }] })
+  const seatedPlayer = { id: 'p1', chips: 5000, bankBalance: 5000, username: 'alice' }
+  const spectator   = { id: 's1', chips: 5000, bankBalance: 5000, username: 'bob' }
+  const game = makeFakeGame({ players: [seatedPlayer, { id: 'p2', chips: 5000, bankBalance: 5000, username: 'pat' }] })
   // The engine's _findPlayer fallback hits room.players AND room.spectators
-  // — supply both maps so the spectator's chips can be credited.
+  // — supply both maps so the spectator's bank can be credited.
   const fakeRoom = {
     players: new Map([['p1', seatedPlayer], ['p2', game.players[1]]]),
     spectators: new Map([['s1', spectator]]),
@@ -180,7 +187,7 @@ test('void marks-to-market for SPECTATORS (no refund-rescue)', () => {
   const sellPriceAtVoid = aceProp.sellYesPrice
   const expectedMark = Math.max(0, Math.floor(sharesBought * sellPriceAtVoid))
 
-  const stackBefore = spectator.chips
+  const bankBefore = spectator.bankBalance
   game.phase = 'showdown'
   engine.onHandEnd({ reachedShowdown: false })
 
@@ -192,23 +199,23 @@ test('void marks-to-market for SPECTATORS (no refund-rescue)', () => {
   // int rounding — the "no refund" assertion was specific to the old
   // spread regime and no longer applies. What we DO still assert: the
   // engine took the mark-to-market path, not a hard-coded refund.
-  assert.equal(spectator.chips, stackBefore + expectedMark,
-    `spectator should be credited mark-to-market ($${expectedMark}), not a constant stake refund`)
+  assert.equal(spectator.bankBalance, bankBefore + expectedMark,
+    `spectator should be credited mark-to-market ($${expectedMark}) into bank, not a constant stake refund`)
 })
 
 test('cheap YES that auto-resolves true returns the headline ~10x ROI', () => {
   // This is the user's flagship scenario: bought at long odds, the runout
-  // lands in your favor → big chip payout. flop_three_suited is ~5.2% fair
+  // lands in your favor → big bank payout. flop_three_suited is ~5.2% fair
   // preflop, so buying at the ~7% ask should ~14x the stake on a YES.
-  const player = { id: 'p1', chips: 1000, username: 'alice' }
-  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, username: 'bob' }] })
+  const player = { id: 'p1', chips: 1000, bankBalance: 5000, username: 'alice' }
+  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, bankBalance: 5000, username: 'bob' }] })
   const { engine } = makeEngine(game)
   engine.onHandStart()
   const longshot = spawnUntil(engine, game, 'flop_three_suited')
 
   engine.placeBet('p1', longshot.id, 'yes', 100)
   const shares = engine.positions.get('p1').get(longshot.id).shares
-  const stackBeforeReveal = player.chips
+  const bankBeforeReveal = player.bankBalance
   assert.ok(shares > 1000, `expected ~1400 shares at ~7% ask, got ${shares}`)
 
   // Drop a monotone flop → flop_three_suited locks YES.
@@ -223,25 +230,29 @@ test('cheap YES that auto-resolves true returns the headline ~10x ROI', () => {
   assert.equal(longshot.status, 'resolved')
   assert.equal(longshot.outcome, 'yes')
   const credit = Math.round(shares)
-  assert.equal(player.chips, stackBeforeReveal + credit)
+  assert.equal(player.bankBalance, bankBeforeReveal + credit)
   // 100-chip stake at ~7% ask → ~1400 shares → ≥10x payout on YES.
   assert.ok(credit >= 1000, `expected ≥10x payout on cheap YES, got credit=${credit}`)
 })
 
-test('placeBet rejects when stake exceeds available chips', () => {
-  const player = { id: 'p1', chips: 50, username: 'alice' }
-  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, username: 'bob' }] })
+test('placeBet rejects when stake exceeds available bank balance', () => {
+  // Note `chips: 1000` is irrelevant — side bets debit BANK only. A
+  // small bank with a healthy on-table stack still can't open a big
+  // prop bet.
+  const player = { id: 'p1', chips: 1000, bankBalance: 50, username: 'alice' }
+  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, bankBalance: 5000, username: 'bob' }] })
   const { engine } = makeEngine(game)
   engine.onHandStart()
   const prop = [...engine.props.values()][0]
   const result = engine.placeBet('p1', prop.id, 'yes', 100)
   assert.equal(result.success, false)
-  assert.equal(result.error, 'insufficient_chips')
-  assert.equal(player.chips, 50, 'no chips deducted on rejected bet')
+  assert.equal(result.error, 'insufficient_bank')
+  assert.equal(player.bankBalance, 50, 'no bank money deducted on rejected bet')
+  assert.equal(player.chips, 1000, 'poker stack untouched')
 })
 
 test('placeBet enforces the MIN_BET floor', () => {
-  const player = { id: 'p1', chips: 1000, username: 'alice' }
+  const player = { id: 'p1', chips: 1000, bankBalance: 5000, username: 'alice' }
   const game = makeFakeGame({ players: [player] })
   const { engine } = makeEngine(game)
   engine.onHandStart()
@@ -249,7 +260,7 @@ test('placeBet enforces the MIN_BET floor', () => {
   const result = engine.placeBet('p1', prop.id, 'yes', 5)
   assert.equal(result.success, false)
   assert.ok(result.error.startsWith('min_bet_'), `error was ${result.error}`)
-  assert.equal(player.chips, 1000)
+  assert.equal(player.bankBalance, 5000)
 })
 
 test('YES + NO buy prices sum to 1 (no house cut)', () => {
@@ -271,8 +282,8 @@ test('catalog only spawns props the local player cannot self-rig', () => {
   // After removing goes_to_showdown + anyone_all_in, the spawn pool is pure
   // card-runout. This guards against accidentally adding an action-driven
   // prop back in without thinking about exploitability.
-  const player = { id: 'p1', chips: 1000, username: 'alice' }
-  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, username: 'bob' }] })
+  const player = { id: 'p1', chips: 1000, bankBalance: 5000, username: 'alice' }
+  const game = makeFakeGame({ players: [player, { id: 'p2', chips: 1000, bankBalance: 5000, username: 'bob' }] })
   const { engine } = makeEngine(game)
   const banned = new Set(['anyone_all_in', 'goes_to_showdown'])
   for (let i = 0; i < 50; i++) {

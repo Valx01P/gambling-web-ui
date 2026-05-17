@@ -13,9 +13,23 @@ import { useState, useEffect, useMemo } from 'react'
 // that'd be too easy. Only the two real choices resolve the popup.
 
 const NUM_BUTTONS = 9  // 8 Accept + 1 Block, randomized layout
-const SHUFFLE_INTERVAL_MS = 700
+// 2026-05 — shuffle ratcheted down from 700ms to 400ms per user
+// request ("they're faster"). Catching the Block button is now noticeably
+// harder, which is the whole point.
+const SHUFFLE_INTERVAL_MS = 400
 
-export default function ScamPopupModal({ senderUsername, amount, onAccept, onBlock }) {
+export default function ScamPopupModal({
+  senderUsername,
+  amount,
+  onAccept,
+  onBlock,
+  // Optional position override — when multiple scam popups are visible
+  // at once (receiver got hit by multiple attackers in quick succession),
+  // the parent assigns each one a quadrant so they don't stack on top of
+  // each other. `null` = centered modal (default, single-popup case).
+  // Object: { top, bottom, left, right } as CSS values.
+  position = null,
+}) {
   // Layout: which slot (index in 0..NUM_BUTTONS-1) contains the real
   // Block button. The rest are Accepts. Reshuffled every interval so
   // the user has to track it rather than memorize a position.
@@ -45,9 +59,18 @@ export default function ScamPopupModal({ senderUsername, amount, onAccept, onBlo
     return arr
   }, [])
 
+  // When `position` is set, render as a corner-anchored card without
+  // the full-viewport black backdrop — that way multiple popups at
+  // different corners stay readable instead of stacking opaque overlays.
+  // Centered (single-popup) mode keeps the original backdrop for focus.
+  const isCorner = position && typeof position === 'object'
+  const containerCls = isCorner
+    ? 'fixed z-[130]'
+    : 'fixed inset-0 z-[130] flex items-center justify-center bg-black/80 backdrop-blur-sm'
+  const containerStyle = isCorner ? position : undefined
   return (
-    <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="w-[min(94vw,420px)] rounded-2xl border border-amber-400/60 bg-zinc-950/95 px-5 py-5 shadow-2xl">
+    <div className={containerCls} style={containerStyle}>
+      <div className="w-[min(94vw,360px)] rounded-2xl border border-amber-400/60 bg-zinc-950/95 px-5 py-5 shadow-2xl">
         <div className="text-center">
           <div className="text-[10px] font-black uppercase tracking-widest text-amber-300">Incoming offer</div>
           <div className="mt-1 text-base font-black text-white leading-snug">

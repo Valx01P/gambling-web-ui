@@ -87,6 +87,35 @@ const ITEM_DEFS = [
     needsTarget: false,
     description: 'Script the entire next hand — your hole cards, your opponents\', and any of the 5 board cards. The ultimate trap. Anything you leave empty draws randomly; late joiners get random cards and don\'t break the plan.',
   },
+  // ─── Market-griefing specials ───────────────────────────────────
+  {
+    id: 'crash_coin',
+    name: 'Crash a Coin',
+    icon: '📉',
+    color: 'fuchsia',
+    needsTarget: false,
+    // Editor flag — the inline editor in the items panel exposes a
+    // coin picker (one of the live market coins). The handler calls
+    // onUseItem('crash_coin', null, { coinId }).
+    needsCoinPick: true,
+    description: 'Pick any coin in the market and tank its price 95% on the next tick. No ownership required — works on base coins, scams, or another player\'s minted shitcoin. Recharges every 2 hands.',
+  },
+  {
+    id: 'crash_holdings',
+    name: 'Crash Their Bags',
+    icon: '💥',
+    color: 'rose',
+    needsTarget: true,
+    description: 'Pick a target — 95% of their open crypto AND stock positions evaporate. Chart prices don\'t move, only they lose. No effect if they hold nothing. Recharges every 5 hands.',
+  },
+  {
+    id: 'pin_hack',
+    name: 'PIN Hack',
+    icon: '🪪',
+    color: 'red',
+    needsTarget: true,
+    description: 'Flash a 4-digit PIN at the target for 2 seconds, then a fake "account compromised" panel demands they retype it within 10 seconds. Miss it (wrong number OR run out the clock) and 10-50% of their bank balance lands in yours. Humans only. Recharges every 4 hands.',
+  },
 ]
 
 const COLORS = {
@@ -126,6 +155,7 @@ export default function ItemsPanel({
   itemsState,
   players,
   myPlayerId,
+  cryptoCoins = [],
   nextHandRigged = false,
   onUseItem,
   // Active editor lives in the parent so the tools-panel chrome's
@@ -155,9 +185,14 @@ export default function ItemsPanel({
   // popup-shuffle UI a bot can't engage with). Peek + hack work on
   // bots; the deck-rig powers don't go through this picker.
   function targetsFor(itemId) {
+    // scam / crash_holdings / pin_hack all reject bot targets
+    // server-side (popups need a human; bots own no real-money
+    // positions; bots can't be social-engineered). Hide bots from the
+    // picker for those so the user doesn't pick a dead-end target.
+    const humanOnly = itemId === 'scam' || itemId === 'crash_holdings' || itemId === 'pin_hack'
     return (players || []).filter(p =>
       p && p.id !== myPlayerId && p.isConnected !== false &&
-      (itemId === 'scam' ? !p.isBot : true)
+      (humanOnly ? !p.isBot : true)
     )
   }
 
@@ -165,10 +200,11 @@ export default function ItemsPanel({
     if (item.id === 'swap'
         || item.id === 'river_card'
         || item.id === 'next_card'
-        || item.id === 'rig_hand') {
-      // Swap + the three deck-rig powers swap the panel view to
-      // their inline editor. No popup; the editor IS the panel
-      // body until the user confirms or hits Back.
+        || item.id === 'rig_hand'
+        || item.id === 'crash_coin') {
+      // Swap + the deck-rig powers + crash_coin all swap the panel
+      // view to their inline editor. No popup; the editor IS the
+      // panel body until the user confirms or hits Back.
       setActiveEditor(item.id)
       return
     }
@@ -237,6 +273,13 @@ export default function ItemsPanel({
           players={players || []}
           alreadyRigged={nextHandRigged}
           initialPayload={initialPayload}
+          // Auto-save the in-progress draft on every pick. Reuses the
+          // same localStorage key as the post-commit save below, so
+          // closing the panel halfway through preserves the last
+          // visible card layout — reopening shows the same slots, no
+          // re-clicking required. (Saving on every change is cheap;
+          // each write is a few hundred bytes of JSON at most.)
+          onPicksChange={(draft) => saveLastRigHand(myPlayerId, draft)}
           onCancel={back}
           onConfirm={(payload) => {
             // Save BEFORE dispatching the WS message so even if the
@@ -247,6 +290,42 @@ export default function ItemsPanel({
             back()
           }}
         />
+      )
+    } else if (activeEditor === 'crash_coin') {
+      // Live coin picker. Only non-rugged coins are listed — a rugged
+      // coin is already at floor price. Click a row to fire the crash.
+      const liveCoins = (cryptoCoins || []).filter(c => c && !c.rugged)
+      body = (
+        <div className="space-y-2">
+          <div className="rounded-md border border-fuchsia-500/40 bg-fuchsia-500/10 p-3 text-[11px] font-bold text-fuchsia-200">
+            Pick a coin to crash. Tanks its price ~95% on the next tick.
+            Holders can still sell into the floor — they just take the hit.
+          </div>
+          {liveCoins.length === 0 ? (
+            <div className="rounded-md border border-zinc-700/70 bg-zinc-950/40 p-3 text-[11px] font-bold text-zinc-500">
+              No live coins to crash right now.
+            </div>
+          ) : (
+            <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
+              {liveCoins.map(c => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => { onUseItem('crash_coin', null, { coinId: c.id }); back() }}
+                  className="flex w-full items-center justify-between rounded-md border border-zinc-700/70 bg-zinc-950/50 px-3 py-2 text-left hover:border-fuchsia-400/60 hover:bg-fuchsia-500/10"
+                >
+                  <span>
+                    <span className="text-xs font-black text-white">${c.symbol}</span>
+                    <span className="ml-2 text-[10px] font-bold text-zinc-500">{c.name || ''}</span>
+                  </span>
+                  <span className="text-[11px] font-black tabular-nums text-zinc-300">
+                    ${typeof c.price === 'number' ? c.price.toFixed(c.price < 1 ? 4 : 2) : '—'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       )
     }
     return (

@@ -50,6 +50,11 @@ export default function RigHandModal({
   // auto-fills the next time they open the editor. Hole-card entries
   // for players not currently seated are dropped at mount.
   initialPayload = null,
+  // Fired on every pick change. Parent persists the in-progress draft
+  // to localStorage so a half-done rig survives navigating away or
+  // closing the panel without committing — the user doesn't have to
+  // re-pick all the cards next time they open the editor.
+  onPicksChange,
   onConfirm,
   onCancel,
 }) {
@@ -123,6 +128,26 @@ export default function RigHandModal({
       return next
     })
   }, [orderedPlayers])
+
+  // Persist the in-progress rig on every pick change so the cards
+  // survive closing the panel, switching tabs, or page reloads. The
+  // parent normalizes this into the same `{holeCards, board}` shape it
+  // would commit on Confirm — meaning the next time the user opens
+  // the editor they see exactly the slots they last placed, even if
+  // they never clicked "Rig the hand".
+  useEffect(() => {
+    if (typeof onPicksChange !== 'function') return
+    const holeCards = {}
+    for (const p of orderedPlayers) {
+      if (!p) continue
+      const c0 = picks[slotId(SLOT_KIND.HOLE, p.id, 0)] || null
+      const c1 = picks[slotId(SLOT_KIND.HOLE, p.id, 1)] || null
+      if (c0 || c1) holeCards[p.id] = [c0, c1]
+    }
+    const board = []
+    for (let i = 0; i < 5; i++) board.push(picks[slotId(SLOT_KIND.BOARD, i)] || null)
+    onPicksChange({ holeCards, board })
+  }, [picks, orderedPlayers, onPicksChange])
 
   const usedKeys = new Set(
     Object.values(picks).map(cardKey).filter(Boolean)

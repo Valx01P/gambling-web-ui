@@ -51,6 +51,19 @@ const TIER_SUCCESS = {
   planetary:   0.08,
 }
 
+// Payout-keyed hard ceiling. Independent of tier — a "blue collar"
+// gig that happens to roll a 600k reward should still feel like a
+// long shot. Applied as a CAP via Math.min, so a job whose template
+// already specifies a worse rate (e.g. a manually-tuned 5%) keeps the
+// lower number. Sub-100k jobs aren't capped and run on the tier rate.
+function rewardCappedSuccess(reward, baseSuccess) {
+  let cap = 1
+  if (reward > 10_000_000)     cap = 0.01   // > $10M — 1% lottery odds
+  else if (reward > 1_000_000) cap = 0.05   // $1M-$10M
+  else if (reward > 100_000)   cap = 0.10   // $100K-$1M
+  return Math.min(baseSuccess, cap)
+}
+
 const JOB_TEMPLATES = [
   // ─── STARTER (under $1K) ─────────────────────────────────────────
   // Petty-crime tier. For the bust-out player with literally zero
@@ -216,26 +229,35 @@ export class JobEngine {
     }
     // Vary the reward by ±15% so two consecutive boards don't feel
     // identical when the same template comes up.
-    this.jobs = picks.map(t => ({
-      id: `job_${++this._jobSeq}`,
-      jobId: t.id,
-      title: t.title,
-      flavor: t.flavor,
-      tier: t.tier,
-      reward: Math.floor(t.reward * (0.85 + Math.random() * 0.30)),
-      // Per-job success rate. Template can override with `successPercent`
-      // (0..1) for a specifically-easier or specifically-harder gig;
-      // otherwise falls back to the tier-default. Stable for the life of
-      // this board roll so a player sees the same odds the whole hand.
-      successPercent: typeof t.successPercent === 'number' ? t.successPercent : (TIER_SUCCESS[t.tier] ?? 0.5),
-      imageUrl: t.imageUrl || null,
-      // Per-player attempt history for THIS board only. Each player can
-      // attempt every gig once: claimedByPlayers locks out re-applies on
-      // a success; failedByPlayers locks out re-applies on a fail. Reset
-      // on every reroll (hand-end). No more "first try burns it" model.
-      claimedByPlayers: new Set(),
-      failedByPlayers: new Set(),
-    }))
+    this.jobs = picks.map(t => {
+      const reward = Math.floor(t.reward * (0.85 + Math.random() * 0.30))
+      // Base rate: template-provided override wins, otherwise tier
+      // default. Then apply the reward-keyed ceiling so a big-payout
+      // job that fell into a "low-risk" tier still reads as the
+      // long shot it should be.
+      const baseSuccess = typeof t.successPercent === 'number'
+        ? t.successPercent
+        : (TIER_SUCCESS[t.tier] ?? 0.5)
+      return {
+        id: `job_${++this._jobSeq}`,
+        jobId: t.id,
+        title: t.title,
+        flavor: t.flavor,
+        tier: t.tier,
+        reward,
+        // Per-job success rate, capped against the rolled reward.
+        // Stable for the life of this board roll so a player sees the
+        // same odds the whole hand.
+        successPercent: rewardCappedSuccess(reward, baseSuccess),
+        imageUrl: t.imageUrl || null,
+        // Per-player attempt history for THIS board only. Each player can
+        // attempt every gig once: claimedByPlayers locks out re-applies on
+        // a success; failedByPlayers locks out re-applies on a fail. Reset
+        // on every reroll (hand-end). No more "first try burns it" model.
+        claimedByPlayers: new Set(),
+        failedByPlayers: new Set(),
+      }
+    })
   }
 
   // Apply for a gig. Rolls against `successPercent` per applicant — each

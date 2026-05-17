@@ -336,9 +336,9 @@ const PropCard = memo(function PropCard({ prop, myPositions, myStack, volume, on
             </span>
             <span>
               {amount > (myStack || 0) ? (
-                <span className="text-red-400">over stack</span>
+                <span className="text-red-400">over bank</span>
               ) : (
-                <>stack: {fmtChips(myStack || 0)}</>
+                <>bank: ${fmtChips(myStack || 0)}</>
               )}
             </span>
           </div>
@@ -352,7 +352,7 @@ const PropCard = memo(function PropCard({ prop, myPositions, myStack, volume, on
                 : 'bg-red-600 hover:bg-red-500'
             }`}
           >
-            Place {expanded.toUpperCase()} bet — {amount} chips
+            Place {expanded.toUpperCase()} bet — ${amount}
           </button>
         </div>
       )}
@@ -411,7 +411,7 @@ const PropCard = memo(function PropCard({ prop, myPositions, myStack, volume, on
 
       {volume > 0 && !myPositions.length && !isResolved && (
         <div className="border-t border-zinc-700/60 bg-zinc-900/30 px-3 py-1 text-[10px] text-zinc-500">
-          Vol: {fmtChips(volume)} chips
+          Vol: ${fmtChips(volume)}
         </div>
       )}
     </div>

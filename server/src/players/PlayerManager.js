@@ -139,11 +139,12 @@ export class Player {
 
   // --- Derived stats -------------------------------------------------------
 
-  // Realized P/L only. `openSideBetStake` holds chips parked in unresolved
-  // side-bet positions; treating them as "still in the bankroll" until the
-  // bet settles keeps the displayed profit, peak-swing, and credit score
-  // from yo-yoing whenever the player buys or sells a market mid-hand.
-  getProfit() { return this.chips + (this.openSideBetStake || 0) - this.pokerBuyIn }
+  // Realized POKER P/L only. Side-bet stakes used to be deducted from
+  // chips, so we added `openSideBetStake` back here to stop a placed
+  // bet from looking like a poker loss. As of 2026-05 side bets debit
+  // BANK, not chips — the open stake belongs to bank-side accounting
+  // and no longer touches poker P/L.
+  getProfit() { return this.chips - this.pokerBuyIn }
 
   // Apply a new poker budget. Moves chips between `chips` (on the
   // table) and `pokerReserves` (off-table) so the table stack matches
@@ -298,11 +299,10 @@ export class Player {
     this.loans = []
     this.loanedTotal = 0
     this.peakSwing = 0
-    // P/L = chips + openSideBetStake − buyIn, so resetting buyIn to the
-    // current full bankroll (chips + stake) makes the displayed profit 0.
-    // Any open bets settle later with their realized delta landing in
-    // chips, which then shows as the post-yahu realized profit/loss.
-    this.pokerBuyIn = this.chips + (this.openSideBetStake || 0)
+    // Poker P/L = chips − buyIn (as of 2026-05; side bets debit bank,
+    // not chips). Reset buyIn to the current stack so the displayed
+    // poker profit is exactly 0 right after the yahu.
+    this.pokerBuyIn = this.chips
     this.bigYahuCalls = (this.bigYahuCalls || 0) + 1
     return { success: true, cleared, firstCall: this.bigYahuCalls === 1 }
   }
