@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import BotAvatar from './BotAvatar'
 
@@ -11,8 +11,8 @@ import BotAvatar from './BotAvatar'
 // even private bots that the viewer couldn't fetch via /api/bots/:id
 // render correctly when they're sat at a table.
 
-const POPOVER_WIDTH = 280
-const POPOVER_HEIGHT = 240
+const POPOVER_WIDTH = 240
+const POPOVER_HEIGHT = 220
 const POPOVER_MARGIN = 8
 
 // Mirrors server/src/bots/neural/registry.js. Stays in sync because
@@ -57,11 +57,30 @@ export default function BotProfilePopover({
   onClose,
   anchorSeatId,
   seat,
-  viewerUserId    // current signed-in user id (if any) — drives the "Edit bot" link
+  viewerUserId,    // current signed-in user id (if any) — drives the "Edit bot" link
+  // Kick controls. Server rule: the player who added the bot can
+  // kick it immediately; if the adder is no longer at the table
+  // (left / kicked / never reseated), anyone present can kick. The
+  // parent computes `canKick` from the same rule (so the button only
+  // appears when the action would actually succeed) and supplies
+  // `onKick(botSeatId)` to dispatch the WS message.
+  canKick = false,
+  onKick = null,
 }) {
   const popRef = useRef(null)
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
+  // Two-click confirm for the Kick button. First click arms it
+  // (button color + label change), second click within ~2.5s fires
+  // the kick. Auto-disarms after the window passes; resets on
+  // popover close so re-opening on another bot starts fresh.
+  const [kickArmed, setKickArmed] = useState(false)
+  useEffect(() => {
+    if (!kickArmed) return
+    const t = setTimeout(() => setKickArmed(false), 2500)
+    return () => clearTimeout(t)
+  }, [kickArmed])
+  useEffect(() => { if (!open) setKickArmed(false) }, [open])
 
   // Position-tracking rAF loop — identical to PlayerProfilePopover so the
   // two feel like one component when the user clicks between human and
@@ -136,28 +155,28 @@ export default function BotProfilePopover({
       role="dialog"
       aria-modal="false"
       aria-label={`Profile for bot ${seat.username || 'bot'}`}
-      className="w-[280px] rounded-xl border border-zinc-600/60 bg-zinc-900/98 p-3 shadow-2xl"
+      className="w-[240px] rounded-xl border border-zinc-600/60 bg-zinc-900/98 p-2.5 shadow-2xl"
       style={initialStyle}
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-center gap-2">
         <BotAvatar
           name={seat.username}
           color={seat.botColor || '#3b82f6'}
           textColor={seat.botTextColor || 'auto'}
           avatarUrl={seat.botAvatarUrl}
-          size={48}
-          className="ring-2 ring-zinc-700"
+          size={36}
+          className="ring-1 ring-zinc-700"
         />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-black text-white">{seat.username || 'Bot'}</div>
-          <div className={`mt-0.5 inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest ${badge.cls}`}>
+          <div className="truncate text-[13px] font-black text-white leading-tight">{seat.username || 'Bot'}</div>
+          <div className={`mt-0.5 inline-flex items-center gap-1 rounded border px-1 py-0.5 text-[8px] font-black uppercase tracking-widest ${badge.cls}`}>
             <span>{badge.label}</span>
             <span className="opacity-70">·</span>
             <span className="opacity-90">{badge.detail}</span>
           </div>
           {seat.ownerDisplayName && (
-            <div className="mt-1 truncate text-[10px] font-bold text-zinc-400">
+            <div className="mt-0.5 truncate text-[9px] font-bold text-zinc-400 leading-tight">
               by <span className="text-zinc-200">{seat.ownerDisplayName}</span>
             </div>
           )}
@@ -166,19 +185,21 @@ export default function BotProfilePopover({
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="ml-1 rounded-md px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+          className="ml-0.5 rounded-md px-1 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-white"
         >×</button>
       </div>
 
-      {/* Lifetime stats — same shape as the human popover's stat grid so
-          users can mentally compare a bot to a human at a glance. */}
-      <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+      {/* Lifetime stats — compact 3-column row so the popover stays
+          short. The matching PlayerProfilePopover uses similar
+          density, so swapping between a human and a bot seat at the
+          same table doesn't shift layout much. */}
+      <div className="mt-2 grid grid-cols-3 gap-1.5 text-center">
         <Stat label="ELO" value={seat.botElo ?? '—'} accent="amber" />
         <Stat label="Hands" value={handsPlayed.toLocaleString()} />
         <Stat label="Win%" value={fmtPct(handsWon, handsPlayed)} />
       </div>
-      <div className="mt-2 grid grid-cols-2 gap-2 text-center">
-        <Stat label="Showdowns" value={`${showdownsWon}/${showdownsPlayed}`} />
+      <div className="mt-1.5 grid grid-cols-2 gap-1.5 text-center">
+        <Stat label="Show" value={`${showdownsWon}/${showdownsPlayed}`} />
         <Stat
           label="Session P/L"
           value={`${sessionProfit >= 0 ? '+' : '-'}$${Math.abs(sessionProfit).toLocaleString()}`}
@@ -186,7 +207,7 @@ export default function BotProfilePopover({
         />
       </div>
 
-      <div className="mt-3 flex gap-2">
+      <div className="mt-2 flex gap-2">
         {/* 2026-05: Edit Bot was removed from this popover at the user's
             request — editing live at the table was confusing (the bot's
             seat doesn't pick up code changes until next hand, and the
@@ -194,14 +215,53 @@ export default function BotProfilePopover({
             /poker/bots to edit instead. The view-only link is kept for
             public bots so anyone can inspect a bot's logic without
             leaving the table flow. */}
-        {!isOwner && seat.botIsPublic && seat.botId && (
+        {/* Anonymous viewers used to mis-tap this link constantly, dropping
+            them out of the table flow into an editor they couldn't use.
+            Gate on viewerUserId so it only shows to signed-in users. */}
+        {!!viewerUserId && !isOwner && seat.botIsPublic && seat.botId && (
           <a
             href={`/poker/bots/${seat.botId}`}
-            className="flex-1 rounded-md border border-zinc-500/60 bg-zinc-800 px-3 py-1.5 text-center text-xs font-black uppercase tracking-widest text-white hover:bg-zinc-700"
+            className="flex-1 rounded-md border border-zinc-500/60 bg-zinc-800 px-2 py-1 text-center text-[11px] font-black uppercase tracking-widest text-white hover:bg-zinc-700"
             onClick={(e) => e.stopPropagation()}
           >
             View bot →
           </a>
+        )}
+        {/* Kick — only rendered when the server would actually accept
+            the action (parent computes the rule). Server rules:
+              • you added the bot → kick immediately
+              • the player who added the bot has left the table → anyone
+                can kick the abandoned bot
+            Outside those, the button is hidden so the user doesn't
+            think they have the option and then see an error.
+            Two-click confirm: first click arms (red glow + label
+            change), second click within ~2.5s actually kicks. Same
+            pattern used elsewhere in the app (skin-revert button) to
+            keep mis-clicks from yanking a bot off the table. */}
+        {canKick && onKick && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              if (!kickArmed) {
+                setKickArmed(true)
+                return
+              }
+              onKick(seat.id)
+              setKickArmed(false)
+              onClose?.()
+            }}
+            className={`flex-1 rounded-md border px-2 py-1 text-center text-[11px] font-black uppercase tracking-widest transition-colors ${
+              kickArmed
+                ? 'border-red-300/80 bg-red-500/30 text-white shadow-[0_0_10px_rgba(239,68,68,0.45)] animate-pulse'
+                : 'border-red-400/60 bg-red-500/15 text-red-100 hover:bg-red-500/25'
+            }`}
+            title={kickArmed
+              ? 'Click again to confirm — or wait to cancel'
+              : 'Remove this bot from the table'}
+          >
+            {kickArmed ? 'Click again to confirm' : 'Kick from table'}
+          </button>
         )}
       </div>
     </div>,
@@ -217,9 +277,9 @@ function Stat({ label, value, accent = 'zinc' }) {
     red:     'text-red-300'
   }[accent] || 'text-white'
   return (
-    <div className="rounded-md border border-zinc-700/60 bg-zinc-950/40 px-2 py-1">
-      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">{label}</div>
-      <div className={`text-sm font-black ${tone}`}>{value}</div>
+    <div className="rounded-md border border-zinc-700/60 bg-zinc-950/40 px-1.5 py-0.5">
+      <div className="text-[8px] font-black uppercase tracking-widest text-zinc-500 leading-tight">{label}</div>
+      <div className={`text-[11px] font-black leading-tight ${tone}`}>{value}</div>
     </div>
   )
 }

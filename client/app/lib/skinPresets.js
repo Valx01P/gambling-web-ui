@@ -1,57 +1,39 @@
 // Player-nameplate skins. The default (id 0) is the existing dark zinc
-// look — players see it until they complete their first daily. Each
-// subsequent slot unlocks at the count shown in unlocksAt. Slot 10 is
-// the "customize it yourself" picker (see SkinSelector.jsx).
+// look. Slot 10 is the "customize it yourself" picker
+// (see SkinSelector.jsx).
 //
 // `css` is a value that goes straight into `background:` on the nameplate
 // — solid color or linear-gradient. Keep readable contrast against white
 // text — these all do.
+//
+// 2026-05: all skins are unlocked for everyone (unlocksAt: 0). The
+// daily-challenge system is no longer the gate for cosmetics — dailies
+// only feed the achievements panel now. The `unlocksAt` field is left
+// in place so SkinSelector / isUnlocked don't need to change shape.
 
 export const SKIN_PRESETS = [
-  { id: 0,  unlocksAt: 0,
-    label: 'Default',
-    css: 'rgba(39, 39, 42, 0.95)' /* zinc-800/95 — matches the original */,
-  },
-  { id: 1,  unlocksAt: 1,
-    label: 'Crimson',
-    css: 'linear-gradient(135deg, #7f1d1d 0%, #b91c1c 100%)',
-  },
-  { id: 2,  unlocksAt: 5,
-    label: 'Ocean',
-    css: 'linear-gradient(135deg, #0c4a6e 0%, #0369a1 100%)',
-  },
-  { id: 3,  unlocksAt: 10,
-    label: 'Forest',
-    css: 'linear-gradient(135deg, #14532d 0%, #166534 100%)',
-  },
-  { id: 4,  unlocksAt: 15,
-    label: 'Royal',
-    css: 'linear-gradient(135deg, #4c1d95 0%, #6d28d9 100%)',
-  },
-  { id: 5,  unlocksAt: 20,
-    label: 'Sunset',
-    css: 'linear-gradient(135deg, #9a3412 0%, #ea580c 100%)',
-  },
-  { id: 6,  unlocksAt: 25,
-    label: 'Gold',
-    css: 'linear-gradient(135deg, #78350f 0%, #b45309 100%)',
-  },
-  { id: 7,  unlocksAt: 30,
-    label: 'Aurora',
-    css: 'linear-gradient(135deg, #155e75 0%, #c026d3 100%)',
-  },
-  { id: 8,  unlocksAt: 35,
-    label: 'Ash',
-    css: 'linear-gradient(135deg, #1f2937 0%, #4b5563 100%)',
-  },
-  { id: 9,  unlocksAt: 40,
-    label: 'Neon',
-    css: 'linear-gradient(135deg, #be185d 0%, #4338ca 100%)',
-  },
-  { id: 10, unlocksAt: 50,
-    label: 'Custom',
-    css: null,   // resolved at render-time from the user's saved customSkin
-  },
+  { id: 0,  unlocksAt: 0, label: 'Default',
+    css: 'rgba(39, 39, 42, 0.95)' /* zinc-800/95 — matches the original */ },
+  { id: 1,  unlocksAt: 0, label: 'Crimson',
+    css: 'linear-gradient(135deg, #7f1d1d 0%, #b91c1c 100%)' },
+  { id: 2,  unlocksAt: 0, label: 'Ocean',
+    css: 'linear-gradient(135deg, #0c4a6e 0%, #0369a1 100%)' },
+  { id: 3,  unlocksAt: 0, label: 'Forest',
+    css: 'linear-gradient(135deg, #14532d 0%, #166534 100%)' },
+  { id: 4,  unlocksAt: 0, label: 'Royal',
+    css: 'linear-gradient(135deg, #4c1d95 0%, #6d28d9 100%)' },
+  { id: 5,  unlocksAt: 0, label: 'Sunset',
+    css: 'linear-gradient(135deg, #9a3412 0%, #ea580c 100%)' },
+  { id: 6,  unlocksAt: 0, label: 'Gold',
+    css: 'linear-gradient(135deg, #78350f 0%, #b45309 100%)' },
+  { id: 7,  unlocksAt: 0, label: 'Aurora',
+    css: 'linear-gradient(135deg, #155e75 0%, #c026d3 100%)' },
+  { id: 8,  unlocksAt: 0, label: 'Ash',
+    css: 'linear-gradient(135deg, #1f2937 0%, #4b5563 100%)' },
+  { id: 9,  unlocksAt: 0, label: 'Neon',
+    css: 'linear-gradient(135deg, #be185d 0%, #4338ca 100%)' },
+  { id: 10, unlocksAt: 0, label: 'Custom',
+    css: null /* resolved at render-time from the user's saved customSkin */ },
 ]
 
 // Convert a {colors:[...], direction:'...'} payload into a CSS background.

@@ -51,6 +51,7 @@ export default function AccountMenu() {
     return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [open])
 
+
   // Listen for the global "open the sign-in popup" event. Other
   // components (notably PostComposer's "Sign in to post" empty state)
   // dispatch this so the user can land in the auth modal without

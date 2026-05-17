@@ -1260,8 +1260,10 @@ function decide(ctx) {
           act = { action: 'check' };
         } else if (profitable) {
           act = withSay({ action: 'call' }, trash(ctx, 'call'));
-        } else if (ctx.potOdds <= 0.25) {
-          // Implied odds — close enough on price.
+        } else if (ctx.potOdds <= 0.30) {
+          // Implied odds — close enough on price. 2026-05: raised
+          // ceiling from 0.25 to 0.30 to keep bots in slightly more
+          // marginal mid-pot spots.
           act = { action: 'call' };
         } else {
           act = withSay({ action: 'fold' }, trash(ctx, 'fold'));
@@ -1270,7 +1272,9 @@ function decide(ctx) {
         // Below fair share. Still take the pot-odds layup if it's there.
         if (ctx.toCall === 0) {
           act = { action: 'check' };
-        } else if (profitable && ctx.potOdds <= 0.20) {
+        } else if (profitable && ctx.potOdds <= 0.25) {
+          // 2026-05: 0.20 → 0.25 — bots see one more layer of flops
+          // when they're behind but priced in.
           act = { action: 'call' };
         } else {
           act = withSay({ action: 'fold' }, trash(ctx, 'fold'));

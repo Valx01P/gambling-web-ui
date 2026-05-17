@@ -792,8 +792,26 @@ export class PokerRoom {
   removeBotForPlayer(requestingPlayerId, botSeatId) {
     const bot = this.players.get(botSeatId)
     if (!bot || !bot.isBot) return { success: false, error: 'Not a bot' }
-    if (bot.addedByPlayerId !== requestingPlayerId) {
-      return { success: false, error: 'Only the player who added this bot can remove it' }
+    // Kick rules:
+    //   • The player who added the bot can remove it immediately, no vote.
+    //   • If the adder has left the table (not seated and not spectating),
+    //     the bot is "abandoned" and anyone present can kick it.
+    // The kicker has to actually be at the table — either seated or in
+    // the spectator list — so a random WS connection can't reach in.
+    const addedBy = bot.addedByPlayerId
+    const adderStillHere = !!addedBy && (
+      this.players.has(addedBy) || this.spectators?.has?.(addedBy)
+    )
+    const requestingIsAdder = !!addedBy && addedBy === requestingPlayerId
+    const requestingIsPresent = this.players.has(requestingPlayerId)
+      || !!this.spectators?.has?.(requestingPlayerId)
+    if (!requestingIsAdder) {
+      if (adderStillHere) {
+        return { success: false, error: 'Only the player who added this bot can remove it' }
+      }
+      if (!requestingIsPresent) {
+        return { success: false, error: 'You must be at the table to kick an abandoned bot' }
+      }
     }
     bot.emitPhrase('left_table')
     bot.destroy()
@@ -849,6 +867,13 @@ export class PokerRoom {
   async _recordBotHandResults(broadcastData) {
     const handSummary = this.game.handHistory[this.game.handHistory.length - 1]
     if (!handSummary) return
+    // Rating integrity: a hand with any deck-rig in effect (rig_hand
+    // hole cards, river_card, next_card) shouldn't move ELO. The rig
+    // means the outcome wasn't a fair random draw, so the result tells
+    // us nothing about either player's skill. Persistence of chip
+    // changes still happens through the normal action loop — we just
+    // skip the ELO write here.
+    if (handSummary.handIsRigged) return
     const winnerIds = new Set((broadcastData?.winners || []).map(w => w.playerId))
     const allSeats = [...this.players.values()]
     // Rating pool participation: bots always carry their rating, signed-in
@@ -1044,6 +1069,11 @@ export class PokerRoom {
   async _recordHumanHandResults(broadcastData) {
     const handSummary = this.game.handHistory[this.game.handHistory.length - 1]
     if (!handSummary) return
+    // Skip ELO + hand-archive writes for rigged hands (see the matching
+    // gate in _recordBotHandResults for the reasoning). Chip changes are
+    // already settled by the action loop; we just don't persist the
+    // outcome as a real game.
+    if (handSummary.handIsRigged) return
     const winnerIds = new Set((broadcastData?.winners || []).map(w => w.playerId))
     const bigBlind = this.game.bigBlind || 10
     const allSeats = [...this.players.values()]
@@ -1325,6 +1355,65 @@ export class PokerRoom {
       } catch (err) {
         console.error(`[user-play] persist failed for ${seat.username}:`, err.message)
       }
+    }
+  }
+
+  // Auto-rebuy for humans who busted with chips shelved in reserves.
+  // Rebuy SIZE is fixed at max(STARTING_CHIPS, 4*BB) — the game
+  // always restarts you with a clean stack regardless of what the
+  // current pokerBudget cap is. The budget only controls how chips
+  // are split at any given moment; busting is a fresh-start event.
+  //
+  // Funding priority:
+  //   1. Pull the rebuy from off-table reserves (the player's own
+  //      money — chips they shelved earlier via setPokerBudget).
+  //      Partial rebuy if reserves are thin.
+  //   2. If reserves are empty, grant the full rebuy as a free
+  //      stake — the design ask carves this out as a "don't strand
+  //      players with $0" floor.
+  //
+  // Players with no reserves AND no budget are untouched (legacy
+  // behavior: they sit out / leave when broke).
+  _autoRebuyBudgetedHumans() {
+    if (this._humanRebuyGuard) return
+    this._humanRebuyGuard = true
+    try {
+      const bb = this.game?.bigBlind || POKER_CONFIG.BIG_BLIND || 10
+      const startingStack = POKER_CONFIG.STARTING_CHIPS || 1000
+      const rebuySize = Math.max(startingStack, bb * 4)
+      for (const p of [...this.players.values()]) {
+        if (p.isBot) continue
+        if (!p || p.chips > 0) continue
+        const reserves = Math.max(0, p.pokerReserves || 0)
+        const hasBudget = typeof p.pokerBudget === 'number' && p.pokerBudget > 0
+        if (reserves <= 0 && !hasBudget) continue
+        // Rebuy is always the fixed size — partial cover from reserves,
+        // the gap topped up by the free-grant floor so the player ends
+        // up with a clean starting stack every bust. Extra reserves
+        // stay shelved for the next bust.
+        const fromReserves = Math.min(reserves, rebuySize)
+        const fromFloor = rebuySize - fromReserves
+        const rebuyAmount = rebuySize
+        if (fromReserves > 0) p.pokerReserves = reserves - fromReserves
+        const source = fromReserves > 0 && fromFloor === 0
+          ? 'reserves'
+          : fromFloor > 0 && fromReserves > 0
+            ? 'mixed'
+            : 'fallback'
+        p.chips = rebuyAmount
+        p.pokerBuyIn = (p.pokerBuyIn || 0) + rebuyAmount
+        const msg = source === 'reserves'
+          ? `${p.username} rebought for $${rebuyAmount.toLocaleString()} from reserves.`
+          : source === 'mixed'
+            ? `${p.username} rebought $${rebuyAmount.toLocaleString()} ($${fromReserves.toLocaleString()} from reserves, rest granted).`
+            : `${p.username} was out of money — granted a $${rebuyAmount.toLocaleString()} fresh stack.`
+        this.broadcast({
+          type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+          data: { message: msg }
+        })
+      }
+    } finally {
+      this._humanRebuyGuard = false
     }
   }
 
@@ -1708,17 +1797,21 @@ export class PokerRoom {
     return { success: true, chips: n }
   }
 
-  // Adjust the think-delay used by every bot at this arena. Clamped to
-  // [200, 4000] ms — below 200 the table is too fast for spectators to
-  // follow active-seat / last-action UI; above 4000 the arena feels stalled.
-  // No system message: the slider is high-frequency input, the chat would
-  // get spammy. Room state still broadcasts so all viewers see the new value.
+  // Adjust the think-delay used by every bot at this table. 2026-05:
+  // promoted from arena-only to a shared knob — any human at the table
+  // (seated or spectating) can drag the slider. Clamped to [800, 3000] ms
+  // per the design ask: below 0.8s the table feels manic for live tables
+  // (was tolerable in arenas because nobody's making decisions); above
+  // 3s a real player loses patience between turns. Arena legacy bounds
+  // were [200, 4000]; the new bounds also cover that range with sane
+  // human-table values.
+  // No system message: the slider is high-frequency input, the chat
+  // would get spammy. Room state broadcasts so all viewers stay in sync.
   setArenaThinkDelay(playerId, ms) {
-    if (!this.isArena) return { success: false, error: 'Not an arena' }
     if (!this.spectators.has(playerId) && !this.players.has(playerId)) {
-      return { success: false, error: 'Only people at the arena can change settings' }
+      return { success: false, error: 'Only people at the table can change settings' }
     }
-    const n = Math.max(200, Math.min(4000, Math.floor(Number(ms) || 0)))
+    const n = Math.max(800, Math.min(3000, Math.floor(Number(ms) || 0)))
     const changed = n !== this.arenaThinkDelayMs
     this.arenaThinkDelayMs = n
     // Apply the new pace to bots already mid-think. Without this, dropping
@@ -2135,6 +2228,7 @@ export class PokerRoom {
     this._lastBroadcastPhase = currentPhase
     if (currentPhase === GAME_PHASES.WAITING && previousPhase !== GAME_PHASES.WAITING) {
       this._cleanupBrokeBots()
+      this._autoRebuyBudgetedHumans()
     }
     // Side-bet engine ticks once per broadcast — it detects new hands via
     // game.handIndex internally, so this single call covers handStart, every

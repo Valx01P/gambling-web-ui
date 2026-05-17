@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useState } from 'react'
 import { api } from '../lib/api'
+import { getTrophyTier, TROPHY_TIERS } from '../lib/trophies'
 
 // Daily challenge tool. Single panel that fetches today's challenge from
 // the server and renders the user's progress bar. The same challenge
@@ -78,15 +79,61 @@ const DailyChallengePanel = memo(function DailyChallengePanel({
         </div>
       </div>
 
-      <div className="rounded-md border border-zinc-700/50 bg-zinc-900/40 px-2.5 py-2 text-[10px] text-zinc-400">
-        <div>
-          <span className="font-bold text-zinc-200">{dailiesCompleted || 0}</span>
-          {' '}dailies completed lifetime
-        </div>
-        <div className="mt-0.5 text-zinc-500">
-          Unlocks new player skins at 1, 5, 10, 15, 20, 25, 30, 35, 40, 50.
-        </div>
-      </div>
+      {(() => {
+        const { current, next } = getTrophyTier(dailiesCompleted)
+        const tierIndex = current ? TROPHY_TIERS.indexOf(current) : -1
+        return (
+          <div className="rounded-md border border-zinc-700/50 bg-zinc-900/40 px-2.5 py-2 text-[10px] text-zinc-400 space-y-1.5">
+            <div>
+              <span className="font-bold text-zinc-200">{dailiesCompleted || 0}</span>
+              {' '}dailies completed lifetime
+            </div>
+
+            {/* Current trophy badge — upgrades visually as the player
+                climbs the ladder. Shows on their profile too. */}
+            <div className="flex items-center gap-2">
+              {current ? (
+                <>
+                  <span
+                    className={`inline-flex h-7 w-7 items-center justify-center rounded-full ring-2 ${current.ring} bg-zinc-950 text-base`}
+                    title={`${current.name} trophy — unlocked at ${current.min} ${current.min === 1 ? 'daily' : 'dailies'}`}
+                    style={{ boxShadow: `0 0 12px ${current.color}55` }}
+                  >
+                    {current.emoji}
+                  </span>
+                  <div className="leading-tight">
+                    <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: current.color }}>
+                      {current.name} trophy
+                    </div>
+                    <div className="text-[9px] text-zinc-500">Tier {tierIndex + 1} of {TROPHY_TIERS.length}</div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full ring-2 ring-zinc-700 bg-zinc-950 text-base opacity-50">
+                    🏆
+                  </span>
+                  <div className="text-[10px] font-bold text-zinc-500 leading-tight">
+                    No trophy yet — finish today's challenge to earn your first.
+                  </div>
+                </>
+              )}
+            </div>
+
+            {next && (
+              <div className="text-[10px] text-zinc-500">
+                Next: <span className="font-black" style={{ color: next.color }}>{next.emoji} {next.name}</span>
+                {' '}at <span className="text-zinc-200 font-bold tabular-nums">{next.min}</span> dailies
+                {' '}({Math.max(0, next.min - (dailiesCompleted || 0))} to go)
+              </div>
+            )}
+
+            <div className="text-zinc-500">
+              Unlocks trophies for your profile at 1, 5, 10, 15, 20, 25, 30, 35, 40, 50. The trophy upgrades each milestone.
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 })

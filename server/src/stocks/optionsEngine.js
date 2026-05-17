@@ -18,6 +18,14 @@ import { MESSAGE_TYPES } from '../config/constants.js'
 const EXPIRY_HANDS = 3                      // every contract expires 3 hands out
 const CONTRACT_MULTIPLIER = 100             // each "contract" controls 100 nominal shares
 const STRIKE_OFFSETS = [-0.15, -0.05, 0, 0.05, 0.15]   // strike grid relative to spot
+// "IV pump" multiplier applied to a stock's volatility while it's
+// the queued earnings ticker. Real markets bid up implied vol
+// before earnings and crush it after — we don't run a black-scholes
+// model, but a flat 1.85x on the input vol reproduces the feel: an
+// ATM call costs nearly double the day before earnings, then snaps
+// back the moment another ticker takes over the upcomingEarnings
+// slot (because the resolved ticker is no longer pumped).
+const EARNINGS_VOL_PUMP = 1.85
 
 export class OptionsEngine {
   constructor({ room, broadcast, stockEngine }) {
@@ -59,12 +67,32 @@ export class OptionsEngine {
     return Math.max(1, Math.round(premium))
   }
 
+  // Effective volatility for premium math. Pumped while the stock
+  // is in the queued earnings batch; reverts the instant the slot
+  // shifts to a different ticker (= IV crush). The pump is symmetric
+  // across calls / puts and across the whole strike grid so the
+  // entire chain inflates together. Now batch-aware: 2-6 tickers
+  // can be queued at once, so we test membership in the array.
+  _volatilityFor(stock) {
+    const upcoming = this.stockEngine?.upcomingEarnings
+    let isPumped = false
+    if (Array.isArray(upcoming)) {
+      isPumped = upcoming.some(e => e && (e.symbol === stock.symbol))
+    } else if (upcoming) {
+      const sym = typeof upcoming === 'string' ? upcoming : upcoming.symbol
+      isPumped = sym === stock.symbol
+    }
+    if (isPumped) return stock.volatility * EARNINGS_VOL_PUMP
+    return stock.volatility
+  }
+
   // Build the buy-side option chain for a single symbol.
   _chainFor(stock) {
+    const vol = this._volatilityFor(stock)
     return STRIKE_OFFSETS.flatMap(off => {
       const strike = Math.max(0.01, Math.round(stock.price * (1 + off) * 100) / 100)
-      const callPremium = this._premium({ type: 'call', price: stock.price, strike, volatility: stock.volatility })
-      const putPremium  = this._premium({ type: 'put',  price: stock.price, strike, volatility: stock.volatility })
+      const callPremium = this._premium({ type: 'call', price: stock.price, strike, volatility: vol })
+      const putPremium  = this._premium({ type: 'put',  price: stock.price, strike, volatility: vol })
       return [
         { symbol: stock.symbol, type: 'call', strike, premium: callPremium, offset: off },
         { symbol: stock.symbol, type: 'put',  strike, premium: putPremium,  offset: off },
@@ -82,7 +110,7 @@ export class OptionsEngine {
     const strikeNum = Number(strike)
     if (!Number.isFinite(strikeNum) || strikeNum <= 0) return { success: false, error: 'invalid_strike' }
     const n = Math.max(1, Math.floor(Number(contracts) || 0))
-    const premium = this._premium({ type, price: stock.price, strike: strikeNum, volatility: stock.volatility })
+    const premium = this._premium({ type, price: stock.price, strike: strikeNum, volatility: this._volatilityFor(stock) })
     const total = premium * n
     if (player.chips < total) return { success: false, error: 'insufficient_chips', cost: total }
     player.chips -= total
@@ -100,6 +128,35 @@ export class OptionsEngine {
     })
     this._broadcastSnapshots()
     return { success: true, id, total }
+  }
+
+  // Close (sell early) a single position by contract id. The player gets
+  // the current mark — fresh premium at today's spot/vol/expiry-distance
+  // — with a small haircut for the bid-ask spread. Returns the proceeds
+  // and removes the contract from their book.
+  //
+  // The mark uses the same _premium heuristic as a fresh trade, which
+  // captures both intrinsic + remaining time value. We multiply by a
+  // CLOSE_HAIRCUT < 1 so closing isn't strictly free vs holding.
+  close(playerId, { id } = {}) {
+    const arr = this.positions.get(playerId)
+    if (!arr || arr.length === 0) return { success: false, error: 'no_positions' }
+    const idx = arr.findIndex(ct => ct.id === id)
+    if (idx < 0) return { success: false, error: 'contract_not_found' }
+    const ct = arr[idx]
+    const player = this._findPlayer(playerId)
+    if (!player) return { success: false, error: 'not_at_table' }
+    const stock = this.stockEngine?.stocks?.get?.(ct.symbol)
+    if (!stock) return { success: false, error: 'unknown_symbol' }
+    const livePremium = this._premium({
+      type: ct.type, price: stock.price, strike: ct.strike, volatility: this._volatilityFor(stock)
+    })
+    const CLOSE_HAIRCUT = 0.92    // 8% spread when closing early
+    const proceeds = Math.max(0, Math.floor(livePremium * ct.contracts * CLOSE_HAIRCUT))
+    player.chips += proceeds
+    arr.splice(idx, 1)
+    this._broadcastSnapshots()
+    return { success: true, proceeds, contractId: id }
   }
 
   // Settle every contract whose expiryHand <= current handIndex. Pays
@@ -146,8 +203,16 @@ export class OptionsEngine {
       const intrinsic = ct.type === 'call'
         ? Math.max(0, price - ct.strike)
         : Math.max(0, ct.strike - price)
+      // markValue = intrinsic only (what you'd get if it expired NOW).
+      // closeValue = live mark + time value, what early-close pays out
+      // (after the 8% bid-ask haircut). The two diverge when there's
+      // still time value on the contract.
       const markValue = Math.floor(intrinsic * CONTRACT_MULTIPLIER * ct.contracts)
-      return { ...ct, currentPrice: price, intrinsic, markValue }
+      const livePremium = stock
+        ? this._premium({ type: ct.type, price, strike: ct.strike, volatility: this._volatilityFor(stock) })
+        : 0
+      const closeValue = Math.max(0, Math.floor(livePremium * ct.contracts * 0.92))
+      return { ...ct, currentPrice: price, intrinsic, markValue, closeValue }
     })
     return { chain, myPositions, expiryHands: EXPIRY_HANDS, contractMultiplier: CONTRACT_MULTIPLIER }
   }

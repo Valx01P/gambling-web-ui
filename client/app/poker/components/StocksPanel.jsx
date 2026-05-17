@@ -39,16 +39,19 @@ function fmtPrice(n) {
   return n < 100 ? n.toFixed(2) : Math.round(n).toLocaleString()
 }
 
-export default function StocksPanel({ stocksState, optionsState, myChips, onBuy, onSell, onSabotage, onBuyOption, joined }) {
+export default function StocksPanel({ stocksState, optionsState, myChips, onBuy, onSell, onSabotage, onBuyOption, onCloseOption, joined }) {
   const [tab, setTab] = useState('market')
   const [buyAmount, setBuyAmount] = useState('')
-  // Toggle between dollar-amount mode and share-count mode. Shares mode
-  // is what stock-jockeys think in ("buy 100 shares of NXAI"); dollar
-  // mode is what a degen-trader thinks in ("yolo $50M into TECH").
-  // Server only takes dollar amounts, so shares-mode multiplies by
-  // price client-side before sending.
-  const [buyMode, setBuyMode] = useState('dollars')   // 'dollars' | 'shares'
+  // Stock buys are always entered in dollars — non-traders don't know
+  // what "Sh" means and the dollar-amount mental model ("yolo $50M
+  // into TECH") matches the rest of the casino's economy. The share
+  // count is computed + shown beneath the input as feedback.
   const [selectedSymbol, setSelectedSymbol] = useState(null)
+  // Pending option order — set when the user taps a call/put price in
+  // the chain. Holds the contract picked plus the user-chosen
+  // contract count so we can show cost + scenarios + confirm without
+  // firing the buy yet. Cleared after Confirm or Cancel.
+  const [pendingOption, setPendingOption] = useState(null)
   const stocks = stocksState?.stocks || []
   const positions = stocksState?.myPositions || []
   const portfolioValue = positions.reduce((sum, p) => sum + (p.currentValue || 0), 0)
@@ -77,32 +80,44 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
         </div>
       </div>
 
-      <div className="flex gap-1.5 text-[10px] font-black uppercase tracking-widest">
+      <div className="grid grid-cols-3 gap-1.5 text-[10px] font-black uppercase tracking-widest sm:grid-cols-5">
         <button
           type="button"
           onClick={() => setTab('market')}
-          className={`flex-1 rounded-md border px-2 py-1.5 ${tab === 'market' ? 'border-sky-500/60 bg-sky-500/20 text-sky-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
+          className={`rounded-md border px-2 py-1.5 ${tab === 'market' ? 'border-sky-500/60 bg-sky-500/20 text-sky-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
         >
           Market
         </button>
         <button
           type="button"
           onClick={() => setTab('holdings')}
-          className={`flex-1 rounded-md border px-2 py-1.5 ${tab === 'holdings' ? 'border-sky-500/60 bg-sky-500/20 text-sky-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
+          className={`rounded-md border px-2 py-1.5 ${tab === 'holdings' ? 'border-sky-500/60 bg-sky-500/20 text-sky-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
         >
           Holdings ({positions.length})
         </button>
         <button
           type="button"
           onClick={() => setTab('options')}
-          className={`flex-1 rounded-md border px-2 py-1.5 ${tab === 'options' ? 'border-amber-500/60 bg-amber-500/20 text-amber-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
+          className={`rounded-md border px-2 py-1.5 ${tab === 'options' ? 'border-amber-500/60 bg-amber-500/20 text-amber-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
         >
           Options ({(optionsState?.myPositions || []).length})
         </button>
         <button
           type="button"
+          onClick={() => setTab('earnings')}
+          className={`rounded-md border px-2 py-1.5 ${tab === 'earnings' ? 'border-fuchsia-500/60 bg-fuchsia-500/20 text-fuchsia-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
+          title="Upcoming earnings — gamble on the next print"
+        >
+          Earnings{(() => {
+            const e = stocksState?.upcomingEarnings
+            const n = Array.isArray(e) ? e.length : (e ? 1 : 0)
+            return n > 0 ? ` 🔔${n}` : ''
+          })()}
+        </button>
+        <button
+          type="button"
           onClick={() => setTab('sabotage')}
-          className={`flex-1 rounded-md border px-2 py-1.5 ${tab === 'sabotage' ? 'border-red-500/60 bg-red-500/20 text-red-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
+          className={`rounded-md border px-2 py-1.5 ${tab === 'sabotage' ? 'border-red-500/60 bg-red-500/20 text-red-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
         >
           Sabotage
         </button>
@@ -145,60 +160,40 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                   <div className="mt-1 text-[10px] font-bold text-red-300">⚠️ Under active sabotage</div>
                 )}
                 {expanded && (() => {
-                  // Resolve the typed amount to dollars regardless of
-                  // mode. Shares mode multiplies by current price.
+                  // Dollar-only input. The "≈ N shares" preview below
+                  // tells the user what their dollars convert to so
+                  // share-thinkers still get the count without the
+                  // mode toggle that nobody knew how to read.
                   const parsed = parseInputAmount(buyAmount)
-                  const dollarsToSpend = parsed == null ? 0
-                    : buyMode === 'shares' ? Math.floor(parsed * stock.price)
-                    : Math.floor(parsed)
-                  const sharesToGet = parsed == null ? 0
-                    : buyMode === 'shares' ? parsed
-                    : parsed / stock.price
+                  const dollarsToSpend = parsed == null ? 0 : Math.floor(parsed)
+                  const sharesToGet = parsed == null ? 0 : parsed / stock.price
+                  const insufficient = dollarsToSpend > 0 && (myChips || 0) < dollarsToSpend
                   return (
                     <div className="mt-2 space-y-1.5">
                       <div className="flex items-center gap-1.5">
                         <input
                           type="text"
                           inputMode="decimal"
-                          placeholder={buyMode === 'shares' ? `Shares (try "100" or "1K")` : `Spend $ (try "$5M" or "1B")`}
+                          placeholder={`Spend $ (try "$5M" or "1B")`}
                           value={buyAmount}
                           onChange={e => setBuyAmount(e.target.value)}
                           className="flex-1 min-w-0 rounded-md border border-zinc-600 bg-zinc-900 px-2 py-1.5 text-xs font-bold text-white outline-none focus:border-zinc-400 tabular-nums"
                         />
-                        {/* Mode toggle — sits beside the input so the
-                            unit context is always visible. */}
-                        <div className="shrink-0 inline-flex rounded-md border border-zinc-700 overflow-hidden">
-                          <button
-                            type="button"
-                            onClick={() => setBuyMode('dollars')}
-                            className={`px-2 py-1.5 text-[10px] font-black uppercase tracking-widest ${buyMode === 'dollars' ? 'bg-zinc-700 text-white' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-200'}`}
-                          >
-                            $
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setBuyMode('shares')}
-                            className={`px-2 py-1.5 text-[10px] font-black uppercase tracking-widest ${buyMode === 'shares' ? 'bg-zinc-700 text-white' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-200'}`}
-                          >
-                            Sh
-                          </button>
-                        </div>
                         <button
                           type="button"
-                          disabled={!joined || !buyAmount || dollarsToSpend <= 0}
+                          disabled={!joined || !buyAmount || dollarsToSpend <= 0 || insufficient}
+                          title={insufficient ? `Need $${Math.ceil(dollarsToSpend).toLocaleString()} — short $${Math.ceil(dollarsToSpend - (myChips || 0)).toLocaleString()}` : undefined}
                           onClick={() => { onBuy(stock.symbol, dollarsToSpend); setBuyAmount('') }}
-                          className="shrink-0 rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-40"
+                          className="shrink-0 rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          Buy
+                          {insufficient ? `Need $${fmtCompact(dollarsToSpend - (myChips || 0))}` : 'Buy'}
                         </button>
                       </div>
-                      {/* Live conversion preview so the player sees
-                          exactly what they're buying before pressing. */}
+                      {/* Live share-count preview so the player always
+                          knows what their dollars are buying. */}
                       {parsed != null && (
                         <div className="text-[10px] font-bold text-zinc-400 tabular-nums">
-                          {buyMode === 'shares'
-                            ? <>≈ <span className="text-zinc-200">${fmtCompact(dollarsToSpend)}</span> · {sharesToGet.toFixed(2)} shares</>
-                            : <>≈ <span className="text-zinc-200">{sharesToGet.toFixed(2)} shares</span> · ${fmtCompact(dollarsToSpend)}</>}
+                          ≈ <span className="text-zinc-200">{sharesToGet.toFixed(2)} shares</span> · ${fmtCompact(dollarsToSpend)}
                         </div>
                       )}
                     </div>
@@ -273,6 +268,9 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                 <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Your open positions</div>
                 {myOpts.map(opt => {
                   const itm = opt.intrinsic > 0
+                  const closeValue = typeof opt.closeValue === 'number' ? opt.closeValue : 0
+                  const costBasis = (opt.premium || 0) * (opt.contracts || 0)
+                  const pnl = closeValue - costBasis
                   return (
                     <div key={opt.id} className={`rounded-md border p-2 text-[11px] font-bold ${itm ? 'border-emerald-500/40 bg-emerald-950/20' : 'border-zinc-700/60 bg-zinc-950/45'}`}>
                       <div className="flex items-center justify-between gap-2">
@@ -281,12 +279,33 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                           <span className="text-white"> ${opt.symbol}</span>
                           <span className="text-zinc-400"> @ ${fmtPrice(opt.strike)} × {opt.contracts}</span>
                         </span>
-                        <span className={itm ? 'text-emerald-300' : 'text-zinc-500'}>
-                          {itm ? `+${fmtCompact(opt.markValue)}` : 'OTM'}
+                        <span className={itm ? 'text-emerald-300' : 'text-zinc-400'}>
+                          {itm ? `ITM +${fmtCompact(opt.markValue)}` : 'OTM'}
                         </span>
                       </div>
-                      <div className="text-[10px] text-zinc-500">
-                        Premium ${fmtCompact(opt.premium * opt.contracts)} · settles next 1-{expiryHands} hands
+                      {/* Contract value: what you'd net by closing right
+                          now (mark - haircut), plus the P&L vs cost basis.
+                          Lets the player decide whether to ride to expiry
+                          or take profits early. */}
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[10px]">
+                        <span className="text-zinc-400">
+                          Value <span className="text-white">${fmtCompact(closeValue)}</span>
+                          <span className={`ml-1 ${pnl >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                            {pnl >= 0 ? '+' : '−'}${fmtCompact(Math.abs(pnl))}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onCloseOption?.({ id: opt.id })}
+                          disabled={!joined}
+                          title={`Close for $${closeValue.toLocaleString()} (8% spread)`}
+                          className="rounded-md border border-amber-400/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-amber-100 hover:bg-amber-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          Close
+                        </button>
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-zinc-500">
+                        Premium ${fmtCompact(costBasis)} · settles next 1-{expiryHands} hands
                       </div>
                     </div>
                   )
@@ -330,9 +349,15 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                     <div key={strike} className="grid grid-cols-[1fr_auto_1fr] gap-1.5 items-center">
                       <button
                         type="button"
-                        disabled={!joined || !call || (myChips || 0) < call.premium}
-                        onClick={() => call && onBuyOption({ symbol: pickedStock.symbol, type: 'call', strike: call.strike, contracts: 1 })}
-                        title={call ? `Buy 1 ${pickedStock.symbol} ${call.strike} call for $${call.premium.toLocaleString()}` : ''}
+                        disabled={!joined || !call}
+                        onClick={() => call && setPendingOption({
+                          symbol: pickedStock.symbol,
+                          type: 'call',
+                          strike: call.strike,
+                          premium: call.premium,
+                          contracts: 1,
+                        })}
+                        title={call ? `Configure a ${pickedStock.symbol} ${call.strike} call buy` : ''}
                         className={`rounded-md border px-2 py-1.5 text-[11px] font-black ${otmCall ? 'border-emerald-400/30 bg-emerald-500/5 text-emerald-200/80' : 'border-emerald-400/60 bg-emerald-500/15 text-emerald-100'} hover:bg-emerald-500/25 disabled:opacity-40 disabled:cursor-not-allowed`}
                       >
                         ${call ? fmtCompact(call.premium) : '—'}
@@ -340,9 +365,15 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                       <div className="text-center text-[11px] font-black text-zinc-200 tabular-nums w-14">${fmtPrice(strike)}</div>
                       <button
                         type="button"
-                        disabled={!joined || !put || (myChips || 0) < put.premium}
-                        onClick={() => put && onBuyOption({ symbol: pickedStock.symbol, type: 'put', strike: put.strike, contracts: 1 })}
-                        title={put ? `Buy 1 ${pickedStock.symbol} ${put.strike} put for $${put.premium.toLocaleString()}` : ''}
+                        disabled={!joined || !put}
+                        onClick={() => put && setPendingOption({
+                          symbol: pickedStock.symbol,
+                          type: 'put',
+                          strike: put.strike,
+                          premium: put.premium,
+                          contracts: 1,
+                        })}
+                        title={put ? `Configure a ${pickedStock.symbol} ${put.strike} put buy` : ''}
                         className={`rounded-md border px-2 py-1.5 text-[11px] font-black ${otmPut ? 'border-red-400/30 bg-red-500/5 text-red-200/80' : 'border-red-400/60 bg-red-500/15 text-red-100'} hover:bg-red-500/25 disabled:opacity-40 disabled:cursor-not-allowed`}
                       >
                         ${put ? fmtCompact(put.premium) : '—'}
@@ -351,10 +382,369 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                   )
                 })}
                 <div className="pt-1 text-[9px] text-zinc-500 leading-snug">
-                  Premium shown is per contract (100 shares). Tap a price to buy 1 contract. Settle in {expiryHands} hands.
+                  Premium shown is per contract (100 shares). Tap a price to <span className="text-zinc-300">configure</span> the buy — quantity, cost, and scenarios show in the next step before anything's charged. Settle in {expiryHands} hands.
                 </div>
               </div>
             )}
+
+            {/* Confirm-buy panel for the pending option order. Renders
+                inline when the user taps a price in the chain above.
+                Shows: contracts picker, total cost, affordability, the
+                breakeven price (strike + premium/100 for calls, minus
+                for puts), and three scenario rows so non-options
+                players can see what the contract might be worth at
+                various underlying prices on expiry. Nothing is
+                charged until they click Confirm. */}
+            {pendingOption && (() => {
+              const stock = stocks.find(s => s.symbol === pendingOption.symbol)
+              if (!stock) return null
+              const spot = stock.price
+              const isCall = pendingOption.type === 'call'
+              const contracts = Math.max(1, Math.floor(pendingOption.contracts || 1))
+              const totalCost = (pendingOption.premium || 0) * contracts
+              const canAfford = (myChips || 0) >= totalCost
+              const shortBy = Math.max(0, totalCost - (myChips || 0))
+              const SHARES_PER_CONTRACT = 100
+              // Breakeven on expiry: for a call you need spot to exit
+              // ≥ strike + premium/100; for a put, spot must drop to
+              // strike − premium/100. Premium is per CONTRACT, so we
+              // divide by 100 shares per contract to get the per-share
+              // breakeven move the underlying has to make.
+              const perSharePremium = (pendingOption.premium || 0) / SHARES_PER_CONTRACT
+              const breakeven = isCall
+                ? pendingOption.strike + perSharePremium
+                : pendingOption.strike - perSharePremium
+              // Scenario rows: pick a few representative spot prices
+              // (favorable side of the strike) so the user sees the
+              // payout curve. Value of an ITM call/put at expiry is
+              // max(0, spot - strike) * 100 * contracts (calls), or
+              // max(0, strike - spot) * 100 * contracts (puts).
+              const valueAt = (spotPrice) => {
+                const intrinsic = isCall
+                  ? Math.max(0, spotPrice - pendingOption.strike)
+                  : Math.max(0, pendingOption.strike - spotPrice)
+                return intrinsic * SHARES_PER_CONTRACT * contracts
+              }
+              const scenarios = isCall
+                ? [
+                    { label: 'Stays at spot',  spot: spot,          note: spot < pendingOption.strike ? 'OTM — lose premium' : null },
+                    { label: '+5% move',        spot: spot * 1.05 },
+                    { label: '+15% move',       spot: spot * 1.15 },
+                    { label: '+30% move',       spot: spot * 1.30 },
+                  ]
+                : [
+                    { label: 'Stays at spot',  spot: spot,          note: spot > pendingOption.strike ? 'OTM — lose premium' : null },
+                    { label: '−5% move',        spot: spot * 0.95 },
+                    { label: '−15% move',       spot: spot * 0.85 },
+                    { label: '−30% move',       spot: spot * 0.70 },
+                  ]
+              const QUICK_QTYS = [1, 5, 10, 25, 100]
+              return (
+                <div className={`rounded-lg border-2 p-3 ${canAfford ? 'border-amber-400/60 bg-amber-950/30' : 'border-red-500/50 bg-red-950/30'}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-black text-white">
+                      Buy <span className={isCall ? 'text-emerald-300' : 'text-red-300'}>{pendingOption.type.toUpperCase()}</span>
+                      <span className="ml-1">${pendingOption.symbol}</span>
+                      <span className="ml-1 text-zinc-300">@ ${fmtPrice(pendingOption.strike)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPendingOption(null)}
+                      className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+
+                  <div className="mt-2">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Contracts</div>
+                    <div className="mt-1 flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setPendingOption(prev => prev && ({ ...prev, contracts: Math.max(1, (prev.contracts || 1) - 1) }))}
+                        className="h-8 w-8 rounded-md border border-zinc-600 bg-zinc-900 text-base font-black text-white hover:bg-zinc-800"
+                      >−</button>
+                      <input
+                        type="number"
+                        min={1}
+                        value={contracts}
+                        onChange={(e) => {
+                          const v = Math.max(1, Math.floor(Number(e.target.value) || 1))
+                          setPendingOption(prev => prev && ({ ...prev, contracts: v }))
+                        }}
+                        className="w-20 rounded-md border border-zinc-600 bg-zinc-900 px-2 py-1.5 text-center text-sm font-black text-white tabular-nums outline-none focus:border-zinc-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setPendingOption(prev => prev && ({ ...prev, contracts: (prev.contracts || 1) + 1 }))}
+                        className="h-8 w-8 rounded-md border border-zinc-600 bg-zinc-900 text-base font-black text-white hover:bg-zinc-800"
+                      >+</button>
+                      <div className="ml-1 flex flex-wrap gap-1">
+                        {QUICK_QTYS.map(q => (
+                          <button
+                            key={q}
+                            type="button"
+                            onClick={() => setPendingOption(prev => prev && ({ ...prev, contracts: q }))}
+                            className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-widest ${contracts === q ? 'border-amber-400/60 bg-amber-500/20 text-amber-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:text-white'}`}
+                          >
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-1 text-[10px] text-zinc-500">
+                      {contracts} × 100 shares = <span className="text-zinc-300 tabular-nums">{(contracts * SHARES_PER_CONTRACT).toLocaleString()}</span> shares of ${pendingOption.symbol} controlled
+                    </div>
+                  </div>
+
+                  <div className="mt-2 grid grid-cols-3 gap-2 rounded-md border border-zinc-700/60 bg-zinc-950/50 p-2 text-[11px] font-bold">
+                    <div>
+                      <div className="text-[9px] uppercase tracking-wider text-zinc-500">Per contract</div>
+                      <div className="text-white tabular-nums">${fmtCompact(pendingOption.premium)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase tracking-wider text-zinc-500">Total cost</div>
+                      <div className={`tabular-nums ${canAfford ? 'text-white' : 'text-red-300'}`}>${fmtCompact(totalCost)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase tracking-wider text-zinc-500">You have</div>
+                      <div className="text-zinc-300 tabular-nums">${fmtCompact(myChips || 0)}</div>
+                    </div>
+                  </div>
+
+                  {!canAfford && (
+                    <div className="mt-2 rounded-md border border-red-500/50 bg-red-950/40 px-2 py-1.5 text-[11px] font-black text-red-100">
+                      Not enough chips — short by <span className="text-red-200">${fmtCompact(shortBy)}</span>. Lower the contract count or pick a cheaper strike.
+                    </div>
+                  )}
+
+                  <div className="mt-2 rounded-md border border-zinc-700/60 bg-zinc-950/50 p-2">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+                      Break-even at expiry
+                    </div>
+                    <div className="text-[11px] font-bold text-zinc-300 leading-snug">
+                      ${pendingOption.symbol} must {isCall ? 'close above' : 'close below'} <span className="text-amber-200 tabular-nums">${fmtPrice(breakeven)}</span> for this trade to profit. Spot is <span className="text-white tabular-nums">${fmtPrice(spot)}</span> right now.
+                    </div>
+                  </div>
+
+                  <div className="mt-2 rounded-md border border-zinc-700/60 bg-zinc-950/50 p-2">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">
+                      What it could be worth at expiry
+                    </div>
+                    <div className="space-y-0.5 text-[11px] font-bold">
+                      {scenarios.map((sc, i) => {
+                        const v = valueAt(sc.spot)
+                        const pnl = v - totalCost
+                        return (
+                          <div key={i} className="flex items-center justify-between gap-2 tabular-nums">
+                            <span className="text-zinc-300">
+                              {sc.label} (${fmtPrice(sc.spot)})
+                            </span>
+                            <span className="flex items-center gap-2">
+                              <span className="text-zinc-200">worth ${fmtCompact(v)}</span>
+                              <span className={`min-w-[64px] text-right ${pnl >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                                {pnl >= 0 ? '+' : '−'}${fmtCompact(Math.abs(pnl))}
+                              </span>
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="mt-1 text-[9px] text-zinc-500 leading-snug">
+                      Each contract pays out (spot − strike) × 100 if {isCall ? 'spot closes above the strike' : '(for a put) the strike beats the spot'}; otherwise it expires worthless and you lose the premium.
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPendingOption(null)}
+                      className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-black uppercase tracking-widest text-zinc-300 hover:bg-zinc-800"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!joined || !canAfford}
+                      onClick={() => {
+                        onBuyOption?.({
+                          symbol: pendingOption.symbol,
+                          type: pendingOption.type,
+                          strike: pendingOption.strike,
+                          contracts,
+                        })
+                        setPendingOption(null)
+                      }}
+                      className={`rounded-md border px-3 py-2 text-xs font-black uppercase tracking-widest disabled:cursor-not-allowed ${
+                        canAfford
+                          ? 'border-amber-400/60 bg-amber-500/20 text-amber-100 hover:bg-amber-500/30'
+                          : 'border-red-500/60 bg-red-950/40 text-red-200 opacity-90'
+                      }`}
+                    >
+                      {canAfford ? `Confirm — Pay $${fmtCompact(totalCost)}` : 'Not enough chips'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })()}
+          </div>
+        )
+      })()}
+
+      {tab === 'earnings' && (() => {
+        // Earnings tab. Server now sends `stocksState.upcomingEarnings`
+        // as an ARRAY of events (2-6 per hand, drawn from a no-repeat
+        // rotation across the whole catalog). Each event:
+        //   { symbol, name, sector, kind, beatOdds, ivUp, ivDown,
+        //     spotAtAnnouncement, announcedAtHand, resolvesAtHand }
+        const raw = stocksState?.upcomingEarnings
+        const events = Array.isArray(raw)
+          ? raw
+          // Backwards compat for the old single-object snapshot.
+          : (raw && typeof raw === 'object') ? [raw] : []
+        if (events.length === 0) {
+          return (
+            <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3 text-center">
+              <div className="text-[11px] font-bold text-zinc-400">No earnings events queued yet.</div>
+              <div className="mt-1 text-[10px] text-zinc-500">A fresh batch of 2-6 tickers prints every hand — sit tight.</div>
+            </div>
+          )
+        }
+        return (
+          <div className="space-y-2">
+            <div className="rounded-lg border-2 border-fuchsia-500/50 bg-fuchsia-950/30 p-3">
+              <div className="text-[10px] font-black uppercase tracking-widest text-fuchsia-300">📢 Upcoming earnings</div>
+              <div className="mt-0.5 text-[11px] font-bold text-zinc-300">
+                {events.length} {events.length === 1 ? 'company reports' : 'companies report'} at the end of this hand. Browse and position before the candles land.
+              </div>
+              <div className="mt-1 text-[10px] text-zinc-500">
+                Every stock reports once before any repeats. Options on these tickers are IV-pumped — premiums crush the moment the slot rolls to the next batch.
+              </div>
+            </div>
+
+            {events.map(evt => {
+              const stock = stocks.find(s => s.symbol === evt.symbol)
+              const spot = stock?.price ?? evt.spotAtAnnouncement ?? 0
+              const beatOdds = Math.max(0, Math.min(1, evt.beatOdds ?? 0.5))
+              const oddsPct = Math.round(beatOdds * 100)
+              const strategyText = beatOdds >= 0.70
+                ? 'Market expects a beat — small candle on a beat (priced-in), big crash on a miss.'
+                : beatOdds <= 0.35
+                  ? 'Market expects a miss — big rally on a beat (surprise), small drop on a miss (priced-in).'
+                  : 'Analysts split — surprise factor is highest either way.'
+              const ivUp = evt.ivUp ?? 0.10
+              const ivDown = evt.ivDown ?? 0.10
+              const highPrice = spot * (1 + ivUp)
+              const lowPrice  = spot * (1 - ivDown)
+              const myHolding = positions.find(p => p.symbol === evt.symbol)
+              const parsed = parseInputAmount(buyAmount)
+              const dollarsToSpend = parsed == null ? 0 : Math.floor(parsed)
+              const sharesToGet = parsed == null ? 0 : dollarsToSpend / spot
+              const insufficient = dollarsToSpend > 0 && (myChips || 0) < dollarsToSpend
+              return (
+                <div key={evt.symbol} className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3 space-y-2">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-black text-white">${evt.symbol}</div>
+                      <div className="text-[10px] font-bold text-zinc-400 truncate">{evt.name}{evt.sector ? ` · ${evt.sector}` : ''}{evt.kind && evt.kind !== 'main' ? ` · ${evt.kind === 'meme' ? 'meme' : 'penny'}` : ''}</div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Spot</div>
+                      <div className="text-sm font-black text-white tabular-nums">${fmtPrice(spot)}</div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-red-500 via-amber-400 to-emerald-400"
+                        style={{ width: `${oddsPct}%` }}
+                      />
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2 text-[10px] font-bold tabular-nums">
+                      <span><span className="text-emerald-300">{oddsPct}%</span> beat · <span className="text-red-300">{100 - oddsPct}% miss</span></span>
+                      <span className="text-zinc-500">analyst odds</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5 text-[11px] font-bold">
+                    <div className="rounded-md border border-emerald-500/40 bg-emerald-950/30 px-2 py-1.5">
+                      <div className="text-[9px] font-black uppercase tracking-wider text-emerald-300">IV up to</div>
+                      <div className="text-white tabular-nums">+{(ivUp * 100).toFixed(0)}% → ${fmtPrice(highPrice)}</div>
+                    </div>
+                    <div className="rounded-md border border-red-500/40 bg-red-950/30 px-2 py-1.5">
+                      <div className="text-[9px] font-black uppercase tracking-wider text-red-300">IV down to</div>
+                      <div className="text-white tabular-nums">−{(ivDown * 100).toFixed(0)}% → ${fmtPrice(lowPrice)}</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-zinc-700/60 bg-zinc-900/60 px-2 py-1.5 text-[10px] font-bold text-zinc-300 leading-snug">
+                    {strategyText}
+                  </div>
+
+                  {myHolding && (
+                    <div className="rounded-md border border-emerald-500/30 bg-emerald-950/20 px-2 py-1 text-[10px] font-bold text-zinc-300">
+                      You hold <span className="text-emerald-300 tabular-nums">{myHolding.shares.toFixed(2)} shares</span> ($<span className="tabular-nums">{fmtCompact(myHolding.currentValue)}</span>).{' '}
+                      <button
+                        type="button"
+                        onClick={() => onSell?.(evt.symbol, myHolding.shares)}
+                        className="font-black text-red-300 underline-offset-2 hover:underline"
+                      >
+                        Sell all to lock in.
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Quick stock buy — earnings-day mini-form for this
+                      ticker. Re-uses the shared `buyAmount` state so a
+                      typed dollar amount applies to whichever ticker
+                      the player clicks Buy on. */}
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder={`Spend $ on $${evt.symbol}`}
+                        value={buyAmount}
+                        onChange={e => setBuyAmount(e.target.value)}
+                        className="flex-1 min-w-0 rounded-md border border-zinc-600 bg-zinc-900 px-2 py-1.5 text-xs font-bold text-white outline-none focus:border-zinc-400 tabular-nums"
+                      />
+                      <button
+                        type="button"
+                        disabled={!joined || !buyAmount || dollarsToSpend <= 0 || insufficient}
+                        title={insufficient ? `Need $${Math.ceil(dollarsToSpend).toLocaleString()} — short $${Math.ceil(dollarsToSpend - (myChips || 0)).toLocaleString()}` : `Buy ${sharesToGet.toFixed(2)} shares of ${evt.symbol}`}
+                        onClick={() => { onBuy(evt.symbol, dollarsToSpend); setBuyAmount('') }}
+                        className={`shrink-0 rounded-md border px-2 py-1.5 text-[11px] font-black uppercase tracking-widest disabled:cursor-not-allowed ${insufficient ? 'border-red-500/60 bg-red-950/40 text-red-200 opacity-90' : 'border-emerald-400/60 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-40'}`}
+                      >
+                        {insufficient ? `Need $${fmtCompact(dollarsToSpend - (myChips || 0))}` : 'Buy'}
+                      </button>
+                    </div>
+                    {parsed != null && (
+                      <div className="text-[10px] font-bold text-zinc-400 tabular-nums">
+                        ≈ <span className="text-zinc-200">{sharesToGet.toFixed(2)} shares</span> · ${fmtCompact(dollarsToSpend)}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedSymbol(evt.symbol); setTab('options') }}
+                      className="flex-1 rounded-md border border-emerald-400/60 bg-emerald-500/15 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-emerald-100 hover:bg-emerald-500/25"
+                    >
+                      Calls
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedSymbol(evt.symbol); setTab('options') }}
+                      className="flex-1 rounded-md border border-red-400/60 bg-red-500/15 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-red-100 hover:bg-red-500/25"
+                    >
+                      Puts
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )
       })()}
@@ -373,14 +763,20 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
                     <div className="text-sm font-black text-white">${stock.symbol}</div>
                     <div className="text-[10px] font-bold text-zinc-300">Current ${fmtPrice(stock.price)} · Burn ${fmtCompact(cost)}</div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onSabotage(stock.symbol)}
-                    disabled={!joined || (myChips || 0) < cost}
-                    className="shrink-0 rounded-md border border-red-400/60 bg-red-500/15 px-3 py-2 text-xs font-black uppercase tracking-widest text-red-100 hover:bg-red-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    Sabotage
-                  </button>
+                  {(() => {
+                    const insufficient = (myChips || 0) < cost
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => onSabotage(stock.symbol)}
+                        disabled={!joined || insufficient}
+                        title={insufficient ? `Need $${cost.toLocaleString()} — short $${(cost - (myChips || 0)).toLocaleString()}` : `Burn $${cost.toLocaleString()} to crash ${stock.symbol}`}
+                        className="shrink-0 rounded-md border border-red-400/60 bg-red-500/15 px-3 py-2 text-xs font-black uppercase tracking-widest text-red-100 hover:bg-red-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {insufficient ? `Need $${fmtCompact(cost - (myChips || 0))}` : 'Sabotage'}
+                      </button>
+                    )
+                  })()}
                 </div>
               </div>
             )

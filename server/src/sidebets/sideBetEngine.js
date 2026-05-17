@@ -1,7 +1,8 @@
 // Per-room side-bet engine. Owns the live YES/NO markets for the current
-// hand, applies the house-edge spread on every buy/sell, and mutates
-// `player.chips` directly (server is authoritative — same trust model as the
-// main betting engine in PokerGame).
+// hand and mutates `player.chips` directly (server is authoritative — same
+// trust model as the main betting engine in PokerGame). Buy/sell happen at
+// the same fair price; the house-edge spread was removed in 2026-05 (EDGE
+// constant kept at 0 so the clamp call sites can stay symmetric).
 //
 // Lifecycle:
 //   handStart       → clear leftover, spawn 3-5 props

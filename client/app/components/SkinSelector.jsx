@@ -22,6 +22,14 @@ const DIRECTIONS = [
   { value: 'to top',    label: '↑' },
 ]
 
+// Original app defaults for the custom slot. Used by the Revert button
+// — clicking it twice restores the user's custom gradient editor back
+// to these values + persists that to the server. Kept separate from
+// the useState initial so the revert is a fixed target, not "whatever
+// was loaded when the picker first mounted."
+const CUSTOM_DEFAULT_COLORS = ['#7c3aed', '#22d3ee']
+const CUSTOM_DEFAULT_DIRECTION = 'to right'
+
 const SkinSelector = memo(function SkinSelector({
   currentSkinId = 0,
   currentCustomSkin = null,
@@ -33,13 +41,39 @@ const SkinSelector = memo(function SkinSelector({
   const [customColors, setCustomColors] = useState(
     Array.isArray(currentCustomSkin?.colors) && currentCustomSkin.colors.length
       ? currentCustomSkin.colors
-      : ['#7c3aed', '#22d3ee']
+      : [...CUSTOM_DEFAULT_COLORS]
   )
-  const [customDirection, setCustomDirection] = useState(currentCustomSkin?.direction || 'to right')
+  const [customDirection, setCustomDirection] = useState(currentCustomSkin?.direction || CUSTOM_DEFAULT_DIRECTION)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  // Two-click revert: first click sets `confirmRevert` for ~2s; if a
+  // second click lands in that window we actually reset + persist.
+  // Single click outside the window is a no-op (cancels the arming).
+  const [confirmRevert, setConfirmRevert] = useState(false)
+  useEffect(() => {
+    if (!confirmRevert) return
+    const t = setTimeout(() => setConfirmRevert(false), 2200)
+    return () => clearTimeout(t)
+  }, [confirmRevert])
 
   useEffect(() => { setPendingId(currentSkinId) }, [currentSkinId])
+
+  function handleRevertClick() {
+    if (!confirmRevert) {
+      setConfirmRevert(true)
+      return
+    }
+    // Confirmed — reset the editor + persist defaults to the server.
+    setConfirmRevert(false)
+    setCustomColors([...CUSTOM_DEFAULT_COLORS])
+    setCustomDirection(CUSTOM_DEFAULT_DIRECTION)
+    if (signedIn && pendingId === 10) {
+      applySkin(10, {
+        colors: [...CUSTOM_DEFAULT_COLORS],
+        direction: CUSTOM_DEFAULT_DIRECTION,
+      })
+    }
+  }
 
   async function applySkin(skinId, custom) {
     if (!signedIn) {
@@ -76,7 +110,7 @@ const SkinSelector = memo(function SkinSelector({
       <div>
         <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">Player skin</div>
         <div className="mt-0.5 text-[11px] text-zinc-400">
-          Unlock by completing daily challenges. {dailiesCompleted} done.
+          Every skin is free — pick whichever you like. Dailies stay for achievements.
         </div>
       </div>
 
@@ -160,6 +194,24 @@ const SkinSelector = memo(function SkinSelector({
               {saving ? 'Saving…' : 'Apply'}
             </button>
           </div>
+          {/* Revert — two-click confirm so a misclick doesn't wipe a
+              gradient the user spent time tuning. First click arms;
+              the button morphs into "Click again to revert" for ~2s.
+              Second click within the window resets editor state AND
+              persists defaults to the server (so the live nameplate
+              swaps back too). */}
+          <button
+            type="button"
+            onClick={handleRevertClick}
+            disabled={saving}
+            className={`w-full rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-widest transition-colors disabled:opacity-50 ${
+              confirmRevert
+                ? 'border-red-400/70 bg-red-500/20 text-red-100 hover:bg-red-500/30'
+                : 'border-zinc-700 bg-zinc-900/60 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800'
+            }`}
+          >
+            {confirmRevert ? 'Click again to revert' : 'Revert to default gradient'}
+          </button>
         </div>
       )}
 

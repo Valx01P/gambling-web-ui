@@ -235,12 +235,14 @@ export class BotPlayer {
     this._lastTurnKey = turnKey
 
     if (this._pendingTimeout) clearTimeout(this._pendingTimeout)
-    // Arena: use the spectator-controlled delay verbatim (no jitter — the
-    // user picked an exact pace, jitter would feel inconsistent on the
-    // slider). Non-arena: keep the legacy randomized 1.8-3.8s window.
-    const arenaDelay = this.room?.isArena ? this.room?.arenaThinkDelayMs : null
-    const delay = (typeof arenaDelay === 'number' && arenaDelay > 0)
-      ? arenaDelay
+    // The room-wide bot speed slider (formerly arena-only, now exposed at
+    // every table) provides an exact pace. When set, use it verbatim —
+    // no jitter, the user picked a specific tempo. Without it (slider
+    // never touched / value out of band), fall back to the legacy
+    // randomized 1.8-3.8s think window so existing play feels unchanged.
+    const slider = this.room?.arenaThinkDelayMs
+    const delay = (typeof slider === 'number' && slider > 0)
+      ? slider
       : THINK_DELAY_MIN_MS + Math.random() * (THINK_DELAY_MAX_MS - THINK_DELAY_MIN_MS)
     this._pendingTimeout = setTimeout(() => {
       this._pendingTimeout = null
@@ -249,13 +251,12 @@ export class BotPlayer {
   }
 
   // Cancel + reschedule any in-flight think timeout against the room's
-  // current arenaThinkDelayMs. Called from PokerRoom.setArenaThinkDelay
-  // so the spectator slider applies to the bot that's already mid-think,
-  // not just the next turn. Returns true if a reschedule actually fired.
+  // current think-delay slider value. Called from PokerRoom.setArenaThinkDelay
+  // so the slider applies to the bot that's already mid-think, not just
+  // the next turn. Returns true if a reschedule actually fired.
   rescheduleArenaThinkDelay() {
     if (!this._pendingTimeout) return false
     if (this._destroyed) return false
-    if (!this.room?.isArena) return false
     if (this.room?.arenaRunning === false) return false
     const ms = this.room?.arenaThinkDelayMs
     if (typeof ms !== 'number' || ms <= 0) return false
@@ -358,8 +359,11 @@ export class BotPlayer {
         // "Cheap call" = small vs. pot or small vs. big blind. With any
         // realistic hand, calling here is fine. Only fold when the price
         // is meaningfully large.
+        // 2026-05: bumped the call window — fallback was producing more
+        // folds than felt right when users wanted to see more action.
+        // (2BB→3BB, 5%→8% of stack, 0.18→0.27 pot-odds threshold.)
         const potOdds = pot > 0 ? toCall / (pot + toCall) : 1
-        const cheap = toCall <= Math.max(bb * 2, this.chips * 0.05) || potOdds <= 0.18
+        const cheap = toCall <= Math.max(bb * 3, this.chips * 0.08) || potOdds <= 0.27
         action = cheap && toCall < this.chips ? 'call' : 'fold'
       }
     }

@@ -12,6 +12,15 @@
 // current owner. The price floor is the original claim price; each
 // reclaim doubles it, so squatting is expensive and hostile takeovers
 // are real.
+//
+// 2026-05 design note: regions intentionally have NO random per-hand
+// price or yield fluctuation. The only things that move world prices
+// or yields are (a) deliberate global events (pandemic today; future
+// events like hacked nukes, extreme lobbying could land here) and
+// (b) player actions (claim / reclaim cost-doubling). Per-asset
+// randomness lives on the real-estate / stocks / crypto layers
+// instead — keep this layer event-driven so geopolitics feels like
+// an intentional act, not weather.
 
 import { MESSAGE_TYPES } from '../config/constants.js'
 

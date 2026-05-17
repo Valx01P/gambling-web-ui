@@ -9,6 +9,89 @@ body {
   font-family: var(--font-gscode);
 }
 
+/* ─── Global scrollbar theme ──────────────────────────────────────────
+ * Dark, slim, in-palette scrollbars across every scrollable surface
+ * in the app — no more default OS chrome. We hit both rendering
+ * stacks so coverage is universal:
+ *
+ *   • WebKit / Blink (Chrome, Edge, Safari, Brave, Arc, Opera, every
+ *     mobile Chromium WebView): `::-webkit-scrollbar*` pseudo-elements.
+ *   • Firefox / Gecko: the CSS-spec `scrollbar-width` + `scrollbar-color`
+ *     properties on the root.
+ *   • IE / legacy Edge: not targeted — those browsers are dead.
+ *
+ * Colors mirror the zinc palette used throughout the app's UI (popovers,
+ * dock chips, tooltips) so the scrollbar reads as part of the chrome,
+ * not as an OS artifact. Thumb is slightly lighter than track, brightens
+ * on hover so the affordance stays discoverable. The corner (where
+ * vertical and horizontal scrollbars meet) gets the same track color
+ * so it doesn't reveal the underlying white default.
+ */
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(82, 82, 91, 0.75) rgba(24, 24, 27, 0.6);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(24, 24, 27, 0.6);   /* zinc-900/60 */
+  border-radius: 6px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(82, 82, 91, 0.75);  /* zinc-600/75 */
+  border-radius: 6px;
+  /* Inner border preserves a subtle gap between thumb and track edge,
+     so the thumb doesn't look like it's smashed into the rail. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(113, 113, 122, 0.95); /* zinc-500/95 */
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: rgba(161, 161, 170, 1);    /* zinc-400 */
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: rgba(24, 24, 27, 0.6);
+}
+
+/* Native arrow buttons at the ends of the rail look out of place on
+   our flat dark surfaces. Hide them — the thumb-drag is the only
+   affordance we want users to interact with. */
+*::-webkit-scrollbar-button {
+  display: none;
+}
+
+/* Opt-out for the rare element that wants the default (e.g. a chrome
+   widget that depends on OS scrollbar metrics). Add `data-native-scroll`
+   to any element to fall back to native styling. */
+[data-native-scroll],
+[data-native-scroll] *::-webkit-scrollbar {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+  width: auto;
+  height: auto;
+}
+[data-native-scroll]::-webkit-scrollbar,
+[data-native-scroll]::-webkit-scrollbar-track,
+[data-native-scroll]::-webkit-scrollbar-thumb,
+[data-native-scroll]::-webkit-scrollbar-corner {
+  background: revert;
+  border: revert;
+  border-radius: revert;
+}
+
 .chip-throw-piece {
   opacity: 0;
   transform: translate(-50%, -50%) translate(var(--chip-x), var(--chip-y)) rotate(var(--chip-rot));

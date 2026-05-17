@@ -121,7 +121,16 @@
       { "symbol": "WEED",      "name": "GreenGrow Holdings",       "sector": "Cannabis",     "search_hint": "cannabis greenhouse growing",            "imageUrl": "https://images.unsplash.com/photo-1584308666744-0a7a3c4c4e4e" },
       { "symbol": "REIT",      "name": "Sunbelt REIT",             "sector": "Real_Estate",  "search_hint": "apartment complex sunbelt aerial",       "imageUrl": "https://images.unsplash.com/photo-1545324418-cc1a3f8e0d0f" },
       { "symbol": "SCAM",      "name": "Cayman Holdings (?)",      "sector": "Crypto",       "search_hint": "shell company offshore beach",           "imageUrl": "https://images.unsplash.com/photo-1506929562872-bb421503efbf" },
-      { "symbol": "ZMBE",      "name": "Zombie Bankrupt Co.",      "sector": "Retail",       "search_hint": "closed bankrupt retail storefront",      "imageUrl": "https://images.unsplash.com/photo-1545324418-cc1a3f8e0d0f" }
+      { "symbol": "ZMBE",      "name": "Zombie Bankrupt Co.",      "sector": "Retail",       "search_hint": "closed bankrupt retail storefront",      "imageUrl": "https://images.unsplash.com/photo-1545324418-cc1a3f8e0d0f" },
+      { "symbol": "BAGS",      "name": "Empty Bag Holding Co.",    "sector": "Retail",       "search_hint": "empty grocery bags abandoned",           "imageUrl": "https://images.unsplash.com/photo-1545324418-cc1a3f8e0d0f" },
+      { "symbol": "WSB",       "name": "WSB Apes Inc.",            "sector": "Crypto",       "search_hint": "wallstreetbets meme reddit chart rocket","imageUrl": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3" },
+      { "symbol": "TRNK",      "name": "Trunk Liquidators",        "sector": "Retail",       "search_hint": "liquidation warehouse pallets",          "imageUrl": "https://images.unsplash.com/photo-1545324418-cc1a3f8e0d0f" },
+      { "symbol": "COPE",      "name": "Generational Cope Co.",    "sector": "Media",        "search_hint": "doom scrolling phone meme",              "imageUrl": "https://images.unsplash.com/photo-1574375927797-0f2f8b3c8f4d" },
+      { "symbol": "ROAR",      "name": "GameRoar Holdings",        "sector": "Retail",       "search_hint": "videogame retailer storefront",          "imageUrl": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3" },
+      { "symbol": "AMCC",      "name": "AmpliCorp Cinemas",        "sector": "Media",        "search_hint": "empty movie theater neon",               "imageUrl": "https://images.unsplash.com/photo-1574375927797-0f2f8b3c8f4d" },
+      { "symbol": "MOON",      "name": "Moonshot Industries",      "sector": "Crypto",       "search_hint": "rocket launch moon crypto coin",         "imageUrl": "https://images.unsplash.com/photo-1639762681485-074b7f938ba0" },
+      { "symbol": "TENDY",     "name": "Tendies Holdings Group",   "sector": "Consumer",     "search_hint": "chicken tenders golden basket",          "imageUrl": "https://images.unsplash.com/photo-1517248135467-4c7edcad34b4" },
+      { "symbol": "YOLO",      "name": "YOLO Capital Trust",       "sector": "Finance",      "search_hint": "options chart screen yolo trade",        "imageUrl": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3" }
     ]
   },
   "world_territories": {

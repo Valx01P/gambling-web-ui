@@ -26,14 +26,33 @@ import { MESSAGE_TYPES } from '../config/constants.js'
 // Per-item cooldown in hands. Was a single COOLDOWN_HANDS=5 across the
 // board; the user wanted finer control so each item gets its own:
 //   • peek (6) and swap (6) — slow refresh, big swings
-//   • scam (1) — refreshes every hand, low-stakes griefing
+//   • scam — randomized 1..4 hands per use (see SCAM_COOLDOWN_*), used
+//     as the *minimum* here for safety; the real value is picked at
+//     _markUsed time and stored alongside the last-used hand index
 //   • hack (8) — slowest, since it ALWAYS lands chips (no opt-out)
 const ITEM_COOLDOWN_HANDS = {
   peek: 6,
   swap: 6,
   scam: 1,
   hack: 8,
+  // Deck-rig powers. The user's design ask:
+  //   • river_card (8) — pick the river card on the next time the
+  //     turn → river transition fires this hand
+  //   • next_card (8) — pick whichever single community card comes
+  //     out next (flop's first card, the turn, or the river)
+  //   • rig_hand (14) — script the entire next hand: own hole
+  //     cards, optionally any seated opponent's hole cards, and any
+  //     of the 5 board slots. Empty slots fall back to random draws.
+  river_card: 8,
+  next_card: 8,
+  rig_hand: 14,
 }
+
+// Scam cooldown is randomized per use to break up popup spam — players
+// can't reliably predict when their next attempt unlocks, so the popup
+// stops feeling like a metronome. Inclusive bounds.
+const SCAM_COOLDOWN_MIN_HANDS = 1
+const SCAM_COOLDOWN_MAX_HANDS = 4
 
 const HACK_MIN_PERCENT = 0.05
 const HACK_MAX_PERCENT = 0.15
@@ -47,7 +66,13 @@ const SCAM_MIN_AMOUNT = 50
 // indefinitely pin the sender's cooldown.
 const SCAM_EXPIRY_MS = 30_000
 
-const ITEM_IDS = ['peek', 'swap', 'scam', 'hack']
+// 2026-05: scam removed from the public catalog. The popup-shuffle
+// mechanic was more annoying than entertaining in playtesting; the
+// engine method + message-type plumbing stays around (`initiateScam`,
+// `resolveScam`, the popup message type) so any old session that
+// still has a scam in flight resolves cleanly, but new uses can't
+// be initiated from the client because it's no longer in this list.
+const ITEM_IDS = ['peek', 'swap', 'hack', 'river_card', 'next_card', 'rig_hand']
 
 // Card validation tables. Used by swap() to reject malformed picks
 // from the client. Kept here (not imported from the deck module) so
@@ -60,7 +85,9 @@ export class ItemEngine {
     this.room = room
     this.game = game
     this.broadcast = broadcast
-    // playerId → Map<itemId, lastUsedHandIndex>
+    // playerId → Map<itemId, { lastHand: number, cooldownHands: number }>.
+    // Per-use cooldownHands lets scam randomize its delay per attempt
+    // without leaking the rolled value to other items.
     this.cooldowns = new Map()
     // scamId → { senderId, senderUsername, targetId, targetUsername, amount, createdAt }
     this.pendingScams = new Map()
@@ -71,35 +98,54 @@ export class ItemEngine {
     return ITEM_COOLDOWN_HANDS[itemId] ?? 5
   }
 
+  // Pick the cooldown to use for a *fresh* use. Scam randomizes per use
+  // (1..4 hands); everything else returns the static configured value.
+  _rollCooldownHands(itemId) {
+    if (itemId === 'scam') {
+      const span = SCAM_COOLDOWN_MAX_HANDS - SCAM_COOLDOWN_MIN_HANDS + 1
+      return SCAM_COOLDOWN_MIN_HANDS + Math.floor(Math.random() * span)
+    }
+    return this._cooldownFor(itemId)
+  }
+
   _isOnCooldown(playerId, itemId) {
-    const last = this.cooldowns.get(playerId)?.get(itemId)
-    if (typeof last !== 'number') return false
-    return (this.game.handIndex - last) < this._cooldownFor(itemId)
+    const entry = this.cooldowns.get(playerId)?.get(itemId)
+    if (!entry) return false
+    return (this.game.handIndex - entry.lastHand) < entry.cooldownHands
   }
 
   _markUsed(playerId, itemId) {
     let m = this.cooldowns.get(playerId)
     if (!m) { m = new Map(); this.cooldowns.set(playerId, m) }
-    m.set(itemId, this.game.handIndex)
+    m.set(itemId, {
+      lastHand: this.game.handIndex,
+      cooldownHands: this._rollCooldownHands(itemId),
+    })
   }
 
   cooldownHandsRemaining(playerId, itemId) {
-    const last = this.cooldowns.get(playerId)?.get(itemId)
-    if (typeof last !== 'number') return 0
-    return Math.max(0, this._cooldownFor(itemId) - (this.game.handIndex - last))
+    const entry = this.cooldowns.get(playerId)?.get(itemId)
+    if (!entry) return 0
+    return Math.max(0, entry.cooldownHands - (this.game.handIndex - entry.lastHand))
   }
 
   // Per-player snapshot. Each item ships its own `refreshHands` value
   // so the client can render a progress bar (fills hand-by-hand) without
-  // hardcoding the schedule.
+  // hardcoding the schedule. For scam — whose cooldown is randomized
+  // per use — we report the *current* rolled value while it's active so
+  // the progress bar fills at the right rate.
   buildSnapshot(playerId) {
     return {
-      items: ITEM_IDS.map(id => ({
-        id,
-        cooldownHandsRemaining: this.cooldownHandsRemaining(playerId, id),
-        ready: !this._isOnCooldown(playerId, id),
-        refreshHands: this._cooldownFor(id),
-      })),
+      items: ITEM_IDS.map(id => {
+        const entry = this.cooldowns.get(playerId)?.get(id)
+        const refreshHands = entry?.cooldownHands ?? this._cooldownFor(id)
+        return {
+          id,
+          cooldownHandsRemaining: this.cooldownHandsRemaining(playerId, id),
+          ready: !this._isOnCooldown(playerId, id),
+          refreshHands,
+        }
+      }),
     }
   }
 
@@ -240,13 +286,16 @@ export class ItemEngine {
   }
 
   // ─── hack ──────────────────────────────────────────────────────────────
+  // Targets humans AND bots. Bots are valid victims — their chip stack
+  // is real money at the table and lifting some of it into the hacker's
+  // pocket is fair game. (Scam, which requires popup interaction the
+  // bot can't perform, stays human-only.)
   hack(playerId, targetId) {
     if (this._isOnCooldown(playerId, 'hack')) return { success: false, error: 'cooldown' }
     if (playerId === targetId) return { success: false, error: 'cant_target_self' }
     const sender = this.room.players.get(playerId)
     const target = this.room.players.get(targetId)
     if (!sender || !target) return { success: false, error: 'target_not_at_table' }
-    if (target.isBot) return { success: false, error: 'cant_target_bots' }
     if (target.chips <= 0) return { success: false, error: 'target_broke' }
 
     const pct = HACK_MIN_PERCENT + Math.random() * (HACK_MAX_PERCENT - HACK_MIN_PERCENT)
@@ -260,6 +309,56 @@ export class ItemEngine {
       data: { message: `💻 ${sender.username} hacked ${target.username} for $${amount.toLocaleString()}.` }
     })
     return { success: true, amount, targetUsername: target.username }
+  }
+
+  // ─── river_card / next_card / rig_hand ───────────────────────────────
+  // These three "deck-rig" powers all mutate state on the PokerGame
+  // itself (via its setRigged* methods); cooldown bookkeeping is
+  // identical to the other items. None of them target another player.
+
+  // Force the river card (8-hand cooldown). The chosen card replaces
+  // whatever the deck would have produced when the turn→river transition
+  // fires. Valid mid-hand any time before that transition. If the rig
+  // card has already been dealt earlier in the same hand (e.g. it came
+  // out on the flop), the river falls back to a random draw at advance
+  // time — graceful, no error.
+  useRiverCard(playerId, card) {
+    if (this._isOnCooldown(playerId, 'river_card')) return { success: false, error: 'cooldown' }
+    if (this.game.phase === 'showdown' || this.game.phase === 'waiting') {
+      return { success: false, error: 'no_active_hand' }
+    }
+    if (this.game.phase === 'river') return { success: false, error: 'river_already_dealt' }
+    const result = this.game.setRiggedRiverCard(card)
+    if (!result.success) return result
+    this._markUsed(playerId, 'river_card')
+    return { success: true }
+  }
+
+  // Force the very next community card (8-hand cooldown). Fires on
+  // the NEXT advancePhaseCards call regardless of which street that is.
+  useNextCard(playerId, card) {
+    if (this._isOnCooldown(playerId, 'next_card')) return { success: false, error: 'cooldown' }
+    if (this.game.phase === 'showdown' || this.game.phase === 'waiting') {
+      return { success: false, error: 'no_active_hand' }
+    }
+    if (this.game.phase === 'river') return { success: false, error: 'no_more_cards' }
+    const result = this.game.setRiggedNextCard(card)
+    if (!result.success) return result
+    this._markUsed(playerId, 'next_card')
+    return { success: true }
+  }
+
+  // Script the entire next hand (14-hand cooldown). Payload shape:
+  //   { holeCards: {playerId: [card,card], ...}, board: [c0..c4] }
+  // Either side can be omitted. Unspecified slots draw randomly at
+  // deal-time. Players who weren't seated when this fired still get
+  // random hole cards — late joiners don't break the plan.
+  useRigHand(playerId, payload) {
+    if (this._isOnCooldown(playerId, 'rig_hand')) return { success: false, error: 'cooldown' }
+    const result = this.game.setRiggedHand(payload || {})
+    if (!result.success) return result
+    this._markUsed(playerId, 'rig_hand')
+    return { success: true }
   }
 
   // ─── lifecycle ─────────────────────────────────────────────────────────

@@ -27,7 +27,12 @@
 import { MESSAGE_TYPES } from '../config/constants.js'
 
 const MIN_LOAN_AMOUNT       = 100        // can't loan trivial sums
-const MAX_RATE              = 0.10       // 10% per turn cap (already steep)
+// 2026-05: rate cap raised to 5x (500%/turn). Per the design ask, peer
+// loans should be able to run at "any interest" the parties agree to —
+// loan-sharking is part of the game. We keep a sanity ceiling (5x is
+// already absurd) so a typo can't lock a player into infinite debt;
+// the owed-cap multiplier below still bounds total exposure.
+const MAX_RATE              = 5.0        // 500%/turn ceiling — effectively "any rate"
 const MIN_RATE              = 0          // gift loans (0%) allowed
 const LENDER_STAKE_CAP_PCT  = 0.50       // amount ≤ 50% of lender's stack
 const NEG_TIMEOUT_MS        = 5 * 60_000 // 5-minute negotiation timeout
@@ -93,7 +98,43 @@ export class PeerLoanEngine {
                            NEG_TIMEOUT_MS)
     this.negotiations.set(id, neg)
     this._broadcast()
+    this._pingRecipient(neg, initiator.id, 'offer')
     return { success: true, negotiation: this._publicNegotiation(neg) }
+  }
+
+  // Push a SESSION_NOTIF to whichever side of the negotiation is NOT
+  // the actor — they're the one who needs to act next. `event` toggles
+  // the body text: 'offer' for the first message, 'counter' for a
+  // re-pitch after a counter, 'accepted' / 'declined' for terminal
+  // events (let the panel handle those instead — caller decides).
+  _pingRecipient(neg, actorId, event = 'offer') {
+    try {
+      const recipientId = actorId === neg.lenderId ? neg.borrowerId : neg.lenderId
+      const recipient = this.room.players?.get?.(recipientId) || this.room.spectators?.get?.(recipientId)
+      if (!recipient || recipient.isBot) return
+      const actorName = (actorId === neg.lenderId ? neg.lenderName : neg.borrowerName) || 'A player'
+      const offeringToLend = actorId === neg.lenderId
+      const ratePct = Math.round(neg.rate * 1000) / 10
+      const verb = event === 'counter'
+        ? (offeringToLend ? 'countered with' : 'wants')
+        : (offeringToLend ? 'offered to lend' : 'wants to borrow')
+      const direction = event === 'counter' && offeringToLend
+        ? `lend you $${neg.amount.toLocaleString()} at ${ratePct}%/hand`
+        : `$${neg.amount.toLocaleString()} at ${ratePct}%/hand`
+      recipient.send({
+        type: MESSAGE_TYPES.SESSION_NOTIF,
+        data: {
+          kind: event === 'counter' ? 'peer_loan_counter' : 'peer_loan_offer',
+          fromId: actorId,
+          fromName: actorName,
+          body: `${actorName} ${verb} ${direction}`,
+          negotiationId: neg.id,
+          createdAt: Date.now(),
+        }
+      })
+    } catch (err) {
+      console.warn('[peer-loan] session notif push failed:', err.message)
+    }
   }
 
   counter(actorId, { negotiationId, amount, rate }) {
@@ -124,6 +165,9 @@ export class PeerLoanEngine {
     neg.timer = setTimeout(() => this._cancelNegotiation(neg.id, 'expired'),
                            NEG_TIMEOUT_MS)
     this._broadcast()
+    // Counter is the new "ball is in your court" event for the other
+    // side — ping them so the panel doesn't sit ignored.
+    this._pingRecipient(neg, actorId, 'counter')
     return { success: true }
   }
 

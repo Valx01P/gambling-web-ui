@@ -114,7 +114,12 @@ export function userPublicRoutes() {
         sideBetLongshotWins: luck?.sideBetLongshotWins ?? 0,
         sideBetChipPl: luck?.sideBetChipPl ?? 0,
         allInShowdowns: luck?.allInShowdowns ?? 0,
-        allInUnderdogWins: luck?.allInUnderdogWins ?? 0
+        allInUnderdogWins: luck?.allInUnderdogWins ?? 0,
+        // Lifetime daily-challenge count. Powers the trophy badge in
+        // the seat-click popover — every viewer sees the same tier
+        // regardless of whether they own the profile, since the
+        // ladder is purely a function of this number.
+        dailiesCompleted: user.dailies_completed ?? 0,
       }
     })
   })

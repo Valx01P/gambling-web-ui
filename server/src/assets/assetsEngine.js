@@ -5,10 +5,18 @@
 // The catalog spans 5 price tiers from $250K starter ("trailer park")
 // up to $500B sovereign-level ("Pacific Atoll Nation"), so a broke
 // spectator with a few job-grind chips can climb into the market
-// while a late-game whale still has things to buy. Yield rate is
-// roughly 0.05-0.2% per hand of purchase price + a small flat amount
-// — affordable assets pay more by percentage, megastructures pay
-// less but appreciate faster.
+// while a late-game whale still has things to buy.
+//
+// 2026-05 economy rebalance:
+//   • Yield is now a 3-9% slice of the basePrice each hand (instead
+//     of the old flat per-asset rate which produced absurd cases like
+//     $700 yield on a $450K rental). Each entry gets a per-instance
+//     `yieldPct` in YIELD_PCT_RANGE applied to basePrice.
+//   • Prices now wobble per hand: a small random fluctuation (usually
+//     well under 1%, occasionally up to ±20%) layers on top of the
+//     deterministic `appreciation` drift. Big crashes (-70% to -80%)
+//     only fire from world events via applyMarketShock — not from
+//     per-hand randomness.
 //
 // Each entry has an `imageUrl` for the panel preview. Most use the
 // placehold.co service with tier-coded colors (always renders, never
@@ -18,6 +26,21 @@
 // Server-authoritative: the catalog lives here, the engine mutates
 // player.chips on buy/sell/yield, and broadcasts `assets:state` after
 // every change. Bots can't trade assets.
+
+// 3-9% of basePrice per hand. Each catalog entry rolls a value in
+// this band once at engine construction; the value is stable for
+// the life of the room (so a player who buys at 7% keeps reading
+// "7% yield/hand" instead of seeing it jitter between hands).
+const YIELD_PCT_MIN = 0.03
+const YIELD_PCT_MAX = 0.09
+
+// Per-hand random price fluctuation. Most of the time the wobble is
+// small (well under 1%). About 1 in 8 hands rolls a "fat tail" event
+// up to ±20%. World-event crashes go further (-70 to -80%) but go
+// through applyMarketShock, not this path.
+const NORMAL_WOBBLE_MAX_PCT = 0.008    // ±0.8% on a normal hand
+const FAT_TAIL_PROBABILITY = 0.12      // 12% chance of a bigger move
+const FAT_TAIL_MAX_PCT = 0.20          // ±20% on the rare hand
 
 import { MESSAGE_TYPES } from '../config/constants.js'
 
@@ -137,7 +160,17 @@ export class AssetEngine {
     this.broadcast = broadcast
     this.catalog = new Map()
     for (const entry of BASE_CATALOG) {
-      this.catalog.set(entry.id, { ...entry, price: entry.basePrice })
+      // Roll the per-asset yield rate once at construction. Locked for
+      // the life of this room so a buyer's "yield/hand" reading is
+      // stable across hands. The legacy flat `yield` field is ignored
+      // in favour of `yieldPct * basePrice`.
+      const yieldPct = YIELD_PCT_MIN + Math.random() * (YIELD_PCT_MAX - YIELD_PCT_MIN)
+      this.catalog.set(entry.id, {
+        ...entry,
+        price: entry.basePrice,
+        yieldPct,
+        yield: Math.max(1, Math.floor(entry.basePrice * yieldPct)),
+      })
     }
     this.holdings = new Map()  // playerId → Map<assetId, units>
     this.marketMultiplier = 1.0
@@ -170,7 +203,16 @@ export class AssetEngine {
       }
     }
     for (const entry of this.catalog.values()) {
-      entry.price = Math.max(entry.floor, Math.floor(entry.price * (1 + entry.appreciation)))
+      // Deterministic appreciation drift (per-asset, tiny — was already
+      // here pre-rebalance) plus a per-hand random wobble. Most hands
+      // see a tiny ±0.8% jitter; ~1 in 8 rolls a bigger ±20% move so
+      // a long session has visible price action. Crashes >20% only
+      // come from world events via applyMarketShock.
+      const fatTail = Math.random() < FAT_TAIL_PROBABILITY
+      const wobbleMax = fatTail ? FAT_TAIL_MAX_PCT : NORMAL_WOBBLE_MAX_PCT
+      const wobble = (Math.random() * 2 - 1) * wobbleMax
+      const next = entry.price * (1 + entry.appreciation + wobble)
+      entry.price = Math.max(entry.floor, Math.floor(next))
     }
     if (this.marketMultiplier < 1) {
       this.marketMultiplier = Math.min(1, this.marketMultiplier + 0.04)
@@ -241,6 +283,13 @@ export class AssetEngine {
       blurb: e.blurb,
       price: this._displayPrice(e),
       yieldPerHand: e.yield,
+      // 3-9% yield rate on basePrice — rolled once at construction
+      // and stable for the room. The client reads this to render the
+      // headline "X% per hand" alongside the dollar amount, since the
+      // old `appreciation` (per-hand price drift) was a separate,
+      // much smaller number and confused users into thinking the
+      // asset paid 0.3%/hand when it actually pays 3-9%.
+      yieldPct: e.yieldPct,
       appreciation: e.appreciation,
       imageUrl: e.imageUrl || null,
     }))

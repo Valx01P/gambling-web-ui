@@ -45,6 +45,12 @@ function _shouldOfferRunItTwice() {
       this.phase === GAME_PHASES.WAITING) return false
   if (this.communityCards.length >= 5) return false
   if (this.pot < RUN_IT_TWICE_MIN_POT) return false
+  // Rigged hands don't get run-it-twice. The rig already determined
+  // the outcome the player wanted; running multiple boards would either
+  // reproduce the same rigged board N times (pointless) or bypass the
+  // rig entirely (steals the power). Cleanest interaction: gate it off
+  // and let the rigged board play out as the single deterministic run.
+  if (this._handIsRigged) return false
 
   const active = this.players.filter(p =>
     !this.removedPlayers.has(p.id) && !this.foldedPlayers.has(p.id)

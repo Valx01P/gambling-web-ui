@@ -18,7 +18,11 @@ import { ACHIEVEMENTS } from '../achievements/catalog.js'
 // Skin tiers: which lifetime-daily counts unlock each preset. Index 0 is
 // the default and is always unlocked. Keep this list in lockstep with
 // client/app/lib/skinPresets.js — the client renders the lock state.
-const SKIN_UNLOCK_TIERS = [0, 1, 5, 10, 15, 20, 25, 30, 35, 40, 50]
+// 2026-05: cosmetics are no longer gated by daily completions. All
+// preset ids are open to everyone. The array is left at length 11 so
+// the index check below (`tier = SKIN_UNLOCK_TIERS[skinId]`) still
+// rejects out-of-range ids with `undefined → bad_skin_id`.
+const SKIN_UNLOCK_TIERS = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
 function publicDaily(daily, progress) {
   if (!daily) return null

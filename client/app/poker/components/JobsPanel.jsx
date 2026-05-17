@@ -18,22 +18,22 @@ const TIER_STYLES = {
 // The "you always have a way to make money" floor for busted-out
 // players. Server pushes the snapshot via 'jobs:state' on join,
 // hand-end, and after every claim.
+//
+// 2026-05: jobs are no longer competitive between players. Each player
+// rolls independently on the same gig — what was a zero-sum "first to
+// apply burns it for everyone" board is now a free chance for the
+// whole table. Per-player outcomes come down as job.claimedByMe /
+// job.failedByMe on each snapshot.
 export default function JobsPanel({ jobsState, joined, onClaim }) {
   const jobs = jobsState?.jobs || []
-  const alreadyClaimed = !!jobsState?.myClaimedThisHand
 
   return (
     <div className="space-y-2">
       <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
         <div className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Today's gigs</div>
         <div className="mt-1 text-[11px] font-bold text-zinc-300 leading-snug">
-          Three new jobs every hand. <span className="text-amber-300">Applying is a luck roll</span> — each gig shows its odds. Fail and the gig is burned for the hand. You can apply for <span className="text-amber-300">one per hand</span>.
+          Three new jobs every hand. <span className="text-amber-300">Applying is a luck roll</span> — each gig shows its odds. Everyone at the table can attempt every gig; one try per gig per hand.
         </div>
-        {alreadyClaimed && (
-          <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-bold text-amber-200">
-            You already applied this hand. Wait for the next one.
-          </div>
-        )}
       </div>
 
       {jobs.length === 0 ? (
@@ -42,7 +42,9 @@ export default function JobsPanel({ jobsState, joined, onClaim }) {
         </div>
       ) : (
         jobs.map(job => {
-          const disabled = !joined || alreadyClaimed || job.claimed || job.failed
+          const claimedByMe = !!job.claimedByMe
+          const failedByMe = !!job.failedByMe
+          const disabled = !joined || claimedByMe || failedByMe
           const tier = TIER_STYLES[job.tier] || TIER_STYLES.bluecollar
           const successPct = Math.round((job.successPercent ?? 0.5) * 100)
           // Color the odds chip so the player reads "easy / risky / hail
@@ -53,7 +55,7 @@ export default function JobsPanel({ jobsState, joined, onClaim }) {
               ? 'bg-amber-900/40 text-amber-200 border-amber-700/40'
               : 'bg-red-900/40 text-red-200 border-red-700/40'
           return (
-            <div key={job.id} className={`rounded-lg border bg-zinc-950/45 p-3 ${tier.border} ${job.failed ? 'opacity-60' : ''}`}>
+            <div key={job.id} className={`rounded-lg border bg-zinc-950/45 p-3 ${tier.border} ${failedByMe ? 'opacity-60' : ''}`}>
               <div className="flex items-start gap-3">
                 <CatalogIcon
                   id={job.jobId}
@@ -74,11 +76,11 @@ export default function JobsPanel({ jobsState, joined, onClaim }) {
                   <div className="mt-1 text-[11px] font-bold">
                     <span className="text-zinc-300">Pays </span>
                     <span className="text-emerald-300">+${job.reward.toLocaleString()}</span>
-                    {job.claimed && (
-                      <span className="ml-2 text-zinc-500">· Pulled off by {job.claimedByName}</span>
+                    {claimedByMe && (
+                      <span className="ml-2 text-emerald-300">· You pulled it off</span>
                     )}
-                    {job.failed && (
-                      <span className="ml-2 text-red-300">· {job.failedByName} flopped — burned</span>
+                    {failedByMe && (
+                      <span className="ml-2 text-red-300">· You flopped this one</span>
                     )}
                   </div>
                 </div>
@@ -89,7 +91,7 @@ export default function JobsPanel({ jobsState, joined, onClaim }) {
                   title={`Roll for $${job.reward.toLocaleString()} with ${successPct}% odds`}
                   className="shrink-0 rounded-md border border-orange-400/60 bg-orange-500/15 px-3 py-2 text-xs font-black uppercase tracking-widest text-orange-100 hover:bg-orange-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {job.claimed ? 'Done' : job.failed ? 'Failed' : 'Apply'}
+                  {claimedByMe ? 'Done' : failedByMe ? 'Failed' : 'Apply'}
                 </button>
               </div>
             </div>

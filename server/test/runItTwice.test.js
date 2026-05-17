@@ -80,6 +80,28 @@ test('trigger does NOT fire when only one player is all-in', () => {
   assert.equal(game._shouldOfferRunItTwice(), false)
 })
 
+// Regression coverage for a player report: "big-pot all-ins don't seem
+// to offer run-it-twice anymore." The threshold is 10k; anything above
+// it must still fire as long as the rest of the conditions hold. These
+// pin the trigger explicitly at 100k+ on flop and turn so a future
+// regression of the threshold (or any pre-river guard) shows up here.
+test('trigger fires for a 150k pot on the flop', () => {
+  const { game } = makeGameWithTwoAllIns({ pot: 150_000 })
+  assert.equal(game._shouldOfferRunItTwice(), true)
+})
+
+test('trigger fires for a 250k pot on the turn', () => {
+  const { game } = makeGameWithTwoAllIns({
+    pot: 250_000,
+    phase: GAME_PHASES.TURN,
+    board: [
+      { rank: '7', suit: 'spades' }, { rank: '2', suit: 'hearts' },
+      { rank: 'K', suit: 'clubs' }, { rank: 'Q', suit: 'diamonds' }
+    ]
+  })
+  assert.equal(game._shouldOfferRunItTwice(), true)
+})
+
 test('vote: agreement on matching choice runs N times', async () => {
   const { game } = makeGameWithTwoAllIns({})
   game._startRunoutVote()

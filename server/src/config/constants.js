@@ -226,7 +226,23 @@ export const MESSAGE_TYPES = {
   RUNOUT_VOTE_SUBMIT: 'runout_vote_submit',
   RUNOUT_VOTE_UPDATE: 'runout_vote_update',
   RUNOUT_VOTE_RESOLVED: 'runout_vote_resolved',
-  RUNOUT_STEP: 'runout_step'
+  RUNOUT_STEP: 'runout_step',
+
+  // Session-scoped notifications. Unlike the persisted `notif:*` flow
+  // (DB-backed, user-id keyed), these are ephemeral toasts targeted by
+  // playerId so anon seats can receive them. Cleared when the player
+  // leaves the table — no DB write, no read marker, no /api fetch.
+  // Used for "X nudged you", @-mentions, peer-loan offers to anons.
+  SESSION_NOTIF: 'session_notif',
+  // Client → server: nudge another player at the table. Server pushes
+  // a SESSION_NOTIF of kind:'nudge' to the target. Mild rate-limit per
+  // sender so the feature isn't a spam vector.
+  PLAYER_NUDGE: 'player:nudge',
+  // Client → server: send a session-scoped DM to another player at the
+  // table. Server pushes a SESSION_NOTIF of kind:'dm' to the recipient
+  // with the message body. No persistence — works for anon both ways.
+  // Rate-limited per sender (3s cooldown) so it doesn't replace chat.
+  PLAYER_SESSION_DM: 'player:session_dm'
 }
 
 // Bank loans: each bank lends $10k principal once at a base rate. The number of

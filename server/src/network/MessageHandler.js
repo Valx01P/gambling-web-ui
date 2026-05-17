@@ -168,12 +168,24 @@ export class MessageHandler {
         case 'options:buy':
           return this.handleOptionsBuy(player, data)
 
+        case 'options:close':
+          return this.handleOptionsClose(player, data)
+
         case 'world:claim':
         case 'world:pandemic':
           return this.handleWorldAction(player, type, data)
 
         case 'influence:run':
           return this.handleInfluenceRun(player, data)
+
+        case 'player:nudge':
+          return this.handlePlayerNudge(player, data)
+
+        case 'player:session_dm':
+          return this.handleSessionDm(player, data)
+
+        case 'player:set_budget':
+          return this.handleSetBudget(player, data)
 
         default:
           return this.error('Unknown message type', player)
@@ -201,6 +213,14 @@ export class MessageHandler {
     // on every join, never carry it across.
     const playAsSelf = !!(data?.playAsSelf && player.userId)
     player.playingAsSelf = playAsSelf
+
+    // Budget does NOT persist across sessions: every new join starts
+    // with the default starting chips and no cap set. The user picks
+    // their "chips to play with" inside the self-popover during the
+    // session if they want to shelve some money. Folding reserves
+    // back to the table on join is a safety net in case prior
+    // session state somehow survived in memory.
+    player.setPokerBudget(null)
 
     if (playAsSelf) {
       if (player.userDisplayName) {
@@ -429,6 +449,13 @@ export class MessageHandler {
     const text = sanitizeDisplayString(data?.message || '', { maxLength: 200 })
     if (!text) return { success: false }
 
+    // Detect @mentions of usernames present at this table and surface
+    // them as ephemeral session notifications. Works for logged-in and
+    // anon recipients alike (SESSION_NOTIF is playerId-keyed, not
+    // userId-keyed). The chat broadcast itself still goes to everyone —
+    // this just adds a side-channel ping for the @'d seats.
+    const mentionedIds = this._collectMentionTargets(room, text, player.id)
+
     room.broadcast({
       type: MESSAGE_TYPES.CHAT,
       data: {
@@ -436,11 +463,59 @@ export class MessageHandler {
         username: player.username,
         isSpectator: player.isSpectator,
         message: text,
+        // Surface the mentioned playerIds so the client can highlight
+        // their @-tags in the chat line. Empty array when none matched.
+        mentions: mentionedIds,
         timestamp: Date.now()
       }
     })
 
+    // Side-channel: subtle toast for each mentioned recipient.
+    for (const targetId of mentionedIds) {
+      const target = room.players?.get?.(targetId) || room.spectators?.get?.(targetId)
+      if (!target || target.id === player.id) continue
+      try {
+        target.send({
+          type: MESSAGE_TYPES.SESSION_NOTIF,
+          data: {
+            kind: 'mention',
+            fromId: player.id,
+            fromName: player.username || 'A player',
+            body: `${player.username || 'A player'} mentioned you in chat`,
+            createdAt: Date.now(),
+          }
+        })
+      } catch (err) {
+        console.warn('[chat-mention] push failed:', err.message)
+      }
+    }
+
     return { success: true }
+  }
+
+  // Scan a chat message for @username tokens and return the playerIds at
+  // this table whose username (case-insensitive) matches. Excludes the
+  // sender so self-mentions don't blast yourself. Uses a simple word-
+  // boundary regex — `@alice!` matches `alice`, `email@foo.com` won't
+  // because the `@` must be at a word boundary.
+  _collectMentionTargets(room, text, senderId) {
+    if (!text || typeof text !== 'string') return []
+    const matches = text.match(/(?:^|\s)@([A-Za-z0-9_-]{1,32})/g) || []
+    if (matches.length === 0) return []
+    const wanted = new Set()
+    for (const m of matches) wanted.add(m.replace(/^.*@/, '').toLowerCase())
+    if (wanted.size === 0) return []
+    const out = []
+    const audience = [
+      ...(room.players?.values?.() || []),
+      ...(room.spectators?.values?.() || [])
+    ]
+    for (const p of audience) {
+      if (!p || p.id === senderId || p.isBot) continue
+      const uname = (p.username || '').toLowerCase()
+      if (uname && wanted.has(uname)) out.push(p.id)
+    }
+    return out
   }
 
   handleEmote(player, data) {
@@ -622,7 +697,10 @@ export class MessageHandler {
 
   handleArenaSetSpeed(player, data) {
     const room = this.roomManager.getPlayerRoom(player)
-    if (!room || room.roomType !== 'poker' || !room.isArena) return this.error('Not in an arena', player)
+    // 2026-05: slider was arena-only; now works on regular tables too.
+    // The setArenaThinkDelay method below permits any human at the table
+    // (seated OR spectating) to drag the slider.
+    if (!room || room.roomType !== 'poker') return this.error('Not at a poker table', player)
     const result = room.setArenaThinkDelay(player.id, data?.delayMs)
     if (!result.success) player.send({ type: MESSAGE_TYPES.ERROR, data: { message: result.error } })
     return result
@@ -1039,8 +1117,13 @@ export class MessageHandler {
     switch (itemId) {
       case 'peek': result = room.itemEngine.peek(player.id, targetId); break
       case 'swap': result = room.itemEngine.swap(player.id, data?.picks); break
-      case 'scam': result = room.itemEngine.initiateScam(player.id, targetId); break
       case 'hack': result = room.itemEngine.hack(player.id, targetId); break
+      // Deck-rig powers. Each takes its payload from `data.payload`
+      // (or `data.card` for the single-card cases) — the engine method
+      // re-validates the shape so the wire format is enforced server-side.
+      case 'river_card': result = room.itemEngine.useRiverCard(player.id, data?.card); break
+      case 'next_card':  result = room.itemEngine.useNextCard(player.id, data?.card); break
+      case 'rig_hand':   result = room.itemEngine.useRigHand(player.id, data?.payload); break
       default:
         player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Unknown item.' } })
         return { success: false }
@@ -1132,6 +1215,169 @@ export class MessageHandler {
     return result
   }
 
+  handleOptionsClose(player, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || !room.optionsEngine) {
+      return this.error('Options trading is unavailable here.', player)
+    }
+    const result = room.optionsEngine.close(player.id, { id: data?.id })
+    if (!result?.success) {
+      const msg = result?.error === 'no_positions' ? 'You have no open options.'
+        : result?.error === 'contract_not_found' ? 'That contract is gone.'
+        : result?.error === 'unknown_symbol' ? 'No such ticker.'
+        : result?.error ? `Options close failed: ${result.error}`
+        : 'Options close failed.'
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: msg } })
+      return result
+    }
+    if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    return result
+  }
+
+  // Nudge another player at the same table. Pushes a SESSION_NOTIF of
+  // kind 'nudge' to the target — appears as a subtle bottom-middle toast
+  // on their client. No DB write, no persistence — purely ephemeral. Anon
+  // seats can both send AND receive (entire point: anons couldn't
+  // participate in the persisted notif system).
+  //
+  // Rate-limit per sender: 8s minimum between nudges so the feature isn't
+  // a spam vector. Server tracks last-nudge-at on the sender Player object.
+  handlePlayerNudge(player, data) {
+    if (!player) return
+    const targetId = typeof data?.targetId === 'string' ? data.targetId : null
+    if (!targetId) return this.error('Missing targetId', player)
+    if (targetId === player.id) return this.error('Cannot nudge yourself', player)
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room) return this.error('Not in a room', player)
+    // Target must be at the same table — seated OR spectating.
+    const target = room.players?.get?.(targetId) || room.spectators?.get?.(targetId)
+    if (!target) return this.error('Target not at this table', player)
+    if (target.isBot) return this.error('Bots ignore nudges', player)
+    // Rate-limit on the sender. 8s between consecutive nudges.
+    const NUDGE_COOLDOWN_MS = 8_000
+    const now = Date.now()
+    const last = player._lastNudgeAt || 0
+    if (now - last < NUDGE_COOLDOWN_MS) {
+      return this.error('Nudge cooldown — wait a few seconds.', player)
+    }
+    player._lastNudgeAt = now
+    try {
+      target.send({
+        type: MESSAGE_TYPES.SESSION_NOTIF,
+        data: {
+          kind: 'nudge',
+          fromId: player.id,
+          fromName: player.username || 'A player',
+          createdAt: now,
+        }
+      })
+    } catch (err) {
+      console.warn('[nudge] push failed:', err.message)
+    }
+    return { success: true }
+  }
+
+  // Send a session-scoped DM to another player at the same table. Works
+  // for anon ↔ anon, anon ↔ logged-in, etc. — SESSION_NOTIF is playerId-
+  // keyed, no userId needed. No DB persistence; the line lives only in
+  // the recipient's toast feed for the duration of the current session.
+  //
+  // Rate-limit per sender: 3s minimum between sends to keep this from
+  // becoming a faster spam channel than the table chat.
+  handleSessionDm(player, data) {
+    if (!player) return
+    const targetId = typeof data?.targetId === 'string' ? data.targetId : null
+    const rawMessage = typeof data?.message === 'string' ? data.message : ''
+    if (!targetId) return this.error('Missing targetId', player)
+    if (targetId === player.id) return this.error('Cannot DM yourself', player)
+    const message = sanitizeDisplayString(rawMessage, { maxLength: 200 })
+    if (!message) return this.error('Empty message', player)
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room) return this.error('Not in a room', player)
+    const target = room.players?.get?.(targetId) || room.spectators?.get?.(targetId)
+    if (!target) return this.error('Target not at this table', player)
+    if (target.isBot) return this.error('Bots ignore DMs', player)
+    const SESSION_DM_COOLDOWN_MS = 3_000
+    const now = Date.now()
+    const last = player._lastSessionDmAt || 0
+    if (now - last < SESSION_DM_COOLDOWN_MS) {
+      return this.error('Slow down — wait a moment between messages.', player)
+    }
+    player._lastSessionDmAt = now
+    try {
+      target.send({
+        type: MESSAGE_TYPES.SESSION_NOTIF,
+        data: {
+          kind: 'dm',
+          fromId: player.id,
+          fromName: player.username || 'A player',
+          body: `${player.username || 'A player'}: ${message}`,
+          message,
+          createdAt: now,
+        }
+      })
+    } catch (err) {
+      console.warn('[session-dm] push failed:', err.message)
+    }
+    return { success: true }
+  }
+
+  // Mid-session poker-budget change. Player setting their cap to X
+  // moves chips across the table/reserves split immediately:
+  //   • chips > X  → shelve excess into pokerReserves
+  //   • chips < X  → pull from pokerReserves to fill (partial if thin)
+  //   • amount empty/null → clear cap, return reserves to the table
+  //
+  // Refusing while in a live hand: the player has chips locked in the
+  // current pot; shrinking their table stack mid-hand would corrupt
+  // PokerGame's bet accounting. Wait for the next hand-end.
+  handleSetBudget(player, data) {
+    if (!player) return
+    const room = this.roomManager.getPlayerRoom(player)
+    if (room && room.roomType === 'poker' && room.game) {
+      const inHand = room.game.phase !== GAME_PHASES.WAITING
+        && room.game.phase !== GAME_PHASES.SHOWDOWN
+      const seated = room.players?.has?.(player.id) && !player.isSpectator
+      if (inHand && seated) {
+        return this.error('Wait for the hand to finish before changing your budget.', player)
+      }
+    }
+    const raw = data?.amount
+    let amount
+    if (raw === null || raw === undefined || raw === '') {
+      amount = null
+    } else {
+      const parsed = Number(raw)
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return this.error('Budget must be a number ≥ 0.', player)
+      }
+      // Below the 100-chip minimum we treat it the same as clearing —
+      // a 50-chip budget would just immediately auto-rebuy below the
+      // game's smallest sane stack.
+      amount = parsed >= 100 ? Math.floor(parsed) : null
+    }
+    const result = player.setPokerBudget(amount)
+    if (room && typeof room.broadcastRoomUpdate === 'function') {
+      room.broadcastRoomUpdate()
+    }
+    if (room && typeof room.broadcastGameState === 'function') {
+      room.broadcastGameState()
+    }
+    player.send({
+      type: MESSAGE_TYPES.SYSTEM_MESSAGE,
+      data: {
+        message: amount === null
+          ? `Budget cleared. ${Math.abs(result.chipsDelta).toLocaleString()} chips returned from reserves.`
+          : result.chipsDelta > 0
+            ? `Budget set to $${amount.toLocaleString()}. Pulled $${result.chipsDelta.toLocaleString()} from reserves.`
+            : result.chipsDelta < 0
+              ? `Budget set to $${amount.toLocaleString()}. Shelved $${Math.abs(result.chipsDelta).toLocaleString()} into reserves.`
+              : `Budget set to $${amount.toLocaleString()}.`
+      }
+    })
+    return { success: true }
+  }
+
   handleWorldAction(player, type, data) {
     const room = this.roomManager.getPlayerRoom(player)
     if (!room || !room.worldEngine) {
@@ -1193,9 +1439,10 @@ export class MessageHandler {
         data: { message: `💼 Pulled off "${result.title}" — +$${result.reward.toLocaleString()}.` }
       })
     } else {
+      const reason = result.reason ? ` ${result.reason}` : ''
       player.send({
         type: MESSAGE_TYPES.SYSTEM_MESSAGE,
-        data: { message: `❌ Flopped "${result.title}" — gig burned for the hand.` }
+        data: { message: `❌ Flopped "${result.title}".${reason}` }
       })
     }
     if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
@@ -1320,9 +1567,9 @@ function humanizeJobError(code) {
   switch (code) {
     case 'not_at_table': return 'Sit down or spectate first.'
     case 'bots_cannot_claim': return 'Bots don\'t need jobs.'
-    case 'already_claimed_this_hand': return 'You already took a gig this hand. Wait for next hand.'
     case 'job_gone': return 'That job just expired.'
-    case 'already_taken': return 'Someone beat you to it.'
+    case 'already_taken': return 'You already pulled that one off this hand.'
+    case 'already_failed': return 'You already flopped that one — try the next.'
     default: return code ? `Job claim failed: ${code}` : 'Job claim failed.'
   }
 }
@@ -1353,6 +1600,14 @@ function humanizeItemError(code) {
     case 'no_deck': return 'Deck is unavailable.'
     case 'not_at_table': return 'Sit down first.'
     case 'unknown_scam': return 'That scam offer has expired.'
+    // Deck-rig power errors
+    case 'invalid_card': return 'Pick a valid card from the deck.'
+    case 'duplicate_card': return 'You can\'t use the same card twice in one rig.'
+    case 'empty_script': return 'Nothing to rig — pick at least one card.'
+    case 'no_active_hand': return 'Wait for a hand to start.'
+    case 'river_already_dealt': return 'River has already been dealt — too late.'
+    case 'no_more_cards': return 'No more cards left to come out this hand.'
+    case 'already_rigged': return 'Someone else already rigged this hand — wait for it to play out.'
     default: return code ? `Item failed: ${code}` : 'Item failed.'
   }
 }

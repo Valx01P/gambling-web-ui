@@ -47,6 +47,7 @@ import DailyChallengePanel from '../components/DailyChallengePanel'
 import SkinSelector from '../components/SkinSelector'
 import CryptoMarketPanel from '../components/CryptoMarketPanel'
 import ItemsPanel from './components/ItemsPanel'
+import { setDockBotSpeed } from '../components/AccountDock'
 import PeekRevealModal from './components/PeekRevealModal'
 import ScamPopupModal from './components/ScamPopupModal'
 import AssetsPanel from './components/AssetsPanel'
@@ -84,6 +85,32 @@ const HUD_ENABLED_STORAGE_KEY = 'poker_investment_hud_enabled'
 // Last blind level the user successfully applied to a table. Used as the
 // preferred default when they next create / propose at a table.
 const BLIND_LEVEL_PREF_STORAGE_KEY = 'poker_blind_level_pref'
+
+// User-selected felt color id. Defaults to 'emerald' (the original look).
+// The id maps to TABLE_COLOR_PALETTES below — never trust this value
+// blindly; resolve through the lookup map so bad localStorage payloads
+// silently revert to the default.
+const TABLE_COLOR_STORAGE_KEY = 'poker_table_felt_color'
+
+// Felt color palette. Each entry is a single dark base color rendered
+// as a radial shade (lighter center, darker edges) — mirrors the
+// original emerald felt's depth treatment, no rainbow gradients. The
+// user asked for solid dark colors with the same shading style, so the
+// gradient stops here are all derived from the same hue.
+const TABLE_COLOR_PALETTES = [
+  { id: 'emerald',  label: 'Emerald',  swatch: '#14472c', center: '#1a5c3a', mid: '#14472c', edge: '#0f3521', vignette: '#0a2a18', border: 'rgba(6, 78, 59, 0.4)' },
+  { id: 'crimson',  label: 'Crimson',  swatch: '#7a1d1d', center: '#a31d1d', mid: '#7a1d1d', edge: '#591212', vignette: '#3a0a0a', border: 'rgba(127, 29, 29, 0.4)' },
+  { id: 'sapphire', label: 'Sapphire', swatch: '#1e3a8a', center: '#2845b3', mid: '#1e3a8a', edge: '#172a66', vignette: '#0c1838', border: 'rgba(30, 58, 138, 0.4)' },
+  { id: 'royal',    label: 'Royal',    swatch: '#4c1d95', center: '#6324b8', mid: '#4c1d95', edge: '#371565', vignette: '#1f0a3d', border: 'rgba(76, 29, 149, 0.4)' },
+  { id: 'slate',    label: 'Slate',    swatch: '#1f2937', center: '#293548', mid: '#1f2937', edge: '#161e2b', vignette: '#0d1219', border: 'rgba(31, 41, 55, 0.5)' },
+  { id: 'amber',    label: 'Amber',    swatch: '#78350f', center: '#9c4a16', mid: '#78350f', edge: '#55260b', vignette: '#2f1505', border: 'rgba(120, 53, 15, 0.4)' },
+  { id: 'teal',     label: 'Teal',     swatch: '#134e4a', center: '#1a665e', mid: '#134e4a', edge: '#0d3a36', vignette: '#062321', border: 'rgba(19, 78, 74, 0.4)' },
+  { id: 'rose',     label: 'Rose',     swatch: '#831843', center: '#a8205a', mid: '#831843', edge: '#5e0e2e', vignette: '#36071a', border: 'rgba(131, 24, 67, 0.4)' },
+]
+const DEFAULT_TABLE_COLOR_ID = 'emerald'
+function tableColorPalette(id) {
+  return TABLE_COLOR_PALETTES.find(p => p.id === id) || TABLE_COLOR_PALETTES[0]
+}
 // Zoom-related constants come from useZoom — single source of truth.
 const POKER_STARTING_CHIPS = 1000
 
@@ -244,6 +271,28 @@ function formatBB(amount, bb) {
   else if (bbs >= 10) rounded = Math.round(bbs * 2) / 2
   else rounded = Math.round(bbs * 4) / 4
   return `${rounded}BB`
+}
+
+// Render a chat message string, highlighting any @username tokens. The
+// regex matches @ at a word boundary followed by 1-32 word/dash chars
+// (same shape the server uses to detect mentions). Yields a flat array
+// of React nodes — no wrapper div — so it slots into the existing
+// `<span>{...}</span>` line in the chat list.
+function renderChatWithMentions(text) {
+  if (!text || typeof text !== 'string') return text
+  const parts = []
+  const re = /(^|\s)@([A-Za-z0-9_-]{1,32})/g
+  let last = 0
+  let m
+  let key = 0
+  while ((m = re.exec(text)) !== null) {
+    const start = m.index + m[1].length
+    if (start > last) parts.push(text.slice(last, start))
+    parts.push(<span key={`@${key++}`} className="rounded bg-amber-400/20 px-1 text-amber-200 font-bold">@{m[2]}</span>)
+    last = re.lastIndex
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts.length > 0 ? parts : text
 }
 
 function formatProfit(value) {
@@ -590,6 +639,70 @@ export default function PokerPage() {
     try { return window.localStorage.getItem(STATS_MODE_STORAGE_KEY) === '1' }
     catch { return false }
   })
+  // Felt color id from TABLE_COLOR_PALETTES. Persisted per-browser; not
+  // server-synced (purely a local cosmetic).
+  const [tableColorId, setTableColorId] = useState(() => {
+    if (typeof window === 'undefined') return DEFAULT_TABLE_COLOR_ID
+    try {
+      const saved = window.localStorage.getItem(TABLE_COLOR_STORAGE_KEY)
+      return TABLE_COLOR_PALETTES.some(p => p.id === saved) ? saved : DEFAULT_TABLE_COLOR_ID
+    } catch { return DEFAULT_TABLE_COLOR_ID }
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try { window.localStorage.setItem(TABLE_COLOR_STORAGE_KEY, tableColorId) } catch {}
+  }, [tableColorId])
+  const tablePalette = useMemo(() => tableColorPalette(tableColorId), [tableColorId])
+
+  // "Check in the dark" — client-side action queue. The player commits
+  // to checking on the NEXT street while it's still someone else's turn.
+  // When the queued phase has passed AND it's now their turn AND the
+  // action is legal (toCall === 0), we fire it through the normal send()
+  // pipeline. Doing this client-side rather than server-side keeps the
+  // PokerGame state machine untouched — the queue is just a UX shortcut
+  // around the existing action buttons.
+  //
+  // Cleared automatically when: the hand ends, the player folds, the
+  // phase the queue was set at is reached again (i.e. server didn't
+  // advance — defensive), or the player explicitly cancels.
+  const [darkAction, setDarkAction] = useState(null)
+  const darkActionFiredRef = useRef(false)
+
+  // Session-scoped notification toasts. Each entry: {id, kind, fromName,
+  // body, createdAt}. Auto-dismissed via per-entry timeouts so they
+  // don't pile up on screen. Ephemeral — never written to localStorage,
+  // never sent to the server; only lives for the current table session.
+  const [sessionNotifs, setSessionNotifs] = useState([])
+  const sessionNotifTimersRef = useRef(new Map())
+  const SESSION_NOTIF_TTL_MS = 6_000
+  const pushSessionNotif = useCallback((payload) => {
+    if (!payload || typeof payload !== 'object') return
+    const id = `sn-${payload.createdAt || Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    // Friendly default body per kind. Callers can pass their own `body`
+    // for kinds like @-mentions or loan offers which need a more
+    // detailed line; nudge keeps it terse.
+    const kind = String(payload.kind || 'info')
+    const fromName = String(payload.fromName || 'Someone')
+    const body = typeof payload.body === 'string' && payload.body.length > 0
+      ? payload.body
+      : kind === 'nudge'
+        ? `${fromName} is nudging you — it's your turn`
+        : `${fromName} sent you a ${kind}`
+    setSessionNotifs(prev => [...prev.slice(-4), { id, kind, fromName, body, createdAt: payload.createdAt || Date.now() }])
+    const t = setTimeout(() => {
+      setSessionNotifs(prev => prev.filter(n => n.id !== id))
+      sessionNotifTimersRef.current.delete(id)
+    }, SESSION_NOTIF_TTL_MS)
+    sessionNotifTimersRef.current.set(id, t)
+  }, [])
+  useEffect(() => {
+    // Clear any pending timers on unmount so stale dispatches don't
+    // crash the listener after the page tears down.
+    return () => {
+      for (const t of sessionNotifTimersRef.current.values()) clearTimeout(t)
+      sessionNotifTimersRef.current.clear()
+    }
+  }, [])
   const [statsExpansion, setStatsExpansion] = useState('minimized')
   const statsPanelRef = useRef(null)
   // Stable handler so the memoized StatsPanel doesn't re-render every tick
@@ -606,6 +719,20 @@ export default function PokerPage() {
   const [spectatorHoveredPlayerId, setSpectatorHoveredPlayerId] = useState(null)
   const [tableMenuOpen, setTableMenuOpen] = useState(false)
   const [activePokerPanel, setActivePokerPanel] = useState(null)
+  // Sub-editor state for the items panel (swap / river_card / next_card
+  // / rig_hand). Lifted out of ItemsPanel so the tools-panel chrome's
+  // own "← Back" button can pop the editor first (back to items list)
+  // before closing the whole panel to the tools menu — otherwise that
+  // chrome Back skipped right past the items list to the tools
+  // chip-dropdown, which felt like two screens of context gone in one
+  // tap.
+  const [itemsActiveEditor, setItemsActiveEditor] = useState(null)
+  // Whenever the items panel itself closes, the editor state goes
+  // with it — opening Items fresh should always land on the grid,
+  // never inside a stale editor.
+  useEffect(() => {
+    if (activePokerPanel !== 'items') setItemsActiveEditor(null)
+  }, [activePokerPanel])
   const [sessionHands, setSessionHands] = useState([])
   const [botRoster, setBotRoster] = useState({ mine: [], public: [], loading: false, error: null })
   // Most-recent uploaded PFPs for the signed-in user. Shown in the lobby's
@@ -668,6 +795,32 @@ export default function PokerPage() {
       arenaSpeedSendTimerRef.current = null
     }
   }, [])
+  // Stable slider handler so AccountDock's BotSpeedDock subscription
+  // doesn't churn on every parent render. Mirrors the inline body the
+  // old in-page wrapper used: local state updates instantly, the WS
+  // send is debounced to 200ms so dragging doesn't flood the arena.
+  const handleArenaSpeedChange = useCallback((v) => {
+    setArenaThinkDelayMs(v)
+    if (arenaSpeedSendTimerRef.current) clearTimeout(arenaSpeedSendTimerRef.current)
+    arenaSpeedSendTimerRef.current = setTimeout(() => {
+      arenaSpeedSendTimerRef.current = null
+      send('poker_arena_set_speed', { delayMs: v })
+    }, 200)
+  }, [send])
+  // Bridge the bot-speed config into AccountDock so its dock column
+  // owns the BotSpeedDock as a real flex sibling. This is what fixes
+  // the bell→bot spacing — being in the SAME flex container makes
+  // `gap-2` literal, with no separate calc/spacer math drifting from
+  // the other items in the column.
+  useEffect(() => {
+    const hasBots = (gameState?.players || []).some(p => p && p.isBot)
+    setDockBotSpeed(hasBots
+      ? { value: arenaThinkDelayMs, onChange: handleArenaSpeedChange }
+      : null)
+  }, [gameState?.players, arenaThinkDelayMs, handleArenaSpeedChange])
+  // Clear on unmount so the bot icon doesn't bleed into other routes
+  // when the user navigates away from the poker page.
+  useEffect(() => () => setDockBotSpeed(null), [])
   // Page zoom is now backed by useZoom (cross-component, cross-tab sync
   // via localStorage + a custom event). The AccountMenu has its own zoom
   // controls that hit the same hook — both surfaces stay in lockstep.
@@ -727,8 +880,8 @@ export default function PokerPage() {
   // catalog with current prices + the player's own positions. Server
   // pushes `assets:state` on join, hand-end, and after every trade.
   const [assetsState, setAssetsState] = useState({ catalog: [], myPositions: [], marketMultiplier: 1 })
-  const [jobsState, setJobsState] = useState({ jobs: [], myClaimedThisHand: false })
-  const [stocksState, setStocksState] = useState({ stocks: [], myPositions: [] })
+  const [jobsState, setJobsState] = useState({ jobs: [] })
+  const [stocksState, setStocksState] = useState({ stocks: [], myPositions: [], upcomingEarnings: [] })
   const [optionsState, setOptionsState] = useState({ chain: [], myPositions: [], expiryHands: 3, contractMultiplier: 100 })
   const [worldState, setWorldState] = useState({ territories: [], pandemicActive: false, yieldMultiplier: 1 })
   const [influenceState, setInfluenceState] = useState({ ops: [] })
@@ -1252,14 +1405,23 @@ export default function PokerPage() {
           break
         case 'jobs:state':
           setJobsState({
-            jobs: Array.isArray(msg.data?.jobs) ? msg.data.jobs : [],
-            myClaimedThisHand: !!msg.data?.myClaimedThisHand
+            jobs: Array.isArray(msg.data?.jobs) ? msg.data.jobs : []
           })
           break
         case 'stocks:state':
           setStocksState({
             stocks: Array.isArray(msg.data?.stocks) ? msg.data.stocks : [],
-            myPositions: Array.isArray(msg.data?.myPositions) ? msg.data.myPositions : []
+            myPositions: Array.isArray(msg.data?.myPositions) ? msg.data.myPositions : [],
+            // Carry the earnings queue all the way through to the
+            // Earnings tab. Older shapes sent a single object; the
+            // current server always sends an array (2-6 events per
+            // batch). Default to [] so the tab's empty-state copy
+            // renders cleanly until the first snapshot lands.
+            upcomingEarnings: Array.isArray(msg.data?.upcomingEarnings)
+              ? msg.data.upcomingEarnings
+              : (msg.data?.upcomingEarnings && typeof msg.data.upcomingEarnings === 'object')
+                ? [msg.data.upcomingEarnings]
+                : [],
           })
           break
         case 'world:state':
@@ -1619,6 +1781,12 @@ export default function PokerPage() {
           // fires when a stale table_invite gets evicted (host left the
           // table) so the inbox can drop the row without a refresh.
           emitDmEvent(msg)
+          break
+        case 'session_notif':
+          // Ephemeral, table-scoped — works for anon seats too. Queue
+          // the payload into the toast list; the renderer below auto-
+          // dismisses each entry after a few seconds.
+          pushSessionNotif(msg.data || {})
           break
         case 'showdown':
           if (msg.data) {
@@ -2036,6 +2204,64 @@ export default function PokerPage() {
   }, [gameState?.players, playerId])
   const myPlayer = gameState?.players?.find((p) => p.id === playerId)
   const isMyTurn = gameState?.activePlayerId === playerId
+
+  // External hook for opening the table chat dock. Fired by the
+  // messages-popup's "Table chat" pinned entry so the user can reach
+  // the table chat from the same icon they reach DMs from. The handler
+  // forces the dock on and shoves Side Bets aside (they share the slot).
+  useEffect(() => {
+    function handler() {
+      setChatDockVisible(true)
+      try { window.localStorage.removeItem(CHAT_VISIBLE_STORAGE_KEY) } catch {}
+      setSideBetsDockVisible(false)
+      try { window.localStorage.setItem(SIDE_BETS_VISIBLE_STORAGE_KEY, '0') } catch {}
+    }
+    window.addEventListener('gwu:open-table-chat', handler)
+    return () => window.removeEventListener('gwu:open-table-chat', handler)
+  }, [])
+
+  // Auto-fire any queued "check in the dark" once these conditions all
+  // line up:
+  //   • we're at the same WS connection that armed the queue
+  //   • a queue exists and hasn't been fired yet
+  //   • the table has advanced past the phase where the queue was set
+  //     (so "in the dark" actually means a fresh street, not the same
+  //     round of betting we were already on)
+  //   • it's now our turn
+  //   • the action is still legal (toCall must be 0 for a check)
+  //   • we're not folded / waiting next hand
+  // Otherwise: if any of the safety conditions trip (we folded, the
+  // hand ended, someone else bet making check illegal) we silently
+  // clear the queue and let the user act manually.
+  useEffect(() => {
+    if (!darkAction) return
+    if (darkActionFiredRef.current) return
+    const phaseNow = gameState?.phase
+    const handOver = phaseNow === 'waiting' || phaseNow === 'showdown'
+    if (handOver || myPlayer?.folded || myPlayer?.waitingNextHand) {
+      setDarkAction(null)
+      return
+    }
+    // Only fire on a different phase than the one we armed on. If
+    // the user armed during preflop, we won't fire until flop+.
+    if (phaseNow === darkAction.queuedAtPhase) return
+    if (!isMyTurn) return
+    const myBet = myPlayer?.bet || 0
+    const cur = gameState?.currentBet || 0
+    const toCall = Math.max(0, cur - myBet)
+    if (darkAction.type === 'check' && toCall > 0) {
+      // Someone bet before our turn — the queued check is illegal.
+      setDarkAction(null)
+      return
+    }
+    darkActionFiredRef.current = true
+    if (darkAction.type === 'check') {
+      send('poker_check')
+    }
+    setDarkAction(null)
+    // Reset the fired flag on the next tick so a future queue can fire.
+    setTimeout(() => { darkActionFiredRef.current = false }, 0)
+  }, [darkAction, isMyTurn, gameState?.phase, gameState?.currentBet, myPlayer?.bet, myPlayer?.folded, myPlayer?.waitingNextHand])
   // Self's peer loans, extracted from whichever side of the table we're
   // on (seated or spectating). Pulled out of liquidatedSummary's deps so
   // unrelated gameState churn (bets/folds by other seats) doesn't invalidate
@@ -2176,13 +2402,16 @@ export default function PokerPage() {
     if (!message) return
 
     send('player_yell', { message })
-    setYellInput('')
+    // Intentionally do NOT clear the input — leaving the text in place
+    // lets a player mash Enter to repeat-yell ("spam yell"), which the
+    // user explicitly asked us to restore. The Esc key + manual edit
+    // are the way to clear.
     setYellHistory(prev => {
       const without = prev.filter(y => y !== message)
       return [message, ...without].slice(0, 20)
     })
     setYellHistoryIndex(-1)
-    setYellDraft('')
+    setYellDraft(message)
   }
 
   function onYellKeyDown(e) {
@@ -2365,6 +2594,15 @@ export default function PokerPage() {
   // "Back" on a Tools panel returns to the dropdown so you can pick another
   // tool without re-clicking the Tools button.
   function backToToolsMenu() {
+    // If the items panel has an editor open, a single "Back" tap
+    // should close just the editor (returning to the items+powers
+    // grid). Only a second tap escapes all the way out to the
+    // tools menu. Without this, the chrome Back skipped two
+    // levels at once and felt jarring.
+    if (activePokerPanel === 'items' && itemsActiveEditor) {
+      setItemsActiveEditor(null)
+      return
+    }
     setActivePokerPanel(null)
     setTableMenuOpen(true)
   }
@@ -2373,6 +2611,28 @@ export default function PokerPage() {
     const name = (profileDraftName || '').trim().slice(0, 24)
     if (!name && !profileDraftAvatar) return
     send('update_profile', { username: name || undefined, avatarId: profileDraftAvatar || undefined })
+    // Mirror the saved values into local state + localStorage so the
+    // change persists across reloads. Without this, hydrating from
+    // localStorage on the next page load would clobber the new name
+    // with the old saved one. The 'http(s)://' branch on avatar
+    // preserves custom uploads' full URL; preset IDs round-trip as
+    // their short id.
+    if (name) {
+      setUsername(name)
+      try {
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(USERNAME_STORAGE_KEY, name)
+        }
+      } catch {}
+    }
+    if (profileDraftAvatar) {
+      setSelectedAvatarId(profileDraftAvatar)
+      try {
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(AVATAR_STORAGE_KEY, profileDraftAvatar)
+        }
+      } catch {}
+    }
     setActivePokerPanel(null)
   }
 
@@ -2597,6 +2857,7 @@ export default function PokerPage() {
     )
   }
 
+
   if (!joined) {
     return (
       <LobbyView
@@ -2652,14 +2913,28 @@ export default function PokerPage() {
         {sysMessages.map((msg, i) => (
           <div key={`s-${i}`} className="text-xs text-zinc-600 italic font-medium">{msg}</div>
         ))}
-        {chatMessages.map((msg, i) => (
-          <div key={`c-${i}`} className="text-sm">
-            <span className={`font-bold ${msg.playerId === playerId ? 'text-white' : 'text-zinc-300'}`}>
-              {msg.playerId === playerId ? 'You' : msg.username}{msg.isSpectator ? ' (spectator)' : ''}:
-            </span>
-            <span className="text-zinc-100 ml-1.5">{msg.message}</span>
-          </div>
-        ))}
+        {chatMessages.map((msg, i) => {
+          // Detect if the local viewer was @-mentioned by this line.
+          // The server attached a `mentions` array of playerIds; we
+          // light the row up so the user clocks it even mid-scroll.
+          const mentionsMe = Array.isArray(msg.mentions) && msg.mentions.includes(playerId)
+          return (
+            <div
+              key={`c-${i}`}
+              className={`text-sm rounded ${mentionsMe ? 'bg-zinc-200/10 px-1 py-0.5 -mx-1' : ''}`}
+            >
+              <span className={`font-bold ${msg.playerId === playerId ? 'text-white' : 'text-zinc-300'}`}>
+                {msg.playerId === playerId ? 'You' : msg.username}{msg.isSpectator ? ' (spectator)' : ''}:
+              </span>
+              <span className="text-zinc-100 ml-1.5">
+                {/* Walk the message text and tint @tokens. Simple split
+                    on (^|\s)@(word) — no regex highlighting library
+                    needed for this scale of chat. */}
+                {renderChatWithMentions(msg.message)}
+              </span>
+            </div>
+          )
+        })}
         <div ref={chatEndRef} />
       </div>
       <div className="flex border-t border-zinc-600/50 bg-zinc-900/50 shrink-0">
@@ -3352,11 +3627,13 @@ export default function PokerPage() {
         // The Add Bots and Bot Arena panels are picker-heavy and look
         // cramped in the standard 460px max. They get a wider max
         // (640px) so the pill picker can breathe without forcing
-        // every other tool to widen.
+        // every other tool to widen. Items & Powers also gets the
+        // wider max so the 2-column power grid + per-item targets
+        // pickers have room to read at a glance.
         <div
           ref={pokerPanelRef}
           className={`fixed right-3 top-16 z-[90] max-h-[calc(100dvh-5rem)] w-[calc(100vw-1.5rem)] overflow-y-auto rounded-xl border border-zinc-600/60 bg-zinc-900/95 p-3 text-white shadow-2xl backdrop-blur-md sm:right-4 sm:top-20 ${
-            activePokerPanel === 'bots' || activePokerPanel === 'arena'
+            activePokerPanel === 'bots' || activePokerPanel === 'arena' || activePokerPanel === 'items'
               ? 'max-w-[640px]'
               : 'max-w-[460px]'
           }`}
@@ -3549,6 +3826,15 @@ export default function PokerPage() {
             // bouncing to the arena panel. Same pattern as the arena
             // lineup display.
             const seatedBots = (gameState?.players || []).filter(p => p && p.isBot)
+            // Capacity awareness: the table holds 5 seats (server's
+            // POKER_CONFIG.MAX_PLAYERS — hardcoded here because the
+            // client never receives that value as part of game state,
+            // and the bots panel already hardcodes "/5" below).
+            const TABLE_SEATS = 5
+            const seatsTaken = (gameState?.players || []).length
+            const seatsOpen = Math.max(0, TABLE_SEATS - seatsTaken)
+            const tableFull = seatsOpen === 0
+            const wantsMoreThanFits = selectedCount > seatsOpen
 
             // One labeled strip of pills. Header has a select-all
             // toggle that flips its label based on current state.
@@ -3645,12 +3931,26 @@ export default function PokerPage() {
                   )}
                 </div>
 
-                {/* Sticky action bar — count + Add + Clear. */}
+                {/* Sticky action bar — count + Add + Clear + capacity. */}
                 <div className="sticky top-0 z-10 -mx-3 -mt-3 mb-1 flex items-center justify-between gap-2 border-b border-zinc-700/70 bg-zinc-900/95 px-3 py-2 backdrop-blur">
-                  <div className="text-[11px] font-black text-zinc-200">
-                    {selectedCount === 0
-                      ? 'Nothing selected'
-                      : `${selectedCount} bot${selectedCount === 1 ? '' : 's'} selected`}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[11px] font-black text-zinc-200">
+                      {selectedCount === 0
+                        ? 'Nothing selected'
+                        : `${selectedCount} bot${selectedCount === 1 ? '' : 's'} selected`}
+                    </div>
+                    {/* Inline capacity hint — surfaces the real reason the
+                        Add button is dead, before the user clicks and
+                        wonders why nothing happened. */}
+                    {tableFull ? (
+                      <div className="mt-0.5 text-[9px] font-black uppercase tracking-widest text-amber-300">
+                        Table is full ({seatsTaken}/{TABLE_SEATS}) — kick a seat first
+                      </div>
+                    ) : wantsMoreThanFits ? (
+                      <div className="mt-0.5 text-[9px] font-black uppercase tracking-widest text-amber-300">
+                        Only {seatsOpen} seat{seatsOpen === 1 ? '' : 's'} open — extras won't seat
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-1.5">
                     {selectedCount > 0 && (
@@ -3665,10 +3965,11 @@ export default function PokerPage() {
                     <button
                       type="button"
                       onClick={addBotCommitSelection}
-                      disabled={selectedCount === 0}
+                      disabled={selectedCount === 0 || tableFull}
+                      title={tableFull ? `Table is full (${seatsTaken}/${TABLE_SEATS})` : undefined}
                       className="rounded-md border border-emerald-500/50 bg-emerald-600 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-zinc-800 disabled:text-zinc-500"
                     >
-                      Add {selectedCount > 0 ? selectedCount : ''}
+                      {tableFull ? 'Full' : `Add ${selectedCount > 0 ? selectedCount : ''}`}
                     </button>
                   </div>
                 </div>
@@ -4403,7 +4704,26 @@ export default function PokerPage() {
               itemsState={itemsState}
               players={gameState?.players || []}
               myPlayerId={playerId}
-              onUseItem={(itemId, targetId, picks) => send('item:use', { itemId, targetId, picks })}
+              // Server flag exposed in the game-state envelope. When
+              // true another player has rig_hand queued for the next
+              // hand — the modal renders a warning banner + disables
+              // the confirm button so the user doesn't try to double-rig.
+              nextHandRigged={!!gameState?.nextHandRigged}
+              // Sub-editor state lifted to the page so the chrome's
+              // "← Back" can pop the editor first.
+              activeEditor={itemsActiveEditor}
+              setActiveEditor={setItemsActiveEditor}
+              onUseItem={(itemId, targetId, extras) => {
+                // Backwards-compat with the existing peek/swap/scam/hack
+                // shape: those pass `extras = picks[]` directly. The new
+                // deck-rig items pass an object with `card` or `payload`.
+                // Spread either shape onto the wire message so the server
+                // sees the right keys; legacy `picks` is normalized.
+                const payload = { itemId, targetId }
+                if (Array.isArray(extras)) payload.picks = extras
+                else if (extras && typeof extras === 'object') Object.assign(payload, extras)
+                send('item:use', payload)
+              }}
             />
           )}
 
@@ -4445,6 +4765,7 @@ export default function PokerPage() {
               onSell={(symbol) => send('stock:sell', { symbol })}
               onSabotage={(symbol) => send('stock:sabotage', { symbol })}
               onBuyOption={(payload) => send('options:buy', payload)}
+              onCloseOption={(payload) => send('options:close', payload)}
             />
           )}
 
@@ -4522,42 +4843,11 @@ export default function PokerPage() {
           desktop sidebets/chat sit in a side column, not below. */}
       <div className="flex-1 flex flex-col justify-start md:justify-center relative w-full mb-4">
 
-        {/* Arena speed slider — centered above the table on the same vertical
-            axis (max-w-5xl mirrors the felt below). Only renders inside an
-            arena, where it's the spectator's pacing control. Slider sends
-            POKER_ARENA_SET_SPEED on every change; the server clamps + echoes
-            via room_update so all viewers see the same value. */}
-        {isArena && (
-          <div className="w-full max-w-5xl mx-auto px-3 mt-2 sm:mt-0 mb-1 flex justify-center">
-            <div className="flex items-center gap-2 sm:gap-3 rounded-full border border-emerald-700/40 bg-zinc-950/70 backdrop-blur px-3 sm:px-4 py-1.5 sm:py-2 shadow-md w-full max-w-xs sm:max-w-sm">
-              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-emerald-200/80 shrink-0">Speed</span>
-              <input
-                type="range"
-                min={200}
-                max={4000}
-                step={100}
-                value={arenaThinkDelayMs}
-                onChange={(e) => {
-                  const v = Number(e.target.value)
-                  setArenaThinkDelayMs(v)
-                  // Coalesce rapid drag events into one WS send. Without
-                  // this, a quick drag across the band would broadcast a
-                  // room_update to every spectator on every step.
-                  if (arenaSpeedSendTimerRef.current) clearTimeout(arenaSpeedSendTimerRef.current)
-                  arenaSpeedSendTimerRef.current = setTimeout(() => {
-                    arenaSpeedSendTimerRef.current = null
-                    send('poker_arena_set_speed', { delayMs: v })
-                  }, 200)
-                }}
-                aria-label="Bot move delay"
-                className="flex-1 h-1.5 accent-emerald-400 cursor-pointer touch-pan-y"
-              />
-              <span className="text-[10px] sm:text-xs font-black tabular-nums text-emerald-100 w-10 sm:w-12 text-right shrink-0">
-                {(arenaThinkDelayMs / 1000).toFixed(1)}s
-              </span>
-            </div>
-          </div>
-        )}
+        {/* Bot speed lives in a robot-icon button on the right side
+            of the screen (BotSpeedDock, rendered near the bottom of
+            this page) — only when there are bots at the table.
+            Felt color + poker budget moved into the self-click profile
+            popover so each user owns their own cosmetics privately. */}
 
         {/* The table is free-floating: no `mb-` ties it to the controls
             below. Mobile uses justify-start on the parent (above) so the
@@ -4574,9 +4864,10 @@ export default function PokerPage() {
             bottom seat's cards to overflow into the controls below. md+
             keeps the original wide-oval ratios since the desktop layout
             puts sidebets/chat in a side column instead of below. */}
-        <div className="relative w-full max-w-5xl mx-auto aspect-[1.4/1] sm:aspect-[1.8/1] md:aspect-[2.2/1] rounded-[50%] border-4 border-emerald-900/40 shrink-0 mt-2 sm:mt-6 md:mb-16"
+        <div className="relative w-full max-w-5xl mx-auto aspect-[1.4/1] sm:aspect-[1.8/1] md:aspect-[2.2/1] rounded-[50%] border-4 shrink-0 mt-2 sm:mt-6 md:mb-16"
              style={{
-               background: 'radial-gradient(ellipse 70% 60% at 50% 45%, #1a5c3a 0%, #14472c 45%, #0f3521 80%, #0a2a18 100%)',
+               borderColor: tablePalette.border,
+               background: `radial-gradient(ellipse 70% 60% at 50% 45%, ${tablePalette.center} 0%, ${tablePalette.mid} 45%, ${tablePalette.edge} 80%, ${tablePalette.vignette} 100%)`,
                boxShadow: 'inset 0 2px 50px rgba(0,0,0,0.5), 0 0 100px rgba(0,0,0,0.4)',
              }}>
 
@@ -4609,6 +4900,7 @@ export default function PokerPage() {
               <div key={`e-${i}`} className="rounded-md w-[14vw] sm:w-[60px] md:w-[80px] aspect-[80/110]" style={{ border: '1px dashed rgba(255,255,255,0.05)' }} />
             ))}
           </div>
+
 
           {/* Players */}
           {orderedPlayers.map((player, seatIndex) => {
@@ -4702,18 +4994,22 @@ export default function PokerPage() {
                   {/* Uniform Nameplate styling — explicit min-width so corner
                       seats (left:5%/95%) don't get squished by the parent's
                       overflow-x-hidden context. Human seats are clickable
-                      to open the profile popover; bots and "you" aren't
-                      (your own profile lives behind the account menu). */}
+                      to open the profile popover. 2026-05: extended to
+                      "you" too — clicking your own seat now opens the
+                      same popover with a self-quick-settings panel
+                      (name, avatar, felt color, poker budget, skin,
+                      finances). Bots still aren't clickable here; they
+                      have their own BotProfilePopover wired separately. */}
                   <div
                     data-seat-id={player.id}
-                    role={isMe ? undefined : 'button'}
-                    tabIndex={isMe ? undefined : 0}
-                    onClick={isMe ? undefined : (e) => {
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
                       e.stopPropagation()
                       setPopoverSeatId(player.id)
                       setPopoverSeat(player)
                     }}
-                    onKeyDown={isMe ? undefined : (e) => {
+                    onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
                         setPopoverSeatId(player.id)
@@ -4884,6 +5180,51 @@ export default function PokerPage() {
         // is uninteresting to kick from). Threshold scales with table.
         kickState={kickState}
         onKickVote={(targetId) => send('poker_kick_vote', { targetId })}
+        onNudge={(targetId) => send('player:nudge', { targetId })}
+        onSessionDm={(targetId, message) => send('player:session_dm', { targetId, message })}
+        // Self-popover commit handler. Server is the source of truth
+        // for budget state — it does the chips ↔ reserves split and
+        // broadcasts the new seat numbers. Budget does NOT persist
+        // across sessions: every new game starts at the default
+        // starting chips, and the user re-sets the cap if they want.
+        onSelfBudgetCommit={(value) => {
+          // value can be a number ≥100, or null to clear.
+          send('player:set_budget', { amount: value })
+        }}
+        // Click on the avatar or name in the popover header → open
+        // the in-Tools Edit Profile panel (the one with the username
+        // input + ProfileSelector). Pre-seeds the draft fields from
+        // current state so the panel opens with the live values, not
+        // empty inputs.
+        onSelfEditProfile={() => {
+          setProfileDraftName(prev => prev || username || '')
+          setProfileDraftAvatar(prev => prev || selectedAvatarId)
+          setActivePokerPanel('profile')
+        }}
+        onMentionInChat={(username) => {
+          // Insert "@name " into the chat input and force the chat
+          // dock open. The user can then type the rest of their
+          // message — we don't auto-send; their words are theirs.
+          if (!username) return
+          setChatInput(prev => {
+            const safeName = String(username).replace(/[^A-Za-z0-9_-]/g, '')
+            const at = `@${safeName} `
+            // Avoid duplicate prefix if they already started typing @name.
+            if (prev.toLowerCase().includes(`@${safeName.toLowerCase()}`)) return prev
+            return prev ? `${prev.replace(/\s+$/, '')} ${at}` : at
+          })
+          // Focus the chat input via a deferred DOM lookup — the input
+          // isn't bound to a ref in this file, so query by placeholder
+          // attribute. Best-effort: try/catch swallows any UA quirks.
+          setTimeout(() => {
+            try {
+              const el = typeof document !== 'undefined'
+                ? document.querySelector('input[placeholder="Message..."]')
+                : null
+              el?.focus?.()
+            } catch {}
+          }, 30)
+        }}
       />
 
       <BotProfilePopover
@@ -4892,6 +5233,28 @@ export default function PokerPage() {
         anchorSeatId={popoverSeatId}
         onClose={() => { setPopoverSeat(null); setPopoverSeatId(null) }}
         viewerUserId={authUser?.id ?? null}
+        // Kick eligibility mirrors the server's rule in
+        // PokerRoom.removeBotForPlayer:
+        //   • you added this bot → always allowed
+        //   • adder is no longer seated → "abandoned bot," anyone present
+        //     can kick it
+        // Otherwise hide the button so the user doesn't try and get
+        // a "only the adder can kick" error.
+        canKick={(() => {
+          if (!popoverSeat?.isBot) return false
+          const adder = popoverSeat.addedByPlayerId
+          if (adder && adder === playerId) return true
+          // adder gone if not in the seated player list AND not in
+          // the spectator list (best we can tell from the broadcast).
+          const present = (gameState?.players || []).some(p => p && p.id === adder)
+            || (gameState?.spectators || []).some(s => s && s.id === adder)
+          if (!present && adder) return true
+          // Adder unknown (legacy bot or pre-broadcast) → fall back to
+          // anyone-can-kick so the bot isn't unkickable.
+          if (!adder) return true
+          return false
+        })()}
+        onKick={(botSeatId) => removeBotFromTable(botSeatId)}
       />
 
       {/* "Invite to table" popover — search users by username, send a
@@ -5091,6 +5454,32 @@ export default function PokerPage() {
             <div className={`text-[11px] font-semibold text-center leading-tight ${statusClass}`}>
               {statusText}
             </div>
+            {/* "Check in the dark" toggle. Only meaningful when:
+                  • the hand is live and we're not currently active
+                  • there's a NEXT street to act on (river has nothing after)
+                  • we're not folded / waiting next hand
+                Click arms the queue; the effect above auto-fires the
+                check when our turn lands on a new street. Re-click to
+                cancel before it fires. */}
+            {inHand && !isMyTurn && !myPlayer?.folded && !isWaitingNextHand
+                  && (phase === 'preflop' || phase === 'flop' || phase === 'turn') && (
+              <button
+                type="button"
+                onClick={() => setDarkAction(prev =>
+                  prev && prev.type === 'check'
+                    ? null
+                    : { type: 'check', queuedAtPhase: phase }
+                )}
+                className={`text-[10px] font-black uppercase tracking-widest rounded-md px-2 py-1 transition-colors ${
+                  darkAction?.type === 'check'
+                    ? 'border border-amber-400/60 bg-amber-500/20 text-amber-100'
+                    : 'border border-zinc-600/60 bg-zinc-900/60 text-zinc-400 hover:bg-zinc-800'
+                }`}
+                title="Auto-check on the next street, unless someone bets first"
+              >
+                {darkAction?.type === 'check' ? '✓ Check in the dark armed' : 'Check in the dark'}
+              </button>
+            )}
             <div className="grid grid-cols-2 gap-1.5">
               <button
                 onClick={() => send('poker_fold')}
@@ -5113,11 +5502,10 @@ export default function PokerPage() {
                   <button
                     onClick={() => send('poker_call')}
                     disabled={!canAct}
-                    title={`Call ${callAmt.toLocaleString()} chips (${formatBB(callAmt, tableBigBlind)})`}
+                    title={`Call $${callAmt.toLocaleString()}`}
                     className="px-2 py-1 rounded-md text-xs font-bold transition-all bg-emerald-600 hover:bg-emerald-500 border border-emerald-400/50 text-white shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600 leading-tight"
                   >
-                    <div>Call {callAmt.toLocaleString()}</div>
-                    <div className="text-[9px] sm:text-[10px] opacity-70 font-normal">{formatBB(callAmt, tableBigBlind)}</div>
+                    Call ${callAmt.toLocaleString()}
                   </button>
                 )
               })()}
@@ -5135,12 +5523,9 @@ export default function PokerPage() {
                     : 'bg-amber-600 hover:bg-amber-500 border-amber-400/50 disabled:hover:bg-amber-600'
                 }`}
               >
-                {allInArmed && canAct ? (
-                  <span className="block leading-tight">
-                    <span className="block">Confirm All In · {(myPlayer?.chips || 0).toLocaleString()}</span>
-                    <span className="block opacity-80 font-normal text-[9px] sm:text-[10px]">{formatBB(myPlayer?.chips || 0, tableBigBlind)}</span>
-                  </span>
-                ) : 'All In'}
+                {allInArmed && canAct
+                  ? `Confirm All In · $${(myPlayer?.chips || 0).toLocaleString()}`
+                  : 'All In'}
               </button>
             </div>
 
@@ -5159,7 +5544,7 @@ export default function PokerPage() {
                   type="text"
                   inputMode="decimal"
                   value={raiseAmount > 0 ? safeRaise.toLocaleString() : ''}
-                  placeholder={`min ${formatChipsCompact(minRaise)}`}
+                  placeholder={`min $${formatChipsCompact(minRaise)}`}
                   onChange={(e) => {
                     const parsed = parseChipShorthand(e.target.value)
                     if (parsed !== null) setRaiseAmount(parsed)
@@ -5171,11 +5556,10 @@ export default function PokerPage() {
                 <button
                   onClick={() => send('poker_raise', { amount: safeRaise })}
                   disabled={!canAct || !hasRaiseRoom}
-                  title={`Raise ${safeRaise.toLocaleString()} chips (${formatBB(safeRaise, tableBigBlind)})`}
+                  title={`Raise $${safeRaise.toLocaleString()}`}
                   className="shrink-0 px-2 py-1 rounded-md text-xs font-bold transition-all whitespace-nowrap bg-zinc-700 hover:bg-zinc-600 border border-zinc-500/50 text-white shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:hover:bg-zinc-700 leading-tight"
                 >
-                  <div>Raise {formatChipsCompact(safeRaise)}</div>
-                  <div className="text-[9px] sm:text-[10px] opacity-70 font-normal">{formatBB(safeRaise, tableBigBlind)}</div>
+                  Raise ${formatChipsCompact(safeRaise)}
                 </button>
               </div>
               {/* Quick-bet shortcuts. Pot-relative + all-in. All clamped
@@ -5199,6 +5583,36 @@ export default function PokerPage() {
                       disabled={!canAct || !hasRaiseRoom}
                       title={`${p.label}: ${p.amount.toLocaleString()} chips`}
                       className="rounded-md border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[10px] font-black uppercase tracking-wide text-zinc-300 hover:bg-zinc-800 hover:text-white disabled:opacity-50"
+                    >
+                      {p.label}
+                    </button>
+                  ))
+                })()}
+              </div>
+              {/* Stack-fraction quick buttons. Pot-relative buttons (above)
+                  handle "what to bet given the pot"; this row handles
+                  "what fraction of my chips am I willing to commit," which
+                  matters more for players actively managing a budget /
+                  set-aside stack. Per design ask #20 ("specify a range
+                  you can bet with from your money"). */}
+              <div className="grid grid-cols-4 gap-1">
+                {(() => {
+                  const myChips = myPlayer?.chips || 0
+                  const clamp = (n) => Math.max(minRaise, Math.min(myChips, Math.floor(n)))
+                  const stackPresets = [
+                    { label: '¼ stack', amount: clamp(myChips * 0.25) },
+                    { label: '½ stack', amount: clamp(myChips * 0.5) },
+                    { label: '¾ stack', amount: clamp(myChips * 0.75) },
+                    { label: 'All-in',  amount: myChips },
+                  ]
+                  return stackPresets.map(p => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => setRaiseAmount(p.amount)}
+                      disabled={!canAct || !hasRaiseRoom}
+                      title={`${p.label}: ${p.amount.toLocaleString()} chips`}
+                      className="rounded-md border border-zinc-700 bg-zinc-900/60 px-1 py-0.5 text-[10px] font-black uppercase tracking-wide text-zinc-400 hover:bg-zinc-800 hover:text-white disabled:opacity-50"
                     >
                       {p.label}
                     </button>
@@ -5442,6 +5856,28 @@ export default function PokerPage() {
             </div>
           )
         })()}
+
+        {/* Bot-speed dock is no longer rendered here — it's bridged
+            into AccountDock via setDockBotSpeed (see effect below) so
+            it lives in the SAME flex column as the avatar/DMs/bell
+            and the same `gap-2` literally governs its spacing. */}
+
+        {/* Session-notification toast stack. Bottom-middle, above the
+            action panel's safe-area inset. Anchored with `fixed` so it
+            doesn't move with the felt scroll. Newest toast at the
+            bottom of the stack so the eye lands on the most recent. */}
+        {sessionNotifs.length > 0 && (
+          <div className="pointer-events-none fixed bottom-32 sm:bottom-36 left-1/2 z-[200] flex -translate-x-1/2 flex-col items-center gap-1.5 px-3">
+            {sessionNotifs.map(n => (
+              <div
+                key={n.id}
+                className="pointer-events-auto rounded-full border border-amber-400/60 bg-zinc-950/90 px-3 py-1.5 text-[11px] font-black text-amber-100 shadow-xl backdrop-blur"
+              >
+                <span className="text-amber-300">·</span> {n.body}
+              </div>
+            ))}
+          </div>
+        )}
 
       </div>
     </div>

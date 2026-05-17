@@ -9,14 +9,15 @@ work on this repo — it'll save you 3-4 rounds of grep.
 ## Quick orientation
 
 - Frontend: `client/` — Next.js 16, React 19, Tailwind 4. The two big
-  files are `client/app/poker/page.jsx` (~4000 lines: WS, state, game
+  files are `client/app/poker/page.jsx` (~5500 lines: WS, state, game
   render, action bar, panels) and `client/app/poker/bots/[id]/page.jsx`
   (bot editor + recalc flows). Everything else is component-scoped.
+  These files grow — treat the line counts here as ballpark, not gospel.
 - Backend: `server/` — Node 22 with native `--env-file-if-exists` (no
   dotenv). Express + `ws` share one listener. Postgres via `pg`. The
-  fat file on this side is `server/src/rooms/PokerRoom.js` (~2000 lines:
+  fat file on this side is `server/src/rooms/PokerRoom.js` (~2300 lines:
   the game-state machine) and `server/src/network/MessageHandler.js`
-  (~840 lines: WS routing + per-message handlers).
+  (~1300 lines: WS routing + per-message handlers).
 - REST surface is mounted in `server/src/api/index.js` — auth, bots,
   uploads, users (me + public), dailies, notifications, dms, feed.
 - Auth: dual-mode — Google Identity Services *and* native email/password
@@ -25,10 +26,12 @@ work on this repo — it'll save you 3-4 rounds of grep.
   + `apiRouter` middleware (server). See STACK.md.
 - Bot sandbox: `client/app/lib/botCodeRunner.js` (browser) and
   `server/src/bots/` (authoritative). Sandbox is not a security boundary —
-  it's user-runs-user-code. Three bot kinds coexist: user-scripted JS,
+  it's user-runs-user-code. Four bot kinds coexist: user-scripted JS,
   **neural** (`server/src/bots/neural/` — mlp, qlearning, reinforce,
-  reinforce-baseline; weights persisted) and **super** (`server/src/bots/super/`
-  + migrations 026-027 — rule/transition driven, edited via `SuperBotForm`).
+  reinforce-baseline; weights persisted), **super** (`server/src/bots/super/`
+  + migrations 026-027 — rule/transition driven, edited via `SuperBotForm`),
+  and **oracle** (migration 028 — equity-driven baseline). Bot kind is
+  stored on the row; the table router picks the right runner.
 - AWS uploads: private S3 + CloudFront with OAC. Resource IDs are in
   `STACK.md` and the env files. Server issues presigned PUT URLs; client
   uploads direct to S3.
@@ -48,6 +51,13 @@ Each lives in its own dir with `<feature>Repository.js` + `<feature>Routes.js`
 - `server/src/dailies/` + `server/src/achievements/` — daily challenges,
   unlocks, skin progression (migrations 014, 020, 021).
 - `server/src/crypto/` — meme-coin sim used in the markets UI.
+- Hand history: migration 029 (`anonymous_hand_archive`) — separate from
+  the per-user hand log; used for training data and anonymous review.
+
+Single-file world engines live next to those: `server/src/{influence,
+items,jobs,stocks,world}/` are each one engine module (e.g.
+`stocks/` has `stockEngine.js` + `optionsEngine.js`). No `*Routes.js`
+of their own — they're wired in by the main API or world loop.
 
 Client mirrors: `client/app/feed/`, `client/app/users/`, plus components
 like `DmsPopup`, `NotificationsBell`, `FeedWindow`, `PostCard`,

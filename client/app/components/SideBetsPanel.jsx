@@ -10,7 +10,8 @@ import { memo, useMemo, useState, useEffect, useRef } from 'react'
 //
 // Resolution model (matches sideBetEngine.js):
 //   - Each share pays 1 chip if its side resolves true, 0 otherwise.
-//   - Buy price = clamp(fair + edge/2). Sell price = clamp(fair - edge/2).
+//   - Buy and sell happen at the *same* fair price — no house edge
+//     (2026-05: vig removed; only int-share rounding remains).
 //   - "Void" outcome on card-runout props that never reached the river
 //     (fold-out) refunds the original stake.
 
@@ -71,7 +72,7 @@ const SideBetsPanel = memo(function SideBetsPanel({
       <div className="flex shrink-0 items-center justify-between border-b border-zinc-700/60 bg-zinc-900/60 px-3 py-1.5">
         <div className="flex items-baseline gap-2">
           <span className="text-[11px] font-bold uppercase tracking-wider text-amber-300">Side Bets</span>
-          <span className="text-[10px] text-zinc-500">vs. House · 4% edge</span>
+          <span className="text-[10px] text-zinc-500">vs. House · no edge</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-semibold text-zinc-400">{liveCount} live</span>

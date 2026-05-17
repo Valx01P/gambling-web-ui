@@ -152,23 +152,33 @@ function CoinRow({ coin, position, myChips, onBuy, onSell, onRug, canTrade, myCo
   )
 }
 
-function CreateForm({ canMint, alreadyMinted, mintFee, myChips, onCreate }) {
+function CreateForm({ canMint, liveCoin, mintFee, myChips, onCreate }) {
   const [name, setName] = useState('')
   const [startPrice, setStartPrice] = useState(1)
   const [keepPercent, setKeepPercent] = useState(80)
-  const disabled = !canMint || alreadyMinted || myChips < mintFee
+
+  // If the player's previous coin is still live (un-rugged), short-circuit
+  // the whole form — minting a second coin while the first is live was
+  // confusing for users who didn't realize their old one was still trading.
+  // Rugged coins free the slot, so we fall through to the normal form when
+  // liveCoin is null/undefined.
+  if (liveCoin) {
+    return (
+      <div className="rounded-lg border border-emerald-700/60 bg-emerald-950/30 p-3 text-xs font-bold text-emerald-200">
+        Your coin <span className="text-white">${liveCoin.symbol}</span> is live — find it in the Market tab.
+        Rug it first if you want to mint a fresh one.
+      </div>
+    )
+  }
+
+  const disabled = !canMint || myChips < mintFee
 
   return (
     <div className="space-y-3">
       <div className="rounded-lg border border-zinc-700/60 bg-zinc-950/40 p-3 text-xs font-bold text-zinc-300">
-        Mint your own coin. Mint fee is <span className="text-amber-300">{mintFee.toLocaleString()}</span> chips. You can only have one per session.
+        Mint your own coin. Mint fee is <span className="text-amber-300">{mintFee.toLocaleString()}</span> chips. You can only have one live at a time.
         The more of the supply you keep, the more stable the price stays — until you rug-pull it.
       </div>
-      {alreadyMinted && (
-        <div className="rounded-lg border border-amber-700/60 bg-amber-950/30 p-2 text-xs font-bold text-amber-200">
-          You've already minted a coin this session. Find it in the Market tab.
-        </div>
-      )}
       <div>
         <label className="text-[11px] font-black uppercase tracking-wider text-zinc-400">Ticker</label>
         <input
@@ -218,7 +228,7 @@ function CreateForm({ canMint, alreadyMinted, mintFee, myChips, onCreate }) {
         disabled={disabled}
         className="w-full rounded-md border border-emerald-400/60 bg-emerald-700/80 px-3 py-2 text-sm font-black text-white hover:bg-emerald-600/90 disabled:cursor-not-allowed disabled:opacity-40"
       >
-        {alreadyMinted ? 'Already minted' : myChips < mintFee ? `Need ${mintFee} chips` : `Mint coin (-${mintFee} chips)`}
+        {myChips < mintFee ? `Need ${mintFee} chips` : `Mint coin (-${mintFee} chips)`}
       </button>
     </div>
   )
@@ -239,6 +249,15 @@ function CryptoMarketPanelImpl({
   const myPositions = crypto?.myPositions || []
   const myCoinId = crypto?.myCoinId || null
   const mintFee = crypto?.config?.mintFee ?? 500
+  // The player's own coin object, if it's still trading. A rugged coin
+  // doesn't block a fresh mint per the engine (createCoin rejects only
+  // on a *live* slot), so the form respects that here.
+  const myLiveCoin = useMemo(() => {
+    if (!myCoinId) return null
+    const found = coins.find(c => c.id === myCoinId)
+    if (!found || found.rugged) return null
+    return found
+  }, [coins, myCoinId])
 
   const positionsByCoin = useMemo(() => {
     const m = new Map()
@@ -330,7 +349,7 @@ function CryptoMarketPanelImpl({
       {tab === 'create' && (
         <CreateForm
           canMint={canTrade}
-          alreadyMinted={!!myCoinId}
+          liveCoin={myLiveCoin}
           mintFee={mintFee}
           myChips={myChips}
           onCreate={onCreate}

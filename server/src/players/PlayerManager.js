@@ -30,6 +30,21 @@ export class Player {
     this.username = username || `Player_${id.substring(0, 6)}`
     this.chips = POKER_CONFIG.STARTING_CHIPS
     this.pokerBuyIn = POKER_CONFIG.STARTING_CHIPS
+    // Off-table reserves. Chips the player has set aside — not at risk
+    // in the current hand. The budget mechanic (see pokerBudget below)
+    // moves chips between `this.chips` (live on the table) and
+    // `this.pokerReserves` (off-table) so a billionaire can play a
+    // small game with a small visible stack while keeping the rest
+    // safe. Reserves auto-fund the rebuy when the player busts.
+    this.pokerReserves = 0
+    // Optional per-session "play with this much" cap. When set, the
+    // player's chips at the table are clamped to this value; any
+    // excess goes into pokerReserves. Auto-rebuy on bust pulls from
+    // pokerReserves up to this value (and falls back to a minimum
+    // grant if the reserves are dry, so a totally broke player can
+    // keep playing). Null = no cap, behave like before — chips at
+    // the table ARE the whole wallet, no separation.
+    this.pokerBudget = null
     // No avatar by default — table rendering falls back to an initials
     // circle keyed off `username` (see ProfileAvatar on the client).
     // Picking a preset or uploading a custom image overrides this.
@@ -119,6 +134,54 @@ export class Player {
   // bet settles keeps the displayed profit, peak-swing, and credit score
   // from yo-yoing whenever the player buys or sells a market mid-hand.
   getProfit() { return this.chips + (this.openSideBetStake || 0) - this.pokerBuyIn }
+
+  // Apply a new poker budget. Moves chips between `chips` (on the
+  // table) and `pokerReserves` (off-table) so the table stack matches
+  // the requested ceiling. The split is conserved — chips that come
+  // off the table go straight into reserves, and chips that go onto
+  // the table come straight out of reserves. No chips are created or
+  // destroyed by this call.
+  //
+  // amount === null  → clear cap entirely. Pulls every chip out of
+  //                    reserves and puts them back at the table.
+  // amount  >= 0     → set cap. Shelve excess to reserves OR top up
+  //                    from reserves to reach (partial top-up if the
+  //                    reserves can't cover).
+  //
+  // Returns the resolved budget (or null) and the deltas applied,
+  // so the caller can broadcast or send an ack.
+  setPokerBudget(amount) {
+    if (amount === null || amount === undefined || amount === '') {
+      // Cap cleared — reserves fold back into the table stack.
+      const recovered = this.pokerReserves || 0
+      this.chips = (this.chips || 0) + recovered
+      this.pokerReserves = 0
+      this.pokerBudget = null
+      return { budget: null, chipsDelta: recovered, reservesDelta: -recovered }
+    }
+    const target = Math.max(0, Math.floor(Number(amount) || 0))
+    const currentChips = Math.max(0, Math.floor(this.chips || 0))
+    let chipsDelta = 0
+    let reservesDelta = 0
+    if (currentChips > target) {
+      // Shelve the excess.
+      const shelve = currentChips - target
+      this.chips = target
+      this.pokerReserves = (this.pokerReserves || 0) + shelve
+      chipsDelta = -shelve
+      reservesDelta = shelve
+    } else if (currentChips < target) {
+      // Top up from reserves — partial top-up if reserves are thin.
+      const need = target - currentChips
+      const pull = Math.min(this.pokerReserves || 0, need)
+      this.chips = currentChips + pull
+      this.pokerReserves = (this.pokerReserves || 0) - pull
+      chipsDelta = pull
+      reservesDelta = -pull
+    }
+    this.pokerBudget = target > 0 ? target : null
+    return { budget: this.pokerBudget, chipsDelta, reservesDelta }
+  }
 
   getCreditScore() {
     const profit = this.getProfit()
@@ -399,6 +462,12 @@ export class Player {
       avatarUrl: this.avatarUrl,
       chips: this.chips,
       pokerBuyIn: this.pokerBuyIn,
+      // Off-table reserves + active budget cap. The client renders
+      // both in the self-popover so the player can see what they've
+      // shelved and what the auto-rebuy ceiling is. Server is the
+      // source of truth — the client never owns these numbers.
+      pokerReserves: this.pokerReserves || 0,
+      pokerBudget: typeof this.pokerBudget === 'number' ? this.pokerBudget : null,
       // Public-account fields are only exposed when the seat is playing
       // as itself — joining anonymously keeps the user fully hidden on
       // the wire. The seat-click popover branches on `publicUserId`:

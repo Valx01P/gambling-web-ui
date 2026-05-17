@@ -119,9 +119,13 @@ export default function WorldMapView({ territories, myChips, joined, yieldMultip
       {/* Focused-territory popover. Stays in the layout flow under the
           map (instead of an absolute-positioned tooltip) so it works
           on touch devices without finicky hover. */}
-      {tile ? (
+      {tile ? (() => {
+        const canAfford = (myChips || 0) >= (tile.currentCost || 0)
+        const shortBy = Math.max(0, (tile.currentCost || 0) - (myChips || 0))
+        const claimDisabled = !joined || tile.isMine || !canAfford
+        return (
         <div
-          className={`rounded-lg border p-3 ${tile.isMine ? 'border-emerald-500/50 bg-emerald-950/30' : 'border-zinc-700/70 bg-zinc-950/45'}`}
+          className={`rounded-lg border p-3 ${tile.isMine ? 'border-emerald-500/50 bg-emerald-950/30' : !canAfford && !tile.isMine ? 'border-red-500/40 bg-red-950/20' : 'border-zinc-700/70 bg-zinc-950/45'}`}
         >
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
@@ -133,11 +137,25 @@ export default function WorldMapView({ territories, myChips, joined, yieldMultip
                 <span className="text-zinc-300">Yield </span>
                 <span className="text-emerald-300">+${fmtCompact(Math.floor((tile.yieldBase || 0) * (yieldMultiplier ?? 1)))}/hand</span>
                 <span className="ml-2 text-zinc-300">Cost </span>
-                <span className="text-white">${fmtCompact(tile.currentCost)}</span>
+                <span className={canAfford ? 'text-white' : 'text-red-300'}>${fmtCompact(tile.currentCost)}</span>
               </div>
               {tile.ownerId && (
                 <div className="text-[10px] font-bold text-zinc-400">
                   Held by {tile.isMine ? <span className="text-emerald-300">you</span> : <span className="text-amber-300">{tile.ownerName}</span>}
+                </div>
+              )}
+              {/* Affordability strip — only when the user can't afford,
+                  and only when it's a fresh claim (not their own seat).
+                  Spells out "you have X / need Y / short by Z" instead
+                  of just silently disabling the button. */}
+              {!tile.isMine && !canAfford && (
+                <div className="mt-1 rounded-md border border-red-500/40 bg-red-950/40 px-2 py-1 text-[10px] font-black leading-tight">
+                  <span className="text-red-200">Not enough chips.</span>
+                  <span className="ml-1 text-zinc-300">You have </span>
+                  <span className="text-white">${fmtCompact(myChips || 0)}</span>
+                  <span className="text-zinc-500"> · </span>
+                  <span className="text-zinc-300">short </span>
+                  <span className="text-red-200">${fmtCompact(shortBy)}</span>
                 </div>
               )}
               {tile.countries?.length > 0 && (
@@ -149,18 +167,34 @@ export default function WorldMapView({ territories, myChips, joined, yieldMultip
             <button
               type="button"
               onClick={() => onClaim(tile.id)}
-              disabled={!joined || tile.isMine}
-              className={`shrink-0 rounded-md border px-3 py-2 text-xs font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed ${
-                tile.ownerId
-                  ? 'border-red-400/60 bg-red-500/15 text-red-100 hover:bg-red-500/25'
-                  : 'border-purple-400/60 bg-purple-500/15 text-purple-100 hover:bg-purple-500/25'
+              disabled={claimDisabled}
+              title={tile.isMine
+                ? 'You already own this'
+                : !canAfford
+                  ? `Need $${fmtCompact(tile.currentCost)} — you're short $${fmtCompact(shortBy)}`
+                  : tile.ownerId
+                    ? `Hostile takeover from ${tile.ownerName}`
+                    : `Claim ${tile.name}`}
+              className={`shrink-0 rounded-md border px-3 py-2 text-xs font-black uppercase tracking-widest disabled:cursor-not-allowed ${
+                tile.isMine
+                  ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-200 opacity-60'
+                  : !canAfford
+                    ? 'border-red-500/60 bg-red-950/40 text-red-200 opacity-90'
+                    : tile.ownerId
+                      ? 'border-red-400/60 bg-red-500/15 text-red-100 hover:bg-red-500/25'
+                      : 'border-purple-400/60 bg-purple-500/15 text-purple-100 hover:bg-purple-500/25'
               }`}
             >
-              {tile.isMine ? 'Owned' : tile.ownerId ? 'Take' : 'Claim'}
+              {tile.isMine
+                ? 'Owned'
+                : !canAfford
+                  ? `Need $${fmtCompact(shortBy)}`
+                  : tile.ownerId ? 'Take' : 'Claim'}
             </button>
           </div>
         </div>
-      ) : (
+        )
+      })() : (
         <div className="rounded-md border border-zinc-700/70 bg-zinc-950/45 px-3 py-2 text-[11px] font-bold text-zinc-400 text-center">
           Tap a country to see the territory it belongs to. Off-world tiles (Mars / Moon / orbit) only show in the List view.
         </div>

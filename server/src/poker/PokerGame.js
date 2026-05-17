@@ -91,6 +91,171 @@ export class PokerGame {
     this._runoutIndex = 0
     this._runoutBoardsRevealed = []
     this._runoutPerPlayerTotal = new Map()
+
+    // ─── Deck-rig state (powers #22/#23/#35) ─────────────────────────
+    // Powers can pre-script specific cards. None of these are state the
+    // game machinery TRUSTS — every consumer re-validates the chosen
+    // card is still in the deck at deal-time and silently falls back to
+    // a normal random draw if it isn't (someone else used the same card
+    // somehow, or the script is stale).
+    //
+    //   _pendingRigHand     { holeCards: Map<playerId, [card,card]>,
+    //                         board: [c0..c4] | null }  — the rig_hand
+    //                       QUEUE. Set by setRiggedHand the moment the
+    //                       power fires; held untouched until the very
+    //                       next startHand promotes it into the armed
+    //                       fields. Crucial: rig_hand fired mid-hand
+    //                       must NOT affect the in-progress hand, so we
+    //                       deliberately stage it here instead of
+    //                       writing to _riggedBoardSlots (which
+    //                       advancePhaseCards consumes).
+    //   _riggedHoleCards    Map<playerId, [card,card]>  — armed by
+    //                       startHand from _pendingRigHand. One-shot;
+    //                       cleared once cards are dealt.
+    //   _riggedBoardSlots   [c0,c1,c2,c3,c4] (flop/flop/flop/turn/river)
+    //                       — armed by startHand from _pendingRigHand.
+    //                       Each slot is either a card or null. Used
+    //                       by advancePhaseCards. One-shot per hand.
+    //   _riggedNextCard     A single card that the NEXT
+    //                       advancePhaseCards call will use as its first
+    //                       draw. Cleared after use.
+    //   _riggedRiverCard    A single card forced into the river slot.
+    //                       Outranked by _riggedBoardSlots[4] if both
+    //                       are set (rig_hand wins over river_card).
+    //   _handIsRigged       True while any of the above are active for
+    //                       the current hand. Future ELO/rating code
+    //                       can consult this to skip rating rigged
+    //                       hands without breaking on the rig itself.
+    this._pendingRigHand = null
+    this._riggedHoleCards = null
+    this._riggedBoardSlots = null
+    this._riggedNextCard = null
+    this._riggedRiverCard = null
+    this._handIsRigged = false
+  }
+
+  // Validation helper for cards arriving from the item-engine. Returns
+  // a canonical {rank, suit} or null if the input doesn't match the deck
+  // shape. Re-used by every rig setter so item handlers don't have to
+  // duplicate the check.
+  _normalizeRiggedCard(c) {
+    if (!c || typeof c !== 'object') return null
+    const VALID_RANKS = new Set(['2','3','4','5','6','7','8','9','10','J','Q','K','A'])
+    const VALID_SUITS = new Set(['hearts','diamonds','clubs','spades'])
+    if (!VALID_RANKS.has(c.rank) || !VALID_SUITS.has(c.suit)) return null
+    return { rank: c.rank, suit: c.suit }
+  }
+
+  // Set the river-card rig (#22). Lore: the player pulls the card
+  // "from their pocket" — it doesn't have to still be in the deck.
+  // We attempt removeCard so that, if the card *is* in the deck, no
+  // random draw can later produce the same card a second time on
+  // another street. But if removeCard returns null (the card was
+  // already dealt to the board, to a hole, or claimed by a rig_hand
+  // pre-extract), we still stage the rig: the card lands on the
+  // river at advance time even though it duplicates one already in
+  // play. That's the whole point of the meme — 5-of-a-kind and
+  // higher are reachable, and the hand evaluator ranks them above
+  // royal flush.
+  setRiggedRiverCard(card) {
+    const norm = this._normalizeRiggedCard(card)
+    if (!norm) return { success: false, error: 'invalid_card' }
+    this.deck.removeCard(norm.rank, norm.suit)
+    this._riggedRiverCard = norm
+    this._handIsRigged = true
+    return { success: true }
+  }
+
+  // Set the next-community-card rig (#23). Same "from your pocket"
+  // semantics as river_card — we try to reserve from the deck, but
+  // the rig fires regardless of whether the card was still there.
+  setRiggedNextCard(card) {
+    const norm = this._normalizeRiggedCard(card)
+    if (!norm) return { success: false, error: 'invalid_card' }
+    this.deck.removeCard(norm.rank, norm.suit)
+    this._riggedNextCard = norm
+    this._handIsRigged = true
+    return { success: true }
+  }
+
+  // Set the full-hand rig (#35). The script can specify any subset of:
+  //   holeCards: Map<playerId, [card,card]>
+  //   board:     [c0,c1,c2,c3,c4]  (any can be null)
+  // Unspecified slots get a normal random draw at deal-time. Players
+  // who aren't seated when the script lands get random cards too —
+  // late joiners don't break the plan. The script takes effect on the
+  // NEXT startHand (queued, not retroactive) — even if rig_hand fires
+  // mid-hand, the in-progress board/hole cards are NEVER touched.
+  setRiggedHand({ holeCards = null, board = null } = {}) {
+    // First-rigger-wins on a given hand. Last-write-wins would silently
+    // burn the first user's 14-hand cooldown — unfair when they paid the
+    // cost. The cooldown is per-player so two players can both queue
+    // ATTEMPTS in close succession; the second one gets a clear "already
+    // rigged" rejection so they can keep their cooldown. The check
+    // covers BOTH the staged queue and the currently-armed fields so a
+    // second rigger can't double-rig the same hand by sneaking in
+    // between startHand and the next hand-end.
+    if (this._pendingRigHand || this._riggedHoleCards || this._riggedBoardSlots) {
+      return { success: false, error: 'already_rigged' }
+    }
+    // Validate hole-card map. We accept either Map or plain object input.
+    let holeMap = null
+    if (holeCards) {
+      holeMap = new Map()
+      const entries = holeCards instanceof Map
+        ? [...holeCards.entries()]
+        : Object.entries(holeCards)
+      for (const [pid, pair] of entries) {
+        if (!Array.isArray(pair) || pair.length !== 2) continue
+        const a = this._normalizeRiggedCard(pair[0])
+        const b = this._normalizeRiggedCard(pair[1])
+        if (!a || !b) continue
+        if (a.rank === b.rank && a.suit === b.suit) continue
+        holeMap.set(pid, [a, b])
+      }
+      if (holeMap.size === 0) holeMap = null
+    }
+    // Validate board. Pad to exactly 5 slots (nulls for unspecified).
+    let boardSlots = null
+    if (Array.isArray(board)) {
+      boardSlots = new Array(5).fill(null)
+      for (let i = 0; i < Math.min(5, board.length); i++) {
+        const norm = this._normalizeRiggedCard(board[i])
+        if (norm) boardSlots[i] = norm
+      }
+      if (boardSlots.every(s => s === null)) boardSlots = null
+    }
+    // Cross-collision check: every rigged card across hole+board must
+    // be globally unique within the script. (Two scripts can pick the
+    // same card across separate hands — that's fine. Just not within
+    // the same script.)
+    const seen = new Set()
+    const claim = (c) => {
+      const k = `${c.rank}-${c.suit}`
+      if (seen.has(k)) return false
+      seen.add(k)
+      return true
+    }
+    if (holeMap) {
+      for (const pair of holeMap.values()) {
+        if (!claim(pair[0]) || !claim(pair[1])) return { success: false, error: 'duplicate_card' }
+      }
+    }
+    if (boardSlots) {
+      for (const s of boardSlots) {
+        if (s && !claim(s)) return { success: false, error: 'duplicate_card' }
+      }
+    }
+    if (!holeMap && !boardSlots) return { success: false, error: 'empty_script' }
+    // Stage on the pending field, NOT _riggedHoleCards/_riggedBoardSlots.
+    // The latter are what advancePhaseCards consumes during a live hand
+    // — writing to them now would inject our script into whatever board
+    // is mid-deal. Promotion happens in startHand for the next hand.
+    this._pendingRigHand = { holeCards: holeMap, board: boardSlots }
+    // The script takes effect on the NEXT startHand; we don't flip
+    // _handIsRigged until that hand actually begins, since the current
+    // hand (if any) isn't the one being rigged. startHand sets it.
+    return { success: true }
   }
 
   // Toggle the pause flag. When pausing we cancel every game-driven timer and
@@ -482,11 +647,74 @@ export class PokerGame {
 
     this.dealerIndex = this.dealerIndex % this.players.length
 
+    // Defensive sweep before dealing. _riggedNextCard / _riggedRiverCard
+    // are meant for the CURRENT hand only (set mid-hand by the river_card
+    // / next_card powers). If the previous hand ended via fold-out before
+    // those rigs could fire, advancePhaseCards never got to clear them —
+    // so do it here so a stale rig can't bleed into a fresh hand.
+    this._riggedNextCard = null
+    this._riggedRiverCard = null
+    // Promote the rig_hand queue (set at any point during the previous
+    // hand) into the armed fields the dealer + advancePhaseCards
+    // consume. Doing it here — not in setRiggedHand — is what makes
+    // rig_hand a NEXT-HAND power: the in-progress hand never sees the
+    // script. Clear the queue immediately so a second rig_hand call
+    // during this hand stages cleanly for the *next* hand.
+    if (this._pendingRigHand) {
+      this._riggedHoleCards = this._pendingRigHand.holeCards
+      this._riggedBoardSlots = this._pendingRigHand.board
+      this._pendingRigHand = null
+    } else {
+      this._riggedHoleCards = null
+      this._riggedBoardSlots = null
+    }
+    this._handIsRigged = !!(this._riggedHoleCards || this._riggedBoardSlots)
+
+    // Pre-extract EVERY rigged card from the freshly-shuffled deck up
+    // front, before any random draw happens. Without this, a player
+    // who isn't in the script could randomly draw a card that's
+    // reserved for someone else's hole cards or for a board slot —
+    // the rig would then silently fall back to random for that slot.
+    // Once a card is pre-extracted it's stashed in the rig map itself
+    // (we overwrite the {rank,suit} input with the actual card object
+    // returned by removeCard) so the consuming code uses the stash.
+    if (this._riggedHoleCards) {
+      const next = new Map()
+      for (const [pid, pair] of this._riggedHoleCards) {
+        if (!Array.isArray(pair) || pair.length !== 2) continue
+        const a = this.deck.removeCard(pair[0].rank, pair[0].suit)
+        const b = this.deck.removeCard(pair[1].rank, pair[1].suit)
+        // Only keep the rig for this player if BOTH cards were
+        // extractable — partial pairs would deal one rigged + one
+        // random, which feels broken to the user.
+        if (a && b) next.set(pid, [a, b])
+      }
+      this._riggedHoleCards = next.size > 0 ? next : null
+    }
+    if (this._riggedBoardSlots) {
+      this._riggedBoardSlots = this._riggedBoardSlots.map(slot => {
+        if (!slot) return null
+        return this.deck.removeCard(slot.rank, slot.suit) || null
+      })
+      if (this._riggedBoardSlots.every(s => s === null)) {
+        this._riggedBoardSlots = null
+      }
+    }
+
     for (const player of this.players) {
-      this.playerHands.set(player.id, this.deck.drawMultiple(2))
+      const scripted = this._riggedHoleCards?.get?.(player.id)
+      if (Array.isArray(scripted) && scripted.length === 2 && scripted[0] && scripted[1]) {
+        // Already extracted from the deck above — just hand it over.
+        this.playerHands.set(player.id, [scripted[0], scripted[1]])
+      } else {
+        this.playerHands.set(player.id, this.deck.drawMultiple(2))
+      }
       this.playerBets.set(player.id, 0)
       this.playerTotalBets.set(player.id, 0)
     }
+    // Hole-card rigs are one-shot — once consumed, drop the map so the
+    // NEXT hand isn't accidentally rigged with the same script.
+    this._riggedHoleCards = null
 
     this.handIndex += 1
     this.handActionHistory = []
@@ -899,21 +1127,67 @@ export class PokerGame {
   }
 
   advancePhaseCards() {
+    // Resolve a single community card with this precedence:
+    //   1. rig_hand board slot for this index (most specific)
+    //   2. river_card power (only when filling slot 4)
+    //   3. next_card power (one-shot, fires on whatever's next)
+    //   4. random draw
+    // Each consumed rig source is nulled so it can't fire twice.
+    // If any rig points to a card that's already been dealt (e.g. it
+    // came out earlier in this hand), Deck.removeCard returns null and
+    // we fall through to the next preference — no error to the user,
+    // and crucially no information leak about what's still in the deck.
+    const drawCommunity = (boardSlotIndex) => {
+      // Each rigged source is ALREADY pre-extracted from the deck at
+      // arm time (setRigged* / startHand), so we just hand the stash
+      // card to the caller — no second removeCard call here. If a
+      // rig source is missing (extraction failed at arm time because
+      // the card was already dealt), we fall through to the next
+      // source, ending in a normal random draw.
+      const slotted = this._riggedBoardSlots?.[boardSlotIndex]
+      if (slotted) {
+        this._riggedBoardSlots[boardSlotIndex] = null
+        return slotted
+      }
+      if (boardSlotIndex === 4 && this._riggedRiverCard) {
+        const c = this._riggedRiverCard
+        this._riggedRiverCard = null
+        return c
+      }
+      if (this._riggedNextCard) {
+        const c = this._riggedNextCard
+        this._riggedNextCard = null
+        return c
+      }
+      return this.deck.draw()
+    }
+
     switch (this.phase) {
       case GAME_PHASES.PREFLOP:
-        this.communityCards.push(...this.deck.drawMultiple(3))
+        // Flop: three cards consume slots 0,1,2 in order.
+        this.communityCards.push(drawCommunity(0))
+        this.communityCards.push(drawCommunity(1))
+        this.communityCards.push(drawCommunity(2))
         this.phase = GAME_PHASES.FLOP
         break
       case GAME_PHASES.FLOP:
-        this.communityCards.push(this.deck.draw())
+        this.communityCards.push(drawCommunity(3))
         this.phase = GAME_PHASES.TURN
         break
       case GAME_PHASES.TURN:
-        this.communityCards.push(this.deck.draw())
+        this.communityCards.push(drawCommunity(4))
         this.phase = GAME_PHASES.RIVER
         break
       case GAME_PHASES.RIVER:
         this.phase = GAME_PHASES.SHOWDOWN
+        // River played out — drop the rig-source state so a fresh hand
+        // doesn't accidentally re-use it. We intentionally do NOT clear
+        // _handIsRigged here: resolveShowdown still needs to snapshot
+        // it into handSummary so ELO recorders can skip rating rigged
+        // hands. startHand of the next hand resets the flag.
+        this._riggedBoardSlots = null
+        this._riggedNextCard = null
+        this._riggedRiverCard = null
         break
     }
     // Board changed → bot signals derived from the board must be recomputed
@@ -1290,6 +1564,12 @@ export class PokerGame {
       actions: this.handActionHistory.slice(),
       actionsByPlayer,
       cards: cardsByPlayer,
+      // Snapshot whether this hand had any deck rigs applied. Downstream
+      // ELO / luck-stat recorders consult this to skip rating rigged
+      // hands — a player who scripted AA shouldn't have their rating go
+      // up for winning a coin flip they pre-decided. We read it from
+      // the live engine flag here, before the next-hand cleanup runs.
+      handIsRigged: !!this._handIsRigged,
       // playerHandNames at the summary level too so the bot context can
       // attach "Two Pair", "Flush", etc. to each revealed-showdown entry.
       playerHandNames: { ...(playerHandNames || {}) },
@@ -1384,6 +1664,13 @@ export class PokerGame {
         bigBlind: this.bigBlind,
         communityCards: this.communityCards,
         runoutLocked,
+        // Whether the rig_hand power has already been used for the
+        // upcoming hand. The client uses this to show a banner so
+        // a second user doesn't waste time picking cards just to be
+        // rejected with `already_rigged` server-side. Only the flag
+        // is exposed — the actual rigged cards stay secret so other
+        // players can't peek at the script.
+        nextHandRigged: !!(this._pendingRigHand || this._riggedHoleCards || this._riggedBoardSlots),
         dealerIndex: visibleDealerIndex,
         activePlayerId,
         activeTurnStartedAt: turnStartedAt,

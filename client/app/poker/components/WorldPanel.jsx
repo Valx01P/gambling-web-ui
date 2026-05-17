@@ -150,11 +150,11 @@ export default function WorldPanel({ worldState, myChips, joined, myPlayerId, on
                         key={t.id}
                         type="button"
                         onClick={() => onClaim(t.id)}
-                        disabled={!joined || t.isMine}
+                        disabled={!joined || t.isMine || !canAfford}
                         title={owned
                           ? (t.isMine ? 'Yours' : `Held by ${t.ownerName} · ${fmtCompact(t.currentCost)} to take`)
                           : !canAfford
-                            ? `Costs ${fmtCompact(t.currentCost)} — you can't afford it yet`
+                            ? `Need ${fmtCompact(t.currentCost)} — not enough chips`
                             : `Claim for ${fmtCompact(t.currentCost)}`}
                         className={`relative overflow-hidden rounded-md border px-2 py-2 text-left transition-all disabled:opacity-70 ${
                           t.isMine ? 'border-emerald-400/70' : owned ? 'border-amber-400/40' : 'border-zinc-700/70 hover:border-zinc-500'
@@ -222,15 +222,15 @@ export default function WorldPanel({ worldState, myChips, joined, myPlayerId, on
                   <button
                     type="button"
                     onClick={() => onClaim(t.id)}
-                    disabled={!joined || t.isMine}
-                    title={t.isMine ? 'You already own this' : !canAfford ? `Costs $${fmtCompact(t.currentCost)} — click to see the affordability message` : owned ? `Hostile takeover from ${t.ownerName}` : `Claim ${t.name}`}
+                    disabled={!joined || t.isMine || !canAfford}
+                    title={t.isMine ? 'You already own this' : !canAfford ? `Need $${fmtCompact(t.currentCost)} — short $${fmtCompact(t.currentCost - (myChips || 0))}` : owned ? `Hostile takeover from ${t.ownerName}` : `Claim ${t.name}`}
                     className={`shrink-0 rounded-md border px-3 py-2 text-xs font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed ${
                       owned
                         ? 'border-red-400/60 bg-red-500/15 text-red-100 hover:bg-red-500/25'
                         : 'border-purple-400/60 bg-purple-500/15 text-purple-100 hover:bg-purple-500/25'
                     }`}
                   >
-                    {t.isMine ? 'Owned' : owned ? 'Take' : 'Claim'}
+                    {t.isMine ? 'Owned' : !canAfford ? `Need $${fmtCompact(t.currentCost - (myChips || 0))}` : owned ? 'Take' : 'Claim'}
                   </button>
                 </div>
               </div>

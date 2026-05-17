@@ -89,39 +89,117 @@ const COMPANIES = [
   { symbol: 'WEED', name: 'GreenGrow Holdings',           startPrice: 28,    sector: 'Cannabis',     volatility: 0.040, imageUrl: 'https://images.unsplash.com/photo-1584308666744-0a7a3c4c4e4e' },
   { symbol: 'REIT', name: 'Sunbelt REIT',                 startPrice: 78,    sector: 'Real_Estate',  volatility: 0.011, imageUrl: 'https://images.unsplash.com/photo-1545324418-cc1a3f8e0d0f' },
   // ─ Penny stocks (high volatility, pump-and-dump candy) ──────────
-  { symbol: 'SCAM', name: 'Cayman Holdings (?)',          startPrice: 4.20,  sector: 'Crypto',       volatility: 0.080, imageUrl: 'https://images.unsplash.com/photo-1506929562872-bb421503efbf' },
-  { symbol: 'ZMBE', name: 'Zombie Bankrupt Co.',          startPrice: 0.85,  sector: 'Retail',       volatility: 0.090, imageUrl: 'https://images.unsplash.com/photo-1545324418-cc1a3f8e0d0f' },
+  // kind:'penny' marks a thin-float ticker — moves a lot on player
+  // buys/sells (see _applyTradeImpact below) and dominates the "fastest
+  // gain / fastest loss" tickers on the client.
+  { symbol: 'SCAM', name: 'Cayman Holdings (?)',          startPrice: 4.20,  sector: 'Crypto',       volatility: 0.080, kind: 'penny', imageUrl: 'https://images.unsplash.com/photo-1506929562872-bb421503efbf' },
+  { symbol: 'ZMBE', name: 'Zombie Bankrupt Co.',          startPrice: 0.85,  sector: 'Retail',       volatility: 0.090, kind: 'penny', imageUrl: 'https://images.unsplash.com/photo-1545324418-cc1a3f8e0d0f' },
+  { symbol: 'BAGS', name: 'Empty Bag Holding Co.',        startPrice: 0.42,  sector: 'Retail',       volatility: 0.110, kind: 'penny', imageUrl: 'https://images.unsplash.com/photo-1545324418-cc1a3f8e0d0f' },
+  { symbol: 'WSB',  name: 'WSB Apes Inc.',                startPrice: 6.66,  sector: 'Crypto',       volatility: 0.095, kind: 'penny', imageUrl: 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3' },
+  { symbol: 'TRNK', name: 'Trunk Liquidators',            startPrice: 1.20,  sector: 'Retail',       volatility: 0.085, kind: 'penny', imageUrl: 'https://images.unsplash.com/photo-1545324418-cc1a3f8e0d0f' },
+  { symbol: 'COPE', name: 'Generational Cope Co.',        startPrice: 2.10,  sector: 'Media',        volatility: 0.100, kind: 'penny', imageUrl: 'https://images.unsplash.com/photo-1574375927797-0f2f8b3c8f4d' },
+  // ─ Meme stocks (expensive AND volatile — the headline names) ────
+  // kind:'meme' = mid-float, big volatility. Pump-and-dump-able by a
+  // whale but takes serious money. Drives the "fastest gain / loss"
+  // tickers when penny stocks aren't moving.
+  { symbol: 'ROAR', name: 'GameRoar Holdings',            startPrice: 480,   sector: 'Retail',       volatility: 0.070, kind: 'meme',  imageUrl: 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3' },
+  { symbol: 'AMCC', name: 'AmpliCorp Cinemas',            startPrice: 22,    sector: 'Media',        volatility: 0.075, kind: 'meme',  imageUrl: 'https://images.unsplash.com/photo-1574375927797-0f2f8b3c8f4d' },
+  { symbol: 'MOON', name: 'Moonshot Industries',          startPrice: 188,   sector: 'Crypto',       volatility: 0.085, kind: 'meme',  imageUrl: 'https://images.unsplash.com/photo-1639762681485-074b7f938ba0' },
+  { symbol: 'TENDY',name: 'Tendies Holdings Group',       startPrice: 95,    sector: 'Consumer',     volatility: 0.078, kind: 'meme',  imageUrl: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34b4' },
+  { symbol: 'YOLO', name: 'YOLO Capital Trust',           startPrice: 312,   sector: 'Finance',      volatility: 0.082, kind: 'meme',  imageUrl: 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3' },
 ]
+
+// Notional shares outstanding by stock kind. Smaller float = bigger
+// price move per dollar traded. Trade impact = trade$ / (price * float).
+// • main blue chips: deep float, basically untradeable solo
+// • meme: ~10x thinner than main — a few million in buys moves it
+// • penny: ~100x thinner than main — pump-and-dump capital easy
+const FLOAT_SHARES_BY_KIND = {
+  main:  1_000_000,
+  meme:  100_000,
+  penny: 10_000,
+}
+// Cap any single trade's price impact at 25% to prevent runaway
+// pumps from a single billion-chip buy. Stops the math from feeding
+// a single transaction more than a quarter-up/down move.
+const MAX_TRADE_IMPACT = 0.25
 
 function pushHistory(stock, price) {
   stock.history.push({ t: Date.now(), p: price })
   if (stock.history.length > HISTORY_LEN) stock.history.shift()
 }
 
-// Earnings event tuning. Once every EARNINGS_INTERVAL_HANDS the engine
-// picks a random ticker, announces it 1 hand in advance ("MEGA reports
-// next hand — position now"), then resolves with one of 4 outcomes:
-//   meh      55%  — ±3-7%   (boring beat / miss)
-//   moderate 30%  — ±15-22% (real news)
-//   blowout  12%  — ±32-45% (major beat / miss, generational candle)
-//   rocket   3%   — ±55-75% (the unicorn earnings, life-changing)
-// Players can long or short ahead of the event for the upside; bots
-// can't trade so this is purely a human / spectator opportunity.
-const EARNINGS_INTERVAL_HANDS = 6
-const EARNINGS_OUTCOMES = [
-  { weight: 55, label: 'meh',      bullRange: [0.03, 0.07], bearRange: [0.03, 0.07] },
-  { weight: 30, label: 'moderate', bullRange: [0.15, 0.22], bearRange: [0.15, 0.22] },
-  { weight: 12, label: 'blowout',  bullRange: [0.32, 0.45], bearRange: [0.32, 0.45] },
-  { weight: 3,  label: 'rocket',   bullRange: [0.55, 0.75], bearRange: [0.55, 0.75] },
-]
+// Earnings event tuning. 2-6 tickers report every hand — we
+// announce at hand N, resolve at hand N+1. Players can long,
+// short, buy calls, or buy puts in the hand before they land.
+// The hand-end flow always queues the NEXT batch right after
+// resolving the current one, so a player at the table always
+// has a stack of "upcoming earnings" to gamble on.
+const EARNINGS_INTERVAL_HANDS = 1
+const EARNINGS_PER_HAND_MIN = 2
+const EARNINGS_PER_HAND_MAX = 6
+// Tickers are drawn from a shuffled rotation: every stock reports
+// exactly once before any stock can report a second time. Keeps
+// the headline ticker-mix varied across a session instead of
+// pure RNG repeating big-name picks back-to-back.
+
+// Implied-volatility magnitude bands per stock "kind". These are
+// the OUTER ranges of an earnings-day move; the realized move is
+// drawn within the band and then scaled by an analyst-surprise
+// factor (priced-in events move less than fully-unexpected ones).
+//
+//   main  (large caps): up +5%..+40%, down -5%..-60%
+//   meme  (mid float):  up +10%..+160%, down -10%..-100%
+//   penny (thin float): up +10%..+150%, down -10%..-120%
+//
+// Down ranges are tighter on the upside than meme/penny but
+// not symmetric — real-world earnings misses tend to overshoot
+// because of forced selling, so the bear band is wider than bull
+// on the deep value end for blue chips.
+const IV_BANDS = {
+  main:  { up: [0.05, 0.40], down: [0.05, 0.60] },
+  meme:  { up: [0.10, 1.60], down: [0.10, 1.00] },
+  penny: { up: [0.10, 1.50], down: [0.10, 1.20] },
+}
+
+// Analyst beat-probability range. Randomized per event so each
+// earnings has a different "story" — sometimes the street expects
+// a beat (90%) and a miss would be a catastrophe; sometimes
+// expectations are low (20%) and any beat is a rocket.
+const ANALYST_ODDS_RANGE = [0.18, 0.88]
+
+// Surprise scaling — the actual move = base × (0.30 + 0.70 × surprise).
+//
+//   Beat with high analyst odds (90%) → surprise low → small candle
+//     (priced in: market already bought the rumor)
+//   Beat with low analyst odds (20%)  → surprise high → giant candle
+//     (unexpected: market piles in after the news)
+//   Miss with high analyst odds (90%) → surprise high → giant red candle
+//     (forced selling: longs who priced in a beat get blown out)
+//   Miss with low analyst odds (20%)  → surprise low → small red candle
+//     (expected: shorts already took their profit)
+//
+// The min floor of 0.30 keeps even fully-priced events from
+// vanishing entirely — there's always some move on earnings day.
+const SURPRISE_SCALE_MIN = 0.30
+const SURPRISE_SCALE_RANGE = 0.70
 
 export class StockEngine {
   constructor({ room, broadcast }) {
     this.room = room
     this.broadcast = broadcast
-    this.stocks = new Map()  // symbol → {symbol, name, sector, price, basePrice, volatility, history, sabotageUntil}
+    this.stocks = new Map()  // symbol → {symbol, name, sector, price, basePrice, volatility, kind, history, sabotageUntil}
     for (const c of COMPANIES) {
-      const stock = { ...c, price: c.startPrice, basePrice: c.startPrice, history: [], sabotageUntil: 0 }
+      // Default any entry that pre-dates the kind taxonomy to 'main'
+      // so it gets the deep-liquidity float treatment in trades.
+      const stock = {
+        ...c,
+        kind: c.kind || 'main',
+        price: c.startPrice,
+        basePrice: c.startPrice,
+        history: [],
+        sabotageUntil: 0
+      }
       pushHistory(stock, c.startPrice)
       this.stocks.set(c.symbol, stock)
     }
@@ -131,11 +209,21 @@ export class StockEngine {
     this.sabotageCooldowns = new Map()
     this._tickTimer = null
     // ── Earnings ──────────────────────────────────────────────────
-    // `upcomingEarnings` holds the symbol scheduled to report at the
-    // NEXT hand-end. Announced one hand in advance so a player can
-    // position long/short. After resolution the slot resets.
-    this.upcomingEarnings = null
+    // `upcomingEarnings` is an ARRAY of events scheduled to report
+    // at the NEXT hand-end. Announced one hand in advance so a
+    // player can position long/short/calls/puts before each. After
+    // resolution the slot resets and a fresh batch is queued.
+    //
+    // `_earningsRotation` holds the symbols left in the current
+    // cycle. When it empties we reshuffle the full ticker list, so
+    // every stock reports exactly once before any repeat. Seeded
+    // immediately in the constructor so the Earnings tab shows
+    // content from the very first frame — no need to wait for
+    // hand-end before any events exist.
+    this.upcomingEarnings = []
     this.nextEarningsAtHand = 0
+    this._earningsRotation = []
+    this._queueEarnings(0)
   }
 
   start() {
@@ -196,6 +284,22 @@ export class StockEngine {
   }
 
   // ─── trade ─────────────────────────────────────────────────────────────
+  // Trade price impact: bigger trades move the price proportionally to
+  // the ticker's float. Direction = +1 for buy, -1 for sell. Penny/meme
+  // tickers have thin floats (FLOAT_SHARES_BY_KIND) so a few-million-dollar
+  // buy moves them visibly; blue-chip main stocks barely budge on the
+  // same dollar amount. Pump-and-dump emerges naturally.
+  _applyTradeImpact(stock, dollarAmount, direction) {
+    const float = FLOAT_SHARES_BY_KIND[stock.kind] || FLOAT_SHARES_BY_KIND.main
+    const dollarFloat = stock.price * float
+    if (dollarFloat <= 0) return 0
+    const rawImpact = Math.min(MAX_TRADE_IMPACT, dollarAmount / dollarFloat)
+    const move = direction * rawImpact
+    stock.price = Math.max(0.01, Math.round(stock.price * (1 + move) * 100) / 100)
+    pushHistory(stock, stock.price)
+    return move
+  }
+
   buy(playerId, { symbol, amount } = {}) {
     const spend = Math.max(1, Math.floor(Number(amount) || 0))
     const player = this._findPlayer(playerId)
@@ -212,6 +316,10 @@ export class StockEngine {
     pos.shares += shares
     pos.costBasis += spend
     bag.set(symbol, pos)
+    // Apply buy pressure AFTER filling at the pre-trade price — the
+    // buyer fills at their reasonable expectation, and the next trader
+    // sees a higher price. Keeps the model intuitive.
+    this._applyTradeImpact(stock, spend, +1)
     this._broadcastState()
     return { success: true, symbol, shares, costBasis: spend }
   }
@@ -233,6 +341,9 @@ export class StockEngine {
     pos.costBasis = Math.floor(pos.costBasis * (1 - ratio))
     pos.shares -= sellShares
     if (pos.shares < 0.0001) bag.delete(symbol)
+    // Sell pressure: drop the price proportionally. Same float math as
+    // buys — pump-and-dumpers feel the dump on penny/meme exits.
+    this._applyTradeImpact(stock, proceeds, -1)
     this._broadcastState()
     return { success: true, symbol, sharesSold: sellShares, proceeds }
   }
@@ -323,59 +434,156 @@ export class StockEngine {
   // ─── lifecycle / serialization ─────────────────────────────────────────
   onHandEnd(handIndex = 0) {
     // Earnings flow runs on every hand-end:
-    //   1. If a stock was queued (announced last hand), resolve it now
-    //      with a weighted outcome and a giant candle.
-    //   2. If we're due for another earnings announcement, pick a fresh
-    //      ticker at random and queue it for next hand. Announce loudly
-    //      so players have time to long/short.
-    if (this.upcomingEarnings) {
-      this._resolveEarnings(this.upcomingEarnings)
-      this.upcomingEarnings = null
+    //   1. Resolve every event queued from the previous hand. Each
+    //      gets its own beat/miss roll, magnitude draw, and headline.
+    //   2. Queue the NEXT batch (2-6 tickers from the no-repeat
+    //      rotation) so positioning windows are continuous.
+    const queue = Array.isArray(this.upcomingEarnings)
+      ? this.upcomingEarnings
+      // backward-compat: pre-batch versions stored a single object
+      : this.upcomingEarnings ? [this.upcomingEarnings] : []
+    if (queue.length > 0) {
+      for (const ev of queue) this._resolveEarnings(ev)
     }
+    this.upcomingEarnings = []
     if (handIndex >= this.nextEarningsAtHand) {
       this._queueEarnings(handIndex)
     }
     this._broadcastState()
   }
 
+  // Refill the rotation when it empties. Shuffled, so the headline
+  // ticker-mix varies across sessions instead of grouping the same
+  // big-name picks back-to-back.
+  _refillEarningsRotation() {
+    const symbols = [...this.stocks.values()]
+      .filter(s => !s.rugged)
+      .map(s => s.symbol)
+    // Fisher-Yates
+    for (let i = symbols.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[symbols[i], symbols[j]] = [symbols[j], symbols[i]]
+    }
+    this._earningsRotation = symbols
+  }
+
+  // Draw a fresh batch of 2-6 tickers from the rotation, refilling
+  // whenever it empties. Builds the full event object for each
+  // (analyst odds + IV magnitudes from the kind's band), pushes
+  // them into upcomingEarnings, announces a combined headline.
   _queueEarnings(handIndex) {
-    const tickers = [...this.stocks.values()].filter(s => !s.rugged)
-    if (tickers.length === 0) return
-    const pick = tickers[Math.floor(Math.random() * tickers.length)]
-    this.upcomingEarnings = pick.symbol
+    if (!Array.isArray(this._earningsRotation) || this._earningsRotation.length === 0) {
+      this._refillEarningsRotation()
+    }
+    if (this._earningsRotation.length === 0) return  // no tickers exist at all
+    const wantRange = EARNINGS_PER_HAND_MAX - EARNINGS_PER_HAND_MIN + 1
+    const wantCount = EARNINGS_PER_HAND_MIN + Math.floor(Math.random() * wantRange)
+    const batch = []
+    while (batch.length < wantCount) {
+      if (this._earningsRotation.length === 0) {
+        // Cycle exhausted mid-batch (small ticker catalog) — reshuffle
+        // and keep drawing so a single hand can span a rotation roll.
+        this._refillEarningsRotation()
+        if (this._earningsRotation.length === 0) break
+      }
+      const symbol = this._earningsRotation.shift()
+      const stock = this.stocks.get(symbol)
+      if (!stock || stock.rugged) continue
+      batch.push(this._makeEarningsEvent(stock, handIndex))
+    }
+    this.upcomingEarnings = batch
     this.nextEarningsAtHand = handIndex + EARNINGS_INTERVAL_HANDS
+    if (batch.length === 0) return
+    // One combined headline keeps the system chat tidy — per-event
+    // detail lives in the Earnings tab.
+    const list = batch.map(e => `$${e.symbol}`).join(', ')
     this.broadcast({
       type: MESSAGE_TYPES.SYSTEM_MESSAGE,
-      data: { message: `📢 EARNINGS ALERT — $${pick.symbol} (${pick.name}) reports next hand. Position now.` }
+      data: { message: `📢 EARNINGS DAY — ${batch.length} ${batch.length === 1 ? 'company reports' : 'companies report'} next hand: ${list}. Check the Earnings tab.` }
     })
   }
 
-  _resolveEarnings(symbol) {
-    const stock = this.stocks.get(symbol)
-    if (!stock) return
-    // Weighted outcome pick.
-    const totalWeight = EARNINGS_OUTCOMES.reduce((s, o) => s + o.weight, 0)
-    let roll = Math.random() * totalWeight
-    let outcome = EARNINGS_OUTCOMES[0]
-    for (const o of EARNINGS_OUTCOMES) {
-      if (roll < o.weight) { outcome = o; break }
-      roll -= o.weight
+  // Build a single earnings event for the given stock. Pulled out
+  // of _queueEarnings so the batch loop stays readable and tests
+  // can drive the event-shape directly.
+  _makeEarningsEvent(stock, handIndex) {
+    const beatOdds = Math.round(
+      (ANALYST_ODDS_RANGE[0] + Math.random() * (ANALYST_ODDS_RANGE[1] - ANALYST_ODDS_RANGE[0])) * 100
+    ) / 100
+    const kind = stock.kind || 'main'
+    const band = IV_BANDS[kind] || IV_BANDS.main
+    const ivUp   = band.up[0]   + Math.random() * (band.up[1]   - band.up[0])
+    const ivDown = band.down[0] + Math.random() * (band.down[1] - band.down[0])
+    return {
+      symbol: stock.symbol,
+      name: stock.name,
+      sector: stock.sector,
+      kind,
+      beatOdds,
+      ivUp,
+      ivDown,
+      spotAtAnnouncement: stock.price,
+      announcedAtHand: handIndex,
+      resolvesAtHand: handIndex + 1,
     }
-    // Direction: 50/50 beat vs miss, independent of magnitude.
-    const isBeat = Math.random() < 0.5
-    const range = isBeat ? outcome.bullRange : outcome.bearRange
-    const mag = range[0] + Math.random() * (range[1] - range[0])
+  }
+
+  // Resolve the queued earnings event. Direction is sampled against
+  // beatOdds; magnitude is sampled from the kind's IV band and then
+  // scaled by an analyst-surprise factor so "priced-in" events
+  // produce smaller candles than "unexpected" ones.
+  _resolveEarnings(event) {
+    // Backwards compat: older queues stored just the symbol string.
+    // Promote it to a default event using the current spot + the
+    // stock's kind band so a single old-shape entry still resolves.
+    if (typeof event === 'string') {
+      const s = this.stocks.get(event)
+      if (!s) return
+      const band = IV_BANDS[s.kind || 'main'] || IV_BANDS.main
+      event = {
+        symbol: event,
+        name: s.name,
+        kind: s.kind || 'main',
+        beatOdds: 0.5,
+        ivUp: band.up[0] + (band.up[1] - band.up[0]) / 2,
+        ivDown: band.down[0] + (band.down[1] - band.down[0]) / 2,
+        spotAtAnnouncement: s.price,
+      }
+    }
+    const stock = this.stocks.get(event.symbol)
+    if (!stock) return
+    const beatOdds = Math.max(0, Math.min(1, event.beatOdds ?? 0.5))
+    const isBeat = Math.random() < beatOdds
+    // Surprise = how unexpected the OUTCOME was given the odds.
+    //   beat with low odds → high surprise
+    //   miss with high odds → high surprise
+    const surprise = isBeat ? (1 - beatOdds) : beatOdds
+    const scale = SURPRISE_SCALE_MIN + SURPRISE_SCALE_RANGE * surprise
+    // Base magnitude sampled uniformly within the IV band, then
+    // scaled by surprise.
+    const ivBand = isBeat ? [0, event.ivUp ?? 0.1] : [0, event.ivDown ?? 0.1]
+    const base = ivBand[0] + Math.random() * (ivBand[1] - ivBand[0])
+    const mag = base * scale
     const signed = isBeat ? mag : -mag
     const newPrice = Math.max(1, Math.round(stock.price * (1 + signed) * 100) / 100)
     stock.price = newPrice
     pushHistory(stock, newPrice)
+    // Label the candle for the system-message headline. Magnitudes
+    // are bucketed against the IV band's TOP end so "blowout" reads
+    // as a near-full IV move regardless of stock kind.
+    const refIv = isBeat ? (event.ivUp ?? 0.1) : (event.ivDown ?? 0.1)
+    const sizeFrac = refIv > 0 ? mag / refIv : 0
+    const label = sizeFrac >= 0.80 ? 'rocket'
+                : sizeFrac >= 0.55 ? 'blowout'
+                : sizeFrac >= 0.25 ? 'moderate'
+                : 'meh'
     const pctText = `${(signed * 100).toFixed(1)}%`
     const emoji = isBeat
-      ? (outcome.label === 'rocket' ? '🚀' : outcome.label === 'blowout' ? '📈' : '✅')
-      : (outcome.label === 'rocket' ? '💥' : outcome.label === 'blowout' ? '📉' : '⚠️')
+      ? (label === 'rocket' ? '🚀' : label === 'blowout' ? '📈' : '✅')
+      : (label === 'rocket' ? '💥' : label === 'blowout' ? '📉' : '⚠️')
     this.broadcast({
       type: MESSAGE_TYPES.SYSTEM_MESSAGE,
-      data: { message: `${emoji} $${symbol} earnings: ${outcome.label.toUpperCase()} ${isBeat ? 'BEAT' : 'MISS'} ${pctText} — now $${stock.price < 100 ? stock.price.toFixed(2) : Math.round(stock.price).toLocaleString()}.` }
+      data: { message: `${emoji} $${event.symbol} earnings: ${label.toUpperCase()} ${isBeat ? 'BEAT' : 'MISS'} ${pctText} — now $${stock.price < 100 ? stock.price.toFixed(2) : Math.round(stock.price).toLocaleString()}.` }
     })
   }
 
@@ -384,6 +592,10 @@ export class StockEngine {
       symbol: s.symbol,
       name: s.name,
       sector: s.sector,
+      // kind: 'main' | 'meme' | 'penny' — exposed so the client can
+      // render the right ticker (fastest-gain/loss lists separate the
+      // thin-float meme/penny tier from the deep main tier).
+      kind: s.kind || 'main',
       price: s.price,
       basePrice: s.basePrice,
       history: [...s.history],

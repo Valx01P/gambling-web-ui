@@ -164,6 +164,23 @@ export default function DmsPopup() {
   }, [open])
   useEffect(() => { if (open) refresh() }, [open, refresh])
 
+  // Programmatic open hook. Fire `window.dispatchEvent(new CustomEvent(
+  // 'gwu:open-dm', { detail: { user: {id, handle, displayName, ...} } }))`
+  // to pop the dock open onto a specific person's chat. Used by the
+  // table seat popover's "DM" button so clicking a logged-in player
+  // jumps straight into a conversation. Falls back gracefully if the
+  // event lacks a `user`.
+  useEffect(() => {
+    function handler(e) {
+      const u = e?.detail?.user
+      if (!u || !u.id) return
+      setOpen(true)
+      setActiveChat(u)
+    }
+    window.addEventListener('gwu:open-dm', handler)
+    return () => window.removeEventListener('gwu:open-dm', handler)
+  }, [])
+
   // Clear the search box whenever the popup closes or the user opens a
   // chat. Keeps the next session-open fresh — no stale query left over
   // from last time.
@@ -292,12 +309,34 @@ export default function DmsPopup() {
                 </ul>
               ) : (
                 <ul className="max-h-[60vh] overflow-y-auto">
+                  {/* Pinned "Table chat" entry — opens the in-page chat
+                      dock via a window event. Only shown on /poker
+                      where the dock exists; elsewhere the entry would
+                      be a dead link. We check pathname at click-time
+                      (not render-time) so a user who navigates while
+                      the popup is open doesn't see a stale state. */}
+                  {typeof window !== 'undefined' && window.location?.pathname?.startsWith('/poker') && (
+                    <li className="border-b border-zinc-800/60">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          window.dispatchEvent(new CustomEvent('gwu:open-table-chat'))
+                          setOpen(false)
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[12px] font-bold text-cyan-200 hover:bg-zinc-800/60"
+                      >
+                        <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-cyan-400/40 bg-cyan-500/10 text-[10px]">#</span>
+                        <span className="min-w-0 flex-1 truncate">Table chat</span>
+                        <span className="text-[9px] font-black uppercase tracking-widest text-cyan-400/70">open</span>
+                      </button>
+                    </li>
+                  )}
                   {loading && conversations.length === 0 && (
                     <li className="px-3 py-3 text-center text-[11px] font-bold text-zinc-500">Loading…</li>
                   )}
                   {!loading && conversations.length === 0 && (
                     <li className="px-3 py-4 text-center text-[11px] font-bold text-zinc-500">
-                      No messages yet. Search above to start one.
+                      No DMs yet. Search above to start one.
                     </li>
                   )}
                   {/* Cap the recent-conversations strip at 5 — the cursor

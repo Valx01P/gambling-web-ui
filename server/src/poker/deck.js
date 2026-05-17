@@ -32,4 +32,20 @@ export class Deck {
   drawMultiple(count) {
     return Array.from({ length: count }, () => this.draw())
   }
+
+  // Pull a specific card out of the remaining shuffle. Used by the
+  // deck-rig powers (river_card / next_card / rig_hand) — they reserve
+  // chosen cards before normal dealing so dealing logic stays untouched.
+  // Returns the matched card object (so callers don't have to reconstruct
+  // the canonical shape), or null if the card isn't present.
+  removeCard(rank, suit) {
+    const idx = this.cards.findIndex(c => c.rank === rank && c.suit === suit)
+    if (idx < 0) return null
+    const [card] = this.cards.splice(idx, 1)
+    return card
+  }
+
+  has(rank, suit) {
+    return this.cards.some(c => c.rank === rank && c.suit === suit)
+  }
 }

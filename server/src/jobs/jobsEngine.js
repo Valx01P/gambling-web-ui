@@ -137,17 +137,52 @@ const TIER_WEIGHTS = {
 
 const JOBS_PER_BOARD = 3
 
+// Failure flavor text. Picked uniformly at random on every failed apply.
+// Kept tier-agnostic — even a planetary-tier coup attempt that flops
+// reads better with a goofy reason than a generic "failed" line.
+const FAILURE_REASONS = [
+  'Your "associate" forgot to bring the bag.',
+  'A cop drove by at exactly the wrong moment.',
+  'The mark recognized you from a wedding.',
+  'Wi-Fi went out mid-transfer.',
+  'Someone livestreamed it. Whole thing.',
+  'You sneezed during the silent part.',
+  'The accomplice screen-shared their bank app by accident.',
+  'A pigeon shit on the getaway car windshield.',
+  'Your VPN dropped for nine seconds.',
+  'Karen showed up. Demanded the manager.',
+  'You got a Slack notification at full volume.',
+  'The mark had a "no thanks, I\'m good" energy.',
+  '2FA. Why does everything have 2FA now.',
+  'You used "Pa$$w0rd" again, didn\'t you.',
+  'A K9 unit took a sudden interest.',
+  'You left the receipt in the wrong pocket.',
+  'The fixer ghosted you on Telegram.',
+  'Background check came back faster than expected.',
+  'You forgot it was a Tuesday.',
+  'Someone\'s aunt is a journalist.',
+  'You bragged about it on Twitter pre-execution.',
+  'The Lyft driver had a body cam.',
+  'You quoted Goodfellas mid-pitch.',
+  'A nine-year-old saw the whole thing.',
+  'Karma. Just karma.',
+]
+
+function pickFailureReason() {
+  return FAILURE_REASONS[Math.floor(Math.random() * FAILURE_REASONS.length)]
+}
+
 export class JobEngine {
   constructor({ room, broadcast }) {
     this.room = room
     this.broadcast = broadcast
-    // Per-room available jobs — rotates each hand. Shape: array of
-    // { id, jobId, title, reward, flavor, claimedBy }
+    // Per-room available jobs — rotates each hand. Each job carries its
+    // own per-player sets so multiple players can independently claim
+    // or attempt the same gig in the same hand. 2026-05: removed the
+    // global one-claim-per-hand cap and the "first person who tries
+    // burns the gig" model — gigs are now a free chance for everyone
+    // simultaneously.
     this.jobs = []
-    // Per-player claim history this hand. Each player can claim ONE
-    // job per hand; tracked here so we can reject a second claim
-    // without trusting the client.
-    this.claimedThisHand = new Set()
     this._jobSeq = 0
     this._rerollBoard()
   }
@@ -194,37 +229,37 @@ export class JobEngine {
       // this board roll so a player sees the same odds the whole hand.
       successPercent: typeof t.successPercent === 'number' ? t.successPercent : (TIER_SUCCESS[t.tier] ?? 0.5),
       imageUrl: t.imageUrl || null,
-      claimedBy: null,
-      claimedByName: null,
-      failedBy: null,        // who applied and FAILED — kept for one hand
-      failedByName: null,    // so the panel can show "Bob tried, failed"
+      // Per-player attempt history for THIS board only. Each player can
+      // attempt every gig once: claimedByPlayers locks out re-applies on
+      // a success; failedByPlayers locks out re-applies on a fail. Reset
+      // on every reroll (hand-end). No more "first try burns it" model.
+      claimedByPlayers: new Set(),
+      failedByPlayers: new Set(),
     }))
-    this.claimedThisHand = new Set()
   }
 
-  // Apply for a gig. Rolls against `successPercent` — on success the
-  // reward lands in the applicant's chips; on failure the gig is marked
-  // failed-by-this-applicant for the rest of the hand (nobody else can
-  // apply either, to preserve "one chance per gig per hand").
+  // Apply for a gig. Rolls against `successPercent` per applicant — each
+  // player gets their own independent roll on the same gig, so two people
+  // can apply for the same job and one wins while the other gets a funny
+  // rejection reason. A player can only attempt a given gig once per
+  // hand (either result locks them out), but there's no global cap on
+  // how many gigs a single player can pursue this hand.
   claim(playerId, instanceId) {
     const player = this.room.players?.get?.(playerId) || this.room.spectators?.get?.(playerId)
     if (!player) return { success: false, error: 'not_at_table' }
     if (player.isBot) return { success: false, error: 'bots_cannot_claim' }
-    if (this.claimedThisHand.has(playerId)) return { success: false, error: 'already_claimed_this_hand' }
     const job = this.jobs.find(j => j.id === instanceId)
     if (!job) return { success: false, error: 'job_gone' }
-    if (job.claimedBy) return { success: false, error: 'already_taken' }
-    if (job.failedBy) return { success: false, error: 'already_failed' }
-    this.claimedThisHand.add(playerId)
+    if (job.claimedByPlayers.has(playerId)) return { success: false, error: 'already_taken' }
+    if (job.failedByPlayers.has(playerId)) return { success: false, error: 'already_failed' }
     const succeeded = Math.random() < (job.successPercent ?? 0.5)
     if (!succeeded) {
-      job.failedBy = playerId
-      job.failedByName = player.username
+      job.failedByPlayers.add(playerId)
+      const reason = pickFailureReason()
       this._broadcastState()
-      return { success: true, applied: true, succeeded: false, title: job.title, reward: 0 }
+      return { success: true, applied: true, succeeded: false, title: job.title, reward: 0, reason }
     }
-    job.claimedBy = playerId
-    job.claimedByName = player.username
+    job.claimedByPlayers.add(playerId)
     player.chips += job.reward
     this._broadcastState()
     return { success: true, applied: true, succeeded: true, reward: job.reward, title: job.title }
@@ -246,12 +281,12 @@ export class JobEngine {
         reward: j.reward,
         successPercent: j.successPercent ?? 0.5,
         imageUrl: j.imageUrl || null,
-        claimed: !!j.claimedBy,
-        claimedByName: j.claimedByName,
-        failed: !!j.failedBy,
-        failedByName: j.failedByName,
+        // Per-player flags — only this viewer's outcome matters now.
+        // Used by the panel to swap the Apply button into Done / Failed
+        // for this specific user.
+        claimedByMe: j.claimedByPlayers.has(playerId),
+        failedByMe: j.failedByPlayers.has(playerId),
       })),
-      myClaimedThisHand: this.claimedThisHand.has(playerId),
     }
   }
 

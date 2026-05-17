@@ -93,19 +93,33 @@ export default function AssetsPanel({ assetsState, myChips, onBuy, onSell, joine
                     <div className="text-[10px] font-medium text-zinc-400 leading-snug">{entry.blurb}</div>
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] font-bold">
                       <span className="text-zinc-300">Price <span className="text-white">${fmtChipsCompact(entry.price)}</span></span>
-                      <span className="text-zinc-300">Yield/hand <span className="text-emerald-300">+${fmtChipsCompact(entry.yieldPerHand)}</span></span>
-                      <span className="text-zinc-300">App. <span className="text-emerald-300">+{(entry.appreciation * 100).toFixed(2)}%</span></span>
+                      {/* Yield: rate + dollar amount on one line so
+                          the two numbers can't disagree. The rate is
+                          the 3-9% slice of basePrice rolled at server
+                          construction (entry.yieldPct); the dollar
+                          number is that rate × basePrice. Falls back
+                          to a computed approximation if yieldPct is
+                          missing from a stale broadcast. */}
+                      <span className="text-zinc-300">
+                        Yield <span className="text-emerald-300">
+                          {entry.yieldPct != null
+                            ? `${(entry.yieldPct * 100).toFixed(1)}%`
+                            : entry.price > 0
+                              ? `${((entry.yieldPerHand / entry.price) * 100).toFixed(1)}%`
+                              : '—'}
+                        </span> <span className="text-emerald-300">+${fmtChipsCompact(entry.yieldPerHand)}</span><span className="text-zinc-500">/hand</span>
+                      </span>
                       {owned > 0 && <span className="text-amber-300">Own ×{owned}</span>}
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => onBuy(entry.id, 1)}
-                    disabled={!joined}
-                    title={!canAfford ? `Costs $${entry.price.toLocaleString()} — click for affordability check` : `Buy 1 × ${entry.name} for $${entry.price.toLocaleString()}`}
+                    disabled={!joined || !canAfford}
+                    title={!canAfford ? `Need $${entry.price.toLocaleString()} — short $${(entry.price - (myChips || 0)).toLocaleString()}` : `Buy 1 × ${entry.name} for $${entry.price.toLocaleString()}`}
                     className="shrink-0 rounded-md border border-emerald-400/60 bg-emerald-500/15 px-3 py-2 text-xs font-black uppercase tracking-widest text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    Buy
+                    {canAfford ? 'Buy' : `Need $${fmtChipsCompact(entry.price - (myChips || 0))}`}
                   </button>
                 </div>
               </div>
