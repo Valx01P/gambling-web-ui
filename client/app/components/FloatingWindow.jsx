@@ -104,6 +104,41 @@ function updateWindowZ(id, z) {
   // each callsite having to remember to update it.
   recordFocus(id)
 }
+function updateWindowPos(id, pos) {
+  const entry = _registry.get(id)
+  if (entry) entry.pos = pos
+}
+
+// When a window opens without a remembered layout, walk every other
+// open window and step the new position down by TITLE_H for each
+// existing window that already occupies the proposed slot. This gives
+// the cascade-style stair-step (every header visible just below the
+// previous one) instead of every fresh window stacking on top of the
+// previous default. Wraps around if the cascade would run off the
+// bottom of the viewport so the chain never disappears.
+function pickCascadedPos(defaultPos, w, h) {
+  if (typeof window === 'undefined') return defaultPos
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const taken = []
+  for (const entry of _registry.values()) {
+    if (entry?.pos) taken.push(entry.pos)
+  }
+  const overlaps = (a, b) => Math.abs(a.x - b.x) < 4 && Math.abs(a.y - b.y) < 4
+  let { x, y } = defaultPos
+  let safety = 32
+  while (safety-- > 0) {
+    if (!taken.some(p => overlaps(p, { x, y }))) break
+    y += TITLE_H
+    // Cascading off the bottom: wrap to the top of the cascade band.
+    if (y + TITLE_H * 2 > vh - 16) y = defaultPos.y
+    // Cascading off the right (very tall stack on a narrow viewport):
+    // give up and accept the first proposed slot — the user can still
+    // drag from there.
+    if (x + w > vw - 16) { x = defaultPos.x; y = defaultPos.y; break }
+  }
+  return { x, y }
+}
 
 export function cycleNextFloatingWindow() {
   if (_hiddenAll) return false
@@ -293,7 +328,10 @@ export default function FloatingWindow({
       const clamped = clamp({ ...memo.pos, ...memo.size }, minWidth, minHeight)
       return { x: clamped.x, y: clamped.y }
     }
-    return { x: def.x, y: def.y }
+    // No saved layout — cascade the default down by one title-bar
+    // height for each currently-open window already at the proposed
+    // slot, so spam-opening windows leaves every header visible.
+    return pickCascadedPos({ x: def.x, y: def.y }, def.w, def.h)
   })
   const [size, setSize] = useState(() => {
     const memo = recallLayout(storageKey)
@@ -354,13 +392,27 @@ export default function FloatingWindow({
   // closed → open (mini-table, social feed) keeps its stale z and
   // fails to land on top of newer windows. useLayoutEffect commits the
   // new z before paint so there's no flicker.
+  //
+  // Also re-cascade pos here: persistently-mounted windows like the
+  // mini-table and social feed stay in React's tree across close/open
+  // toggles, so their pos useState init only ran once. Without this,
+  // closing one and re-opening it would land it back on top of whatever
+  // is currently at its old spot. We feed the current pos through
+  // pickCascadedPos — if nothing else is there, it returns unchanged
+  // (the user's last position is preserved); if a collision is
+  // detected, it cascades down by TITLE_H until clear.
+  const posRef = useRef(pos)
+  useEffect(() => { posRef.current = pos }, [pos.x, pos.y])
   useLayoutEffect(() => {
     if (!open) return
     const next = nextRaisedZ()
     setZ(next)
     updateWindowZ(registryId, next)
-    // registryId stable; setZ stable; this should only fire on open
-    // transition. Intentional dep set.
+    const cur = posRef.current
+    const cascaded = pickCascadedPos(cur, size.w, size.h)
+    if (cascaded.x !== cur.x || cascaded.y !== cur.y) setPos(cascaded)
+    // registryId / size are stable enough for this purpose; we only
+    // want to fire on open transition.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
@@ -380,6 +432,7 @@ export default function FloatingWindow({
     const api = {
       raise,
       z,
+      pos,
       title,
       close: () => onCloseRef.current?.(),
     }
@@ -467,6 +520,13 @@ export default function FloatingWindow({
     if (drag || resize) return
     rememberLayout(storageKey, pos, size)
   }, [storageKey, pos, size, drag, resize])
+
+  // Mirror pos into the registry so the next freshly-opened window's
+  // pickCascadedPos can see where this one currently sits.
+  useEffect(() => {
+    if (!open) return
+    updateWindowPos(registryId, pos)
+  }, [open, registryId, pos.x, pos.y])
 
   // Re-clamp on viewport resize — keeps the window grabbable when the
   // browser shrinks below its current size.

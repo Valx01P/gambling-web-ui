@@ -615,6 +615,7 @@ export default function PokerPage() {
   // with `data-pokerwin="1"` and detect it that way (no ref needed).
   const chatDockRef = useRef(null)
   const sideBetsDockRef = useRef(null)
+  const hudDockRef = useRef(null)
   // Width of the Tools + Lobby pair (measured live via ResizeObserver
   // below). Used to size the equity widget so it spans the same
   // horizontal band as that pair. State, not ref, because the widget
@@ -781,6 +782,17 @@ export default function PokerPage() {
   // layout-effect below re-bumps it whenever a tool transitions open
   // — see the comment there for the ordering rationale.
   const [toolsMenuZ, setToolsMenuZ] = useState(800)
+  // Dock column (InvestmentHUD / Side-Bets / Chat) z-tracking. Same
+  // click-to-front contract as the Tools menu and floating windows:
+  // pointerdown inside any docked surface bumps it via bumpRaisedZ()
+  // so it rises above any window or the Tools menu the user last
+  // interacted with. Base = 30 (matches the static md:z-30 the column
+  // used to carry) so until the user activates it, the column sits in
+  // its natural slot below windows.
+  const [dockColumnZ, setDockColumnZ] = useState(30)
+  const activateDockColumn = useCallback(() => {
+    setDockColumnZ(bumpRaisedZ())
+  }, [])
   // Floating PiP poker window — opens from the Tools menu's
   // ★ Mini Table entry. Mirrors the main view's state (same React
   // tree), so actions inside the window move the real game and
@@ -1444,6 +1456,7 @@ export default function PokerPage() {
       // its outer node + walk up via .closest().
       if (chatDockRef.current?.contains(t)) return
       if (sideBetsDockRef.current?.contains(t)) return
+      if (hudDockRef.current?.contains(t)) return
       if (t?.closest?.('[data-pokerwin="1"]')) return
       // Active tool panel (Bank / Bots / Blinds / etc.) is logically a
       // child of the Tools menu — clicking it keeps Tools open so the
@@ -4389,14 +4402,13 @@ export default function PokerPage() {
           ref={pokerPanelRef}
           // Base z is z-[600] — above the popup-window range (260+)
           // and the top chrome (z-[500]). Panels in the elevated
-          // categories (Actions / Profile / Basic Info / Guide —
-          // see ELEVATED_PANEL_IDS) jump to z-[900] so they layer
-          // ABOVE the portaled docked Tools menu (z-[800]); without
-          // the bump, opening one of those panels would leave the
-          // dropdown floating over the panel the user just chose.
-          // Bank / Daily intentionally stay at z-[600] — those rank
-          // below the docked menu per the user's spec.
-          className={`fixed right-3 top-16 ${ELEVATED_PANEL_IDS.has(activePokerPanel) ? 'z-[900]' : 'z-[600]'} max-h-[calc(100dvh-5rem)] w-[calc(100vw-1.5rem)] overflow-y-auto rounded-xl border border-zinc-600/60 bg-zinc-900/95 p-3 text-white shadow-2xl backdrop-blur-md sm:right-4 sm:top-20 ${
+          // categories (Actions / Profile / Basic Info / Guide /
+          // Daily Challenge / Bank — see ELEVATED_PANEL_IDS) jump to
+          // z-[10000], far above the dynamic click-raise band the
+          // docked Tools menu and floating windows now share (900+).
+          // The high static value is safe — that band would need
+          // thousands of pointerdowns in one session to reach it.
+          className={`fixed right-3 top-16 ${ELEVATED_PANEL_IDS.has(activePokerPanel) ? 'z-[10000]' : 'z-[600]'} max-h-[calc(100dvh-5rem)] w-[calc(100vw-1.5rem)] overflow-y-auto rounded-xl border border-zinc-600/60 bg-zinc-900/95 p-3 text-white shadow-2xl backdrop-blur-md sm:right-4 sm:top-20 ${
             activePokerPanel === 'bots' || activePokerPanel === 'arena' || activePokerPanel === 'items'
               ? 'max-w-[640px]'
               : 'max-w-[460px]'
@@ -6979,9 +6991,16 @@ export default function PokerPage() {
           // natural position.
           const lift = isSpectator ? 'md:-translate-y-20 md:-mb-20' : ''
           return (
-            <div className={`order-1 w-[92%] max-w-[360px] mx-auto md:order-2 md:absolute md:bottom-0 md:right-0 md:mx-0 md:w-auto md:max-w-none md:z-30 flex flex-col items-end gap-3 shrink-0 ${lift}`}>
+            <div
+              // The inline zIndex (driven by dockColumnZ) overrides the
+              // baseline md:z-30 once the user activates any dock, so a
+              // click on the chat / side-bets / HUD lifts the whole
+              // column above windows and the Tools menu — matching the
+              // click-to-front contract the windows and menu use.
+              style={{ zIndex: dockColumnZ }}
+              className={`order-1 w-[92%] max-w-[360px] mx-auto md:order-2 md:absolute md:bottom-0 md:right-0 md:mx-0 md:w-auto md:max-w-none md:z-30 relative flex flex-col items-end gap-3 shrink-0 ${lift}`}>
               {dockHUD && (
-                <div className="relative w-full md:w-auto">
+                <div ref={hudDockRef} onPointerDown={activateDockColumn} className="relative w-full md:w-auto">
                   {/* Small pop-out affordance — flips the HUD into a
                       freeform FloatingWindow at body level. Clicking
                       the ↺ button on the floating copy returns it to
@@ -7015,7 +7034,7 @@ export default function PokerPage() {
                 // wraps the outer node so a click on the pop-out button
                 // still counts as "inside the side-bets dock" for the
                 // tools-menu close-outside detector.
-                <div ref={sideBetsDockRef} className="relative w-full md:w-auto pt-1.5 pl-1.5">
+                <div ref={sideBetsDockRef} onPointerDown={activateDockColumn} className="relative w-full md:w-auto pt-1.5 pl-1.5">
                   <button
                     type="button"
                     onClick={() => toggleWidgetFreeform('sidebets')}
@@ -7037,7 +7056,7 @@ export default function PokerPage() {
                 </div>
               )}
               {dockChat && (
-                <div ref={chatDockRef} className="relative w-full md:w-auto pt-1.5 pl-1.5">
+                <div ref={chatDockRef} onPointerDown={activateDockColumn} className="relative w-full md:w-auto pt-1.5 pl-1.5">
                   <button
                     type="button"
                     onClick={() => toggleWidgetFreeform('chat')}
