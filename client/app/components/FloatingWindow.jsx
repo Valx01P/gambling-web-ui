@@ -301,10 +301,11 @@ export default function FloatingWindow({
   // has a DB-saved value.
   useEffect(() => { hydrateOneFromLocal(storageKey) }, [storageKey])
   const [drag, setDrag] = useState(null)
-  // resize.grip identifies which corner the user grabbed: 'br' or 'tl'.
-  // The math differs — 'br' grows from the bottom-right (pos fixed,
-  // size grows); 'tl' grows by adjusting BOTH pos AND size so the
-  // bottom-right corner stays anchored.
+  // resize.grip identifies which edge/corner the user grabbed. One of:
+  //   't' | 'b' | 'l' | 'r' | 'tl' | 'tr' | 'bl' | 'br'
+  // The unmoved edges stay anchored. The math is encoded in the move
+  // handler — see the `useEffect` below — which derives "does this
+  // grip move the top? bottom? left? right?" from the grip code.
   const [resize, setResize] = useState(null)
   // Per-window z-index, bumped to a fresh max on every pointerdown so
   // clicking an underlying window raises it above its siblings.
@@ -384,33 +385,30 @@ export default function FloatingWindow({
     function onMove(e) {
       const dx = e.clientX - resize.x0
       const dy = e.clientY - resize.y0
-      let next
-      if (resize.grip === 'br') {
-        // Bottom-right grip — origin (top-left) stays put, size grows
-        // proportionally to drag direction.
-        next = clamp(
-          { x: resize.posX0, y: resize.posY0, w: resize.w0 + dx, h: resize.h0 + dy },
-          minWidth, minHeight,
-        )
-      } else {
-        // Top-left grip — the BOTTOM-right corner stays anchored, the
-        // top-left chases the pointer. So both pos and size update:
-        //   newW = oldW - dx;  newH = oldH - dy
-        //   newX = oldX + dx;  newY = oldY + dy
-        // After clamp() floors the size at min, we recompute pos so the
-        // right/bottom edges don't drift when the user yanks past the
-        // floor.
-        const rawW = resize.w0 - dx
-        const rawH = resize.h0 - dy
-        const wantedW = Math.max(minWidth, rawW)
-        const wantedH = Math.max(minHeight, rawH)
-        const dxApplied = resize.w0 - wantedW
-        const dyApplied = resize.h0 - wantedH
-        next = clamp(
-          { x: resize.posX0 + dxApplied, y: resize.posY0 + dyApplied, w: wantedW, h: wantedH },
-          minWidth, minHeight,
-        )
-      }
+      const grip = resize.grip
+      // Grip-code → which edges move. First char picks vertical edge
+      // ('t' top / 'b' bottom), last char picks horizontal ('l' left
+      // / 'r' right). Single-char codes ('t','b','l','r') only touch
+      // one edge; the orthogonal edges stay anchored.
+      const movesTop    = grip[0] === 't'
+      const movesBottom = grip[0] === 'b'
+      const movesLeft   = grip[grip.length - 1] === 'l'
+      const movesRight  = grip[grip.length - 1] === 'r'
+      // Raw new size from pointer delta.
+      let newW = resize.w0
+      let newH = resize.h0
+      if (movesRight) newW = resize.w0 + dx
+      if (movesLeft)  newW = resize.w0 - dx
+      if (movesBottom) newH = resize.h0 + dy
+      if (movesTop)    newH = resize.h0 - dy
+      // Floor at min — the anchored-edge pos compensates so the
+      // opposite edge doesn't drift when the user yanks past the
+      // floor. clamp() below handles the viewport bounds.
+      const wantedW = Math.max(minWidth, newW)
+      const wantedH = Math.max(minHeight, newH)
+      const newX = movesLeft ? resize.posX0 + (resize.w0 - wantedW) : resize.posX0
+      const newY = movesTop  ? resize.posY0 + (resize.h0 - wantedH) : resize.posY0
+      const next = clamp({ x: newX, y: newY, w: wantedW, h: wantedH }, minWidth, minHeight)
       setPos({ x: next.x, y: next.y })
       setSize({ w: next.w, h: next.h })
     }
@@ -574,8 +572,34 @@ export default function FloatingWindow({
       >
         {children}
       </div>
-      {/* Resize grips — top-left + bottom-right. Both 12px squares so
-          they're easy to grab on touch. */}
+      {/* Resize handles — 8 in total. 4 edges (top/right/bottom/left)
+          plus 4 corners. Edges are thin strips along each side,
+          inset from the corners so they don't fight the corner
+          grabbers. Corners are small squares; TL and BR keep the
+          gradient triangle so the window has visible corner
+          affordances. TR and BL are invisible but functional. */}
+      {/* Edges */}
+      <div
+        onPointerDown={(e) => onResizeDown(e, 't')}
+        className="absolute top-0 left-3 right-3 h-1 cursor-ns-resize select-none"
+        aria-label="Resize from top edge"
+      />
+      <div
+        onPointerDown={(e) => onResizeDown(e, 'b')}
+        className="absolute bottom-0 left-3 right-3 h-1 cursor-ns-resize select-none"
+        aria-label="Resize from bottom edge"
+      />
+      <div
+        onPointerDown={(e) => onResizeDown(e, 'l')}
+        className="absolute left-0 top-3 bottom-3 w-1 cursor-ew-resize select-none"
+        aria-label="Resize from left edge"
+      />
+      <div
+        onPointerDown={(e) => onResizeDown(e, 'r')}
+        className="absolute right-0 top-3 bottom-3 w-1 cursor-ew-resize select-none"
+        aria-label="Resize from right edge"
+      />
+      {/* Corners */}
       <div
         onPointerDown={(e) => onResizeDown(e, 'tl')}
         className="absolute top-0 left-0 h-3 w-3 cursor-nwse-resize select-none rounded-tl-lg"
@@ -583,6 +607,16 @@ export default function FloatingWindow({
           background: 'linear-gradient(315deg, transparent 0%, transparent 50%, rgb(82 82 91 / 0.7) 50%, rgb(82 82 91 / 0.7) 100%)'
         }}
         aria-label="Resize from top-left"
+      />
+      <div
+        onPointerDown={(e) => onResizeDown(e, 'tr')}
+        className="absolute top-0 right-0 h-3 w-3 cursor-nesw-resize select-none rounded-tr-lg"
+        aria-label="Resize from top-right"
+      />
+      <div
+        onPointerDown={(e) => onResizeDown(e, 'bl')}
+        className="absolute bottom-0 left-0 h-3 w-3 cursor-nesw-resize select-none rounded-bl-lg"
+        aria-label="Resize from bottom-left"
       />
       <div
         onPointerDown={(e) => onResizeDown(e, 'br')}

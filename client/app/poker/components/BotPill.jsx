@@ -22,7 +22,7 @@ export default function BotPill({
   // table where bots have color+initials only). useBotAvatar=false
   // (default) renders ProfileAvatar (used in the training picker
   // which prefers uploaded avatar URLs).
-  useBotAvatar = false
+  useBotAvatar = false,
 }) {
   const mlp = isMlpFamily(bot)
   const Avatar = useBotAvatar ? (

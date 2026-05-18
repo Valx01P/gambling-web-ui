@@ -390,20 +390,22 @@ function PlayerSuperShelf({ superBots, availableBots, onCreated, onUpdated, onVi
               sectionLabel="of your super bots"
             />
           )}
-          <button
-            type="button"
-            onClick={() => {
-              if (atLimit) {
-                setValidationError?.(`You can have at most ${SUPER_LIMIT} super bots. Delete one to make room.`)
-                return
-              }
-              setShowCreate(v => !v)
-              setCreateError(null)
-            }}
-            className="rounded-md border border-violet-400/50 bg-violet-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-violet-600"
-          >
-            {showCreate ? 'Cancel' : '+ New super bot'}
-          </button>
+          {/* "+ New super bot" disappears at the cap instead of flashing
+              a validation error on click. Once a slot frees up (user
+              deletes one of their 2 existing super bots) the button
+              reappears automatically. */}
+          {!atLimit && (
+            <button
+              type="button"
+              onClick={() => {
+                setShowCreate(v => !v)
+                setCreateError(null)
+              }}
+              className="rounded-md border border-violet-400/50 bg-violet-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-violet-600"
+            >
+              {showCreate ? 'Cancel' : '+ New super bot'}
+            </button>
+          )}
         </div>
       }
     >
@@ -1415,39 +1417,69 @@ function BotsPageInner() {
           />
         )}
 
-        {tab === 'public' && (
-          <div className="w-full rounded-xl border border-zinc-600/50 bg-zinc-800/90 p-3 shadow-lg">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <div>
-                <div className="text-sm font-black text-white">Public Roster</div>
-                <div className="text-xs font-bold text-zinc-300">Anyone can sit these at a table.</div>
+        {tab === 'public' && (() => {
+          // Split out app bots (gambler squad — system-owned, seeded
+          // globally) so they get their own pinned card above the
+          // user-submitted roster. Click any row → /poker/bots/[id]
+          // which already renders read-only for non-owners (the
+          // detail page checks `isMine` and shows the code in a
+          // `<pre>` instead of the editor).
+          const appBots = publicBots.filter(b => b.isGambler)
+          const userMadeBots = publicBots.filter(b => !b.isGambler)
+          return (
+          <div className="w-full space-y-3">
+            {appBots.length > 0 && (
+              <div className="rounded-xl border border-rose-500/40 bg-rose-950/20 p-3 shadow-lg">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-black text-rose-100">🎲 App Bots</div>
+                    <div className="text-xs font-bold text-rose-200/80">
+                      Built-in strategies anyone can sit — Open one to read its source for inspiration. Read-only.
+                    </div>
+                  </div>
+                </div>
+                <BotList
+                  bots={appBots}
+                  mine={false}
+                  emptyText=""
+                  onDeleted={() => {}}
+                />
               </div>
-              <button
-                type="button"
-                onClick={reload}
-                className="rounded-md border border-zinc-500/50 bg-zinc-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-zinc-600"
-              >
-                Refresh
-              </button>
-            </div>
-            {loading ? (
-              <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/35 px-3 py-6 text-center text-xs font-bold text-zinc-300">
-                Loading…
-              </div>
-            ) : loadError ? (
-              <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-3 text-xs font-bold text-red-200">
-                {loadError}
-              </div>
-            ) : (
-              <BotList
-                bots={publicBots}
-                mine={false}
-                emptyText="No public bots yet. Be the first."
-                onDeleted={() => {}}
-              />
             )}
+            <div className="rounded-xl border border-zinc-600/50 bg-zinc-800/90 p-3 shadow-lg">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-black text-white">Public Roster</div>
+                  <div className="text-xs font-bold text-zinc-300">User-made bots — anyone can sit them at a table.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={reload}
+                  className="rounded-md border border-zinc-500/50 bg-zinc-700 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-zinc-600"
+                >
+                  Refresh
+                </button>
+              </div>
+              {loading ? (
+                <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/35 px-3 py-6 text-center text-xs font-bold text-zinc-300">
+                  Loading…
+                </div>
+              ) : loadError ? (
+                <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-3 text-xs font-bold text-red-200">
+                  {loadError}
+                </div>
+              ) : (
+                <BotList
+                  bots={userMadeBots}
+                  mine={false}
+                  emptyText="No user-made public bots yet. Be the first."
+                  onDeleted={() => {}}
+                />
+              )}
+            </div>
           </div>
-        )}
+          )
+        })()}
       </div>
       <AuthGateModal
         open={!!authGateMessage}
