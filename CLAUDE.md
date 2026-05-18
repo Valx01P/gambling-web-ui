@@ -9,15 +9,15 @@ work on this repo — it'll save you 3-4 rounds of grep.
 ## Quick orientation
 
 - Frontend: `client/` — Next.js 16, React 19, Tailwind 4. The two big
-  files are `client/app/poker/page.jsx` (~5800 lines: WS, state, game
+  files are `client/app/poker/page.jsx` (~6500 lines: WS, state, game
   render, action bar, panels) and `client/app/poker/bots/[id]/page.jsx`
   (bot editor + recalc flows). Everything else is component-scoped.
   These files grow — treat the line counts here as ballpark, not gospel.
 - Backend: `server/` — Node 22 with native `--env-file-if-exists` (no
   dotenv). Express + `ws` share one listener. Postgres via `pg`. The
-  fat file on this side is `server/src/rooms/PokerRoom.js` (~2400 lines:
+  fat file on this side is `server/src/rooms/PokerRoom.js` (~2450 lines:
   the game-state machine) and `server/src/network/MessageHandler.js`
-  (~1400 lines: WS routing + per-message handlers).
+  (~1800 lines: WS routing + per-message handlers).
 - REST surface is mounted in `server/src/api/index.js` — auth, bots,
   uploads, users (me + public), dailies, notifications, dms, feed.
 - Auth: dual-mode — Google Identity Services *and* native email/password
@@ -42,17 +42,23 @@ The player has TWO independent wallets — keeping them straight is what
 keeps the P/L badges and rebuy logic honest. Mixing them is the #1
 source of bugs in this codebase.
 
-- **`chips`** (`Player.chips`) — poker stack ON the table. Hard-capped
-  at `POKER_CONFIG.CHIP_STACK_MAX = 1000`. The auto-sweep in
-  `PokerRoom._sweepStackOverflow()` between hands moves any excess into
-  the bank. Used by: poker bets, sidebets, item-engine chip transfers
+- **`chips`** (`Player.chips`) — poker stack ON the table.
+  `POKER_CONFIG.CHIP_STACK_MAX = 1000` is the INITIAL buy-in / rebuy
+  size only; it's no longer a runtime cap. `_sweepStackOverflow` in
+  PokerRoom is a no-op kept for callsite parity — winners now keep
+  excess at the table. Used by: poker bets, item-engine chip transfers
   (hack / scam), peer loan settle-on-leave. `pokerBuyIn` tracks the
-  cumulative buy-in for poker P/L = `chips + openSideBetStake - pokerBuyIn`.
+  cumulative buy-in for poker P/L = `chips - pokerBuyIn`. (The legacy
+  `+ openSideBetStake` correction is gone — side bets debit BANK now,
+  not chips, see below.)
 - **`bankBalance`** (`Player.bankBalance`) — persistent OFF-table wallet.
   Starts at `POKER_CONFIG.BANK_START_BALANCE = 5000`. Auto-funds the
   next 1000-chip rebuy when the poker stack hits zero. Used by: stocks,
   options, crypto, assets, jobs, world yields, peer-loan principal/repay,
-  bank-loan principal/repay. `bankStartBalance` is the snapshot for the
+  bank-loan principal/repay, **side bets** (the 1000-chip stack was too
+  small for prop sizing), and the **pin_hack** item's drain. `openSideBetStake`
+  still tracks principal locked in open props — it represents bank money
+  out, not chips parked. `bankStartBalance` is the snapshot for the
   Bank P/L badge.
 
 Both fields are serialized everywhere — `Player.toJSON()` (used by
@@ -138,6 +144,79 @@ Layout protocol that keeps the right gutter consistent:
 - Avatar / DMs / Notifications / BotSpeed stay in `AccountDock`. The
   dock is only fully hidden when nothing in it would render.
 
+## Floating windows (PiP pattern)
+
+Three draggable, resizable, portal-rendered windows share the same
+chrome and constraints:
+
+- `client/app/components/FeedWindow.jsx` — social feed.
+- `client/app/poker/components/PokerWindow.jsx` — PiP mini-table; reads
+  the same `gameState` the main view does and routes actions through
+  the same `send('poker_*')` callbacks, so a click in either surface
+  moves the real game. Top-level derivations (`canAct`, `hasRaiseRoom`,
+  `safeRaise`, `inHand`) are lifted out of the action-panel IIFE
+  precisely so this window can share them.
+- (The DmsPopup is similar but older.)
+
+Each window persists position + size in localStorage (`POS_KEY` /
+`SIZE_KEY` per file) and survives a viewport resize via a re-clamp on
+the `resize` event. The "menu stays open while you click inside" rule
+(see below) treats these windows as logically-inside-the-tools-menu.
+
+### Tools menu — companion-surface exemptions
+
+`poker/page.jsx` has a pointerdown handler that auto-closes the Tools
+menu on any click outside its `tableMenuRef`. Several surfaces are
+exempted so a click inside them keeps the dropdown open:
+
+- `chatDockRef` — wraps the chat-dock container.
+- `sideBetsDockRef` — wraps the side-bets dock container.
+- `[data-pokerwin="1"]` data-attribute on `PokerWindow`'s outer node.
+  Detected via `event.target.closest()` since the window portals to
+  body and isn't inside any React ref hierarchy.
+
+Any new companion surface (a future right-rail panel, etc.) that the
+user expects to interact with WHILE the menu is open should either get
+a ref+contains check or set its own `data-*` opt-in attribute and add
+it to that handler.
+
+## Private-room tool toggles
+
+A host creating a private room can disable a subset of tools for
+everyone in that room. Canonical list lives in two synced places:
+
+- `client/app/lib/privateRoomTools.js` — `TOGGLEABLE_TOOLS` (full
+  catalog with labels) and `TOGGLEABLE_TOOL_IDS` (validation set).
+- `server/src/rooms/PokerRoom.js` — `TOGGLEABLE_TOOL_IDS` mirror.
+  Constructor stores `this.disabledTools` (Set) for private rooms;
+  `isToolDisabled(toolId)` returns false for general rooms (always
+  the "wild west").
+
+Enforcement is a single guard at the top of `MessageHandler.handle()`:
+the `TOOL_FOR_TYPE` map maps each gated message type (`crypto:*`,
+`stock:*`, `item:use`, etc.) to a tool id. The handler short-circuits
+with a friendly error before any per-message handler runs.
+
+On the client, `roomDisabledTools` state (populated from `room.disabledTools`
+in `join_game` / `reconnect_ok` / `room_update`) gates BOTH the Tools-
+menu buttons AND the actual UI for that tool (e.g. the chat dock and
+side-bets dock render gates also check this set). Section headers in
+the Tools menu are conditional on at least one of their children still
+being visible — so disabling every Markets entry hides the "Markets"
+header too.
+
+## Site-wide felt color
+
+`client/app/lib/feltColor.js` is the source of truth for the felt
+palette + the user's current pick. Module-level pub/sub + a
+`useFeltColor()` hook backed by `useSyncExternalStore`. The store is
+hydrated by `FeltBootstrap` (mounted once in the root layout) from
+localStorage on first paint, then from `/auth/me` when auth resolves
+(DB column `felt_color_id` + `felt_custom_colors` — migration 031).
+`FuzzyBackground` subscribes to the same store so the noise tint
+follows the user across every route, not just `/poker`. Setters
+debounce a `POST /api/auth/me/felt` for signed-in users.
+
 ## Bot-speed dock bridge
 
 The bot-speed slider icon is rendered inside the global `AccountDock`
@@ -185,6 +264,42 @@ Single-file world engines live next to those: `server/src/{influence,
 items,jobs,stocks,world}/` are each one engine module (e.g.
 `stocks/` has `stockEngine.js` + `optionsEngine.js`). No `*Routes.js`
 of their own — they're wired in by the main API or world loop.
+
+### Items engine specifics (`server/src/items/itemEngine.js`)
+
+Three "shapes" of items share one engine + one cooldown map
+(`ITEM_COOLDOWN_HANDS`):
+
+1. **Chip/bank movers** — `hack` (immediate chip transfer), `scam`
+   (two-step popup), `pin_hack` (two-phase PIN minigame, drains bank).
+   Both `scam` and `pin_hack` use a server-side timer to auto-resolve
+   on AFK (30s for scam, 12s for pin_hack: 2s memorize + 10s input).
+   The pending state lives in `pendingScams` / `pendingPinHacks` Maps.
+2. **Deck riggers** — `peek`, `swap`, `river_card`, `next_card`,
+   `rig_hand`. These call into `PokerGame.set*` methods that stage
+   the rig. Note: `setRiggedHand` has an `already_rigged` guard so a
+   second `rig_hand` on the same hand rejects; `setRiggedRiverCard` /
+   `setRiggedNextCard` do NOT — they overwrite. Two players using
+   different deck-rig powers on the same hand can both apply.
+3. **Market griefers** — `crash_coin` (95% tank on any market coin)
+   and `crash_holdings` (95% wipe of a target's open crypto + stock
+   SHARES — chart prices untouched). Each routes through the
+   respective engine's `crashCoin` / `crashHoldingsFor` method.
+
+The client renders multiple scam popups concurrently at different
+screen corners (`scamPopups` array in `poker/page.jsx`); the first
+keeps the centered backdrop, popups 2-5 peel to corners. The pin_hack
+popup is always centered (only one in flight per target at a time).
+
+### Jobs board success rates
+
+`server/src/jobs/jobsEngine.js` — success rates are computed at
+board-roll time from the rolled reward via `successForReward(reward,
+baseSuccess)`. The function is the source of truth for "this big a
+payout has these odds"; the tier-default `TIER_SUCCESS` map is now
+just the floor before the reward-keyed cap is applied (Math.min).
+Buckets currently: ≤$10K → 70%, climbing down through $100K → 10%,
+$1M → 1%, ≥$10M → 0.1%. Edit one map to change them all.
 
 Client mirrors: `client/app/feed/`, `client/app/users/`, plus components
 like `DmsPopup`, `NotificationsBell`, `FeedWindow`, `PostCard`,
@@ -237,7 +352,7 @@ The client has no test runner today.
 
 - **WebSocket lifecycle** in `poker/page.jsx` — there's no reconnect
   today; don't accidentally introduce dep churn on the `new WebSocket(WS_URL)`
-  effect (grep for it — the file is ~5800 lines and line numbers drift).
+  effect (grep for it — the file is ~6500 lines and line numbers drift).
 - **Migration ordering**: `server/src/db/migrations/` is numeric and
   idempotent. New migrations get the next free `0NN_*.sql` slot — never
   renumber existing ones; `npm run migrate` tracks applied versions.
@@ -261,10 +376,17 @@ The client has no test runner today.
   blinds-related persistence should be opt-in only.
 - **Item refresh cadence** lives in `server/src/items/itemEngine.js`
   (`ITEM_COOLDOWN_HANDS` per item; `SCAM_COOLDOWN_*` for the legacy
-  randomized scam cooldown). The UI reads the value off the
-  `items:state` snapshot (`state.refreshHands`) — don't hard-code
-  the cadence client-side or the "Recharges every N hands" label
-  in `ItemsPanel` will drift out of sync.
+  randomized scam cooldown — currently fixed at 2/2). The UI reads
+  the value off the `items:state` snapshot (`state.refreshHands`) —
+  don't hard-code the cadence client-side or the "Recharges every N
+  hands" label in `ItemsPanel` will drift out of sync. The exception
+  is the `ItemsPanel.jsx` description string, which spells out the
+  cooldown in user-facing copy — update it when you change the map.
+- **Branding**: the app is **PokerXYZ** (capitalized in user-visible
+  copy + SEO metadata) but internal event names + localStorage keys
+  use the legacy lowercase `pokerxyz` / `pokerxyz:*` prefix. Don't
+  rename those — there's no migration path for keys already in users'
+  localStorage. New visible copy should say "PokerXYZ".
 - **Blinds proposal payload** carries per-voter arrays
   (`approvedBy: [...ids]`, `rejectedBy: [...ids]`) in addition to the
   counts. The proposer's own view of the banner relies on these to

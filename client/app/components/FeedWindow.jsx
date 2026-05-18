@@ -234,13 +234,30 @@ export default function FeedWindow({ open, onClose, onBack }) {
           <span aria-hidden>★</span>
           <span>Social</span>
         </div>
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onClose() }}
-          aria-label="Close feed window"
-          className="rounded px-1.5 text-base leading-none text-zinc-400 hover:bg-zinc-800 hover:text-white"
-        >×</button>
+        <div className="flex items-center gap-1">
+          {/* Reload — re-fetches the feed from /api/feed. Spins while
+              loading. Same fetchInitial() path the empty-state +
+              error-state Reload buttons use, so the post list, pagination
+              and error/loading flags all reset cleanly. */}
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); fetchInitial() }}
+            disabled={loading}
+            aria-label="Reload feed"
+            title="Reload feed"
+            className="rounded px-1.5 py-0.5 text-[11px] leading-none text-zinc-400 hover:bg-zinc-800 hover:text-violet-200 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <span aria-hidden className={loading ? 'inline-block animate-spin' : 'inline-block'}>↻</span>
+          </button>
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onClose() }}
+            aria-label="Close feed window"
+            className="rounded px-1.5 text-base leading-none text-zinc-400 hover:bg-zinc-800 hover:text-white"
+          >×</button>
+        </div>
       </div>
 
       {/* Body — composer + scrollable post list. The scroll container's

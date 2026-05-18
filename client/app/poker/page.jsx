@@ -51,6 +51,7 @@ import { setDockBotSpeed } from '../components/AccountDock'
 import PeekRevealModal from './components/PeekRevealModal'
 import ScamPopupModal from './components/ScamPopupModal'
 import PinHackModal from './components/PinHackModal'
+import PokerWindow from './components/PokerWindow'
 import AssetsPanel from './components/AssetsPanel'
 import JobsPanel from './components/JobsPanel'
 import StocksPanel from './components/StocksPanel'
@@ -557,6 +558,14 @@ export default function PokerPage() {
   const playerIdRef = useRef('')
   const gameStateRef = useRef(null)
   const tableMenuRef = useRef(null)
+  // Refs the Tools-menu outside-click handler treats as INSIDE the
+  // menu, so clicking on the chat dock, side-bets dock, the floating
+  // poker window, etc. doesn't auto-close the menu. The user can
+  // bounce between Tools and these companion surfaces freely. The
+  // PokerWindow itself renders via portal so we tag its outer node
+  // with `data-pokerwin="1"` and detect it that way (no ref needed).
+  const chatDockRef = useRef(null)
+  const sideBetsDockRef = useRef(null)
   // Width of the Tools + Lobby pair (measured live via ResizeObserver
   // below). Used to size the equity widget so it spans the same
   // horizontal band as that pair. State, not ref, because the widget
@@ -709,6 +718,11 @@ export default function PokerPage() {
   const [spectatorRevealAll, setSpectatorRevealAll] = useState(false)
   const [spectatorHoveredPlayerId, setSpectatorHoveredPlayerId] = useState(null)
   const [tableMenuOpen, setTableMenuOpen] = useState(false)
+  // Floating PiP poker window — opens from the Tools menu's
+  // ★ Mini Table entry. Mirrors the main view's state (same React
+  // tree), so actions inside the window move the real game and
+  // updates from the server immediately reflect both surfaces.
+  const [pokerWindowOpen, setPokerWindowOpen] = useState(false)
   // Two-step confirm for the custom-felt × buttons. First click sets
   // this to the slot index (turning that × red); a second click on the
   // SAME × actually clears the slot. Any other × click reassigns the
@@ -1262,7 +1276,17 @@ export default function PokerPage() {
     }
 
     function handlePointerDown(event) {
-      if (tableMenuRef.current?.contains(event.target)) return
+      const t = event.target
+      if (tableMenuRef.current?.contains(t)) return
+      // Companion surfaces — clicking inside any of these stays
+      // "logically inside the Tools menu" so the user can toggle
+      // chat, place a side bet, or work the mini table without the
+      // dropdown collapsing on them. The PokerWindow renders via a
+      // portal at body level, so we detect it by data-attribute on
+      // its outer node + walk up via .closest().
+      if (chatDockRef.current?.contains(t)) return
+      if (sideBetsDockRef.current?.contains(t)) return
+      if (t?.closest?.('[data-pokerwin="1"]')) return
       setTableMenuOpen(false)
     }
 
@@ -2463,6 +2487,15 @@ export default function PokerPage() {
   const tableBigBlind = gameState?.bigBlind ?? 10
   const tableSmallBlind = gameState?.smallBlind ?? 5
   const minRaise = currentBetAmount === 0 ? tableBigBlind : currentBetAmount * 2
+  // Lifted out of the action-panel IIFE so the floating mini-table
+  // window (PokerWindow) can read the same derived state and render
+  // exactly-aligned action buttons. The action-panel render keeps its
+  // own shadowing locals untouched — these top-level versions are
+  // strictly additive.
+  const inHand = phase !== 'waiting' && phase !== 'showdown' && !myPlayer?.folded && !myPlayer?.waitingNextHand
+  const canAct = inHand && isMyTurn && connected
+  const hasRaiseRoom = (myPlayer?.chips ?? 0) > minRaise
+  const safeRaise = raiseAmount < minRaise ? minRaise : raiseAmount
   const myCards = (myPlayer?.cards || []).filter(card => card?.rank && card?.suit)
   const boardCards = (gameState?.communityCards || []).filter(card => card?.rank && card?.suit)
   const currentHandEvaluation = myCards.length === 2 && boardCards.length >= 3
@@ -3415,16 +3448,24 @@ export default function PokerPage() {
                     {/* ── WIDGETS ─────────────────────────────────── */}
                     {/* Widgets header is conditional — if the host
                         disabled every widget in the section, the header
-                        would otherwise stand alone with no children. */}
-                    {(
-                      (!isSpectator && !roomDisabledTools.has('equity')) ||
-                      !roomDisabledTools.has('chat') ||
-                      !roomDisabledTools.has('sidebets') ||
-                      !roomDisabledTools.has('finances') ||
-                      !roomDisabledTools.has('hud')
-                    ) && (
-                      <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Widgets</div>
-                    )}
+                        would otherwise stand alone with no children.
+                        Mini Table always counts (no host toggle), so
+                        the header is always shown when Mini Table is
+                        the only resident. */}
+                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Widgets</div>
+                    {/* Floating mini-table — a draggable PiP-style
+                        window with the same actions as the main view.
+                        Same shared state, so clicks in either surface
+                        move the real game. Stays open across pokerpanel
+                        / chat / sidebet interactions. */}
+                    <button
+                      type="button"
+                      onClick={() => setPokerWindowOpen(v => !v)}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${pokerWindowOpen ? 'text-emerald-200' : 'text-zinc-400'}`}
+                    >
+                      <span className={`inline-block h-2 w-2 rounded-full ${pokerWindowOpen ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]' : 'bg-zinc-600'}`} />
+                      Mini Table {pokerWindowOpen ? 'On' : 'Off'}
+                    </button>
                     {!isSpectator && !roomDisabledTools.has('equity') && (
                       <button type="button" onClick={toggleStatsMode} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${statsMode ? 'text-sky-200' : 'text-zinc-400'}`}>
                         <span className={`inline-block h-2 w-2 rounded-full ${statsMode ? 'bg-sky-400 shadow-[0_0_6px_rgba(56,189,248,0.7)]' : 'bg-zinc-600'}`} />
@@ -5837,6 +5878,39 @@ export default function PokerPage() {
         />
       )}
 
+      {/* Floating mini-table window. Reads the same gameState that
+          drives the main view; routes actions through the same `send`
+          callbacks so a click here moves the real game. The window's
+          outer wrapper carries data-pokerwin="1" so the Tools-menu
+          outside-click handler treats clicks inside it as "still in
+          the menu" — flipping between Tools and the mini view is
+          seamless. */}
+      {joined && (
+        <PokerWindow
+          open={pokerWindowOpen}
+          onClose={() => setPokerWindowOpen(false)}
+          gameState={gameState}
+          playerId={playerId}
+          isSpectator={isSpectator}
+          myPlayer={myPlayer}
+          myHoleCards={myPlayer?.cards || []}
+          canAct={canAct}
+          toCall={toCall}
+          minRaise={minRaise}
+          hasRaiseRoom={hasRaiseRoom}
+          raiseAmount={raiseAmount}
+          setRaiseAmount={setRaiseAmount}
+          safeRaise={safeRaise}
+          onAction={(kind) => {
+            if (kind === 'fold')   send('poker_fold')
+            else if (kind === 'check')  send('poker_check')
+            else if (kind === 'call')   send('poker_call')
+            else if (kind === 'all_in') send('poker_all_in')
+            else if (kind === 'raise')  send('poker_raise', { amount: safeRaise })
+          }}
+        />
+      )}
+
       {/* PIN-hack popup — landed on us because another player used
           pin_hack. The two-phase modal handles its own countdown; the
           server enforces the same 12s deadline so an AFK target still
@@ -6362,7 +6436,7 @@ export default function PokerPage() {
                 />
               )}
               {showSidebets && (
-                <div className={`w-full md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
+                <div ref={sideBetsDockRef} className={`w-full md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
                   <SideBetsPanel
                     sideBets={sideBetsState}
                     myPlayerId={playerId}
@@ -6381,7 +6455,7 @@ export default function PokerPage() {
                 </div>
               )}
               {showChat && (
-                <div className="w-full md:w-[320px] flex flex-col h-56 lg:h-72 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
+                <div ref={chatDockRef} className="w-full md:w-[320px] flex flex-col h-56 lg:h-72 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
                   {chatBoxInner}
                 </div>
               )}
