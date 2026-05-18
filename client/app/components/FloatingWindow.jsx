@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   useWindowZoom,
@@ -30,12 +30,24 @@ const MIN_W = 260
 const MIN_H = 240
 const TITLE_H = 32
 const BASE_Z = 260
+// Click-raise floor: above the docked Tools menu (z-[800] in
+// poker/page.jsx) so any pointerdown inside a floating window pops it
+// in front of the menu. New mounts still use BASE_Z so a freshly-
+// opened window keeps its natural slot — only the user's click bumps
+// it above the docked chrome.
+const RAISED_BASE_Z = 900
 
 // Module-level counter so every pointerdown anywhere in a window
 // bumps its z-index above every other window. Mirrors the Windows /
 // macOS desktop "click to focus" convention.
 let _floatingZSeq = 0
 function nextZ() { _floatingZSeq += 1; return BASE_Z + _floatingZSeq }
+function nextRaisedZ() { _floatingZSeq += 1; return RAISED_BASE_Z + _floatingZSeq }
+// Exposed for non-FloatingWindow surfaces (e.g. the docked Tools
+// menu) that want click-to-front parity with floating windows. Shares
+// the same counter so relative ordering between the menu and the
+// windows stays monotonic.
+export function bumpRaisedZ() { return nextRaisedZ() }
 
 // ─── Window registry (Tab cycle, Cmd shortcuts, H hide-all) ────────
 // Each mounted FloatingWindow registers an entry. Three data
@@ -308,8 +320,13 @@ export default function FloatingWindow({
   // grip move the top? bottom? left? right?" from the grip code.
   const [resize, setResize] = useState(null)
   // Per-window z-index, bumped to a fresh max on every pointerdown so
-  // clicking an underlying window raises it above its siblings.
-  const [z, setZ] = useState(() => zIndex ?? nextZ())
+  // clicking an underlying window raises it above its siblings. New
+  // mounts seed in the same click-raise band as the docked Tools menu
+  // (RAISED_BASE_Z = 900) — a freshly-opened window lands above every
+  // already-open window without needing an extra click. The docked
+  // Tools menu re-bumps its own z above the new window after mount so
+  // it stays the topmost surface; see poker/page.jsx.
+  const [z, setZ] = useState(() => zIndex ?? nextRaisedZ())
   // Global hide-all subscription — when the H shortcut flips the
   // module flag, every mounted FloatingWindow re-renders into a
   // `display: none` state without losing its DOM / state.
@@ -327,10 +344,25 @@ export default function FloatingWindow({
   const registryId = storageKey || reactId
 
   function raise() {
-    const next = nextZ()
+    const next = nextRaisedZ()
     setZ(next)
     updateWindowZ(registryId, next)
   }
+
+  // Re-seed z every time the window transitions to open. The useState
+  // initializer above only fires on first mount, so a window toggled
+  // closed → open (mini-table, social feed) keeps its stale z and
+  // fails to land on top of newer windows. useLayoutEffect commits the
+  // new z before paint so there's no flicker.
+  useLayoutEffect(() => {
+    if (!open) return
+    const next = nextRaisedZ()
+    setZ(next)
+    updateWindowZ(registryId, next)
+    // registryId stable; setZ stable; this should only fire on open
+    // transition. Intentional dep set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   // Keep the latest onClose accessible to the registry without
   // re-registering on every render. The Cmd+X shortcut closes the

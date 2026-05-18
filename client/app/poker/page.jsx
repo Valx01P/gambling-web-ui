@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback, useMemo, useDeferredValue, startTransition } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useDeferredValue, startTransition } from 'react'
 import { createPortal } from 'react-dom'
 import PokerChip from '../components/PokerChip'
 import CardSprite from '../components/CardSprite'
@@ -62,6 +62,7 @@ import FloatingWindow, {
   focusLastFloatingWindow,
   prevFloatingWindow,
   nextFloatingWindow,
+  bumpRaisedZ,
 } from '../components/FloatingWindow'
 import AssetsPanel from './components/AssetsPanel'
 import JobsPanel from './components/JobsPanel'
@@ -773,6 +774,13 @@ export default function PokerPage() {
   // up painted on top of it.) We track the Tools button's screen rect
   // so the portaled menu can pin itself just below the button.
   const [toolsMenuAnchorRect, setToolsMenuAnchorRect] = useState(null)
+  // Dynamic z for the anchored Tools menu. Opening the menu IS the
+  // active gesture, so it claims the top of the click-raise band
+  // immediately (above every floating window). Closes back to the
+  // static 800 floor on hide so the next open starts fresh. The
+  // layout-effect below re-bumps it whenever a tool transitions open
+  // — see the comment there for the ordering rationale.
+  const [toolsMenuZ, setToolsMenuZ] = useState(800)
   // Floating PiP poker window — opens from the Tools menu's
   // ★ Mini Table entry. Mirrors the main view's state (same React
   // tree), so actions inside the window move the real game and
@@ -868,6 +876,22 @@ export default function PokerPage() {
   useEffect(() => {
     if (activePokerPanel !== 'items') setItemsActiveEditor(null)
   }, [activePokerPanel])
+  // Anchored Tools menu z-bumper. Runs on:
+  //   • menu open/close — open claims the top of the raise band; close
+  //     resets to the 800 floor so the next open starts fresh.
+  //   • a tool transitioning open — FloatingWindow seeds new mounts
+  //     via nextRaisedZ(), so the freshly-opened tool naturally lands
+  //     above every previously-opened window. useLayoutEffect runs
+  //     after that mount but before paint, lifting the menu just one
+  //     tick higher so the menu stays above the new tool. Net stack
+  //     from bottom up: old windows < new tool < docked menu.
+  // Freeform Tools menu is excluded — it's itself a FloatingWindow and
+  // rides the standard click-to-front rules, no special handling.
+  useLayoutEffect(() => {
+    if (!tableMenuOpen) { setToolsMenuZ(800); return }
+    if (toolsFreeform) return
+    setToolsMenuZ(bumpRaisedZ())
+  }, [tableMenuOpen, toolsFreeform, activePokerPanel, pokerWindowOpen, feedWindowOpen, widgetPanels])
   const [sessionHands, setSessionHands] = useState([])
   const [botRoster, setBotRoster] = useState({ mine: [], public: [], loading: false, error: null })
   // Most-recent uploaded PFPs for the signed-in user. Shown in the lobby's
@@ -3577,6 +3601,17 @@ export default function PokerPage() {
                     >
                       {toolsCustomizing ? 'Done' : 'Customize'}
                     </button>
+                    {/* Close × — only shown in anchored mode; freeform
+                        mode gets its × from FloatingWindow's own chrome.
+                        Styled to match the FloatingWindow title-bar ×. */}
+                    {!toolsFreeform && (
+                      <button
+                        type="button"
+                        onClick={() => setTableMenuOpen(false)}
+                        aria-label="Close Tools"
+                        className="rounded px-1.5 text-base leading-none text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                      >×</button>
+                    )}
                   </div>
                 </div>
                 {/* Recents bar — last 5 panels you opened. Persists in
@@ -4300,8 +4335,9 @@ export default function PokerPage() {
               return createPortal(
                 <div
                   data-tools-menu="1"
-                  className="fixed z-[800] w-56 md:w-[28rem] max-w-[calc(100vw-1.5rem)] max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md"
-                  style={{ top: toolsMenuAnchorRect.bottom + 8, right: toolsMenuAnchorRect.right }}
+                  onPointerDown={() => setToolsMenuZ(bumpRaisedZ())}
+                  className="fixed w-56 md:w-[28rem] max-w-[calc(100vw-1.5rem)] max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md"
+                  style={{ top: toolsMenuAnchorRect.bottom + 8, right: toolsMenuAnchorRect.right, zIndex: toolsMenuZ }}
                 >
                   {menuBody}
                 </div>,
