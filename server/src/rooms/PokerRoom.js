@@ -41,6 +41,7 @@ import { StockEngine } from '../stocks/stockEngine.js'
 import { OptionsEngine } from '../stocks/optionsEngine.js'
 import { WorldEngine } from '../world/worldEngine.js'
 import { InfluenceEngine } from '../influence/influenceEngine.js'
+import { CasinoEngine } from '../casino/casinoEngine.js'
 
 // Default rating to assume for any seat that isn't a bot when calculating
 // per-hand ELO updates. Aligned with the new STARTING_RATING so a bot
@@ -116,6 +117,7 @@ export const TOGGLEABLE_TOOL_IDS = new Set([
   'stocks',
   'world',
   'influence',
+  'casino',
   'bank',
   'daily',
   'sidebets',
@@ -320,6 +322,13 @@ export class PokerRoom {
     // late-game whale who's outgrown crypto-whaling move to the next
     // tier: bending the entire stock market with chip-priced events.
     this.influenceEngine = new InfluenceEngine({
+      room: this,
+      broadcast: (msg) => this.broadcast(msg)
+    })
+    // Casino — slots, craps, lottery. Stateless config snapshot per
+    // player; every action settles the bet immediately against the
+    // bank balance and returns the result for the panel to animate.
+    this.casinoEngine = new CasinoEngine({
       room: this,
       broadcast: (msg) => this.broadcast(msg)
     })
@@ -1552,6 +1561,7 @@ export class PokerRoom {
     try { this.optionsEngine?.sendSnapshotTo(player) } catch {}
     try { this.worldEngine?.sendSnapshotTo(player) } catch {}
     try { this.influenceEngine?.sendSnapshotTo(player, this.game?.handIndex || 0) } catch {}
+    try { this.casinoEngine?.sendSnapshotTo(player) } catch {}
     // Kick state — threshold changes with table size, so re-broadcast on
     // every seat change so all clients see the new threshold immediately.
     try { this._broadcastKickState() } catch {}
@@ -1596,6 +1606,7 @@ export class PokerRoom {
     try { this.optionsEngine?.sendSnapshotTo(player) } catch {}
     try { this.worldEngine?.sendSnapshotTo(player) } catch {}
     try { this.influenceEngine?.sendSnapshotTo(player, this.game?.handIndex || 0) } catch {}
+    try { this.casinoEngine?.sendSnapshotTo(player) } catch {}
     try { player.send({ type: 'kick:state', data: this.buildKickSnapshot() }) } catch {}
 
     this.broadcastRoomUpdate()

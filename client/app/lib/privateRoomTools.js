@@ -18,6 +18,7 @@ export const TOGGLEABLE_TOOLS = [
   { id: 'stocks',    label: 'Stock Market',    description: 'Stocks, options, sabotage, earnings' },
   { id: 'world',     label: 'World Map',       description: 'Territory claims + pandemics' },
   { id: 'influence', label: 'Influence Ops',   description: 'Fake news, scandals, crises' },
+  { id: 'casino',    label: 'Casino',          description: 'Slots, craps, and the lottery' },
   { id: 'bank',      label: 'Bank Loans',      description: 'Take / repay loans, credit score' },
   { id: 'daily',     label: 'Daily Challenge', description: "Today's rotating challenge panel" },
   // ─── In-hand betting + analysis ──────────────────────────────────

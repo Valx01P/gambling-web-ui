@@ -50,6 +50,10 @@ const TOOL_FOR_TYPE = {
   'world:cancel_offer': 'world',
   // Influence ops
   'influence:run': 'influence',
+  // Casino — slots / craps / lottery share one tool toggle
+  'casino:slots:spin':  'casino',
+  'casino:craps:roll':  'casino',
+  'casino:lottery:buy': 'casino',
   // Bank loans
   [MESSAGE_TYPES.POKER_LOAN]: 'bank',
   [MESSAGE_TYPES.POKER_REPAY_LOAN]: 'bank',
@@ -83,6 +87,7 @@ const TOOL_LABELS = {
   stocks:    'Stock Market',
   world:     'World Map',
   influence: 'Influence Ops',
+  casino:    'Casino',
   bank:      'Bank Loans',
   daily:     'Daily Challenge',
   sidebets:  'Side Bets',
@@ -281,6 +286,11 @@ export class MessageHandler {
 
         case 'influence:run':
           return this.handleInfluenceRun(player, data)
+
+        case 'casino:slots:spin':
+        case 'casino:craps:roll':
+        case 'casino:lottery:buy':
+          return this.handleCasino(player, type, data)
 
         case 'player:nudge':
           return this.handlePlayerNudge(player, data)
@@ -528,6 +538,7 @@ export class MessageHandler {
       try { room.jobEngine?.sendSnapshotTo(reattached) } catch {}
       try { room.stockEngine?.sendSnapshotTo(reattached) } catch {}
       try { room.worldEngine?.sendSnapshotTo(reattached) } catch {}
+      try { room.casinoEngine?.sendSnapshotTo(reattached) } catch {}
     }
     // Tell the table that the player is back so other clients can drop
     // the "(reconnecting…)" tag from the seat.
@@ -1639,6 +1650,35 @@ export class MessageHandler {
     return result
   }
 
+  handleCasino(player, type, data) {
+    const room = this.roomManager.getPlayerRoom(player)
+    if (!room || !room.casinoEngine) {
+      return this.error('Casino is unavailable here.', player)
+    }
+    let result
+    if (type === 'casino:slots:spin')        result = room.casinoEngine.spinSlots(player.id, data || {})
+    else if (type === 'casino:craps:roll')   result = room.casinoEngine.rollCraps(player.id, data || {})
+    else if (type === 'casino:lottery:buy')  result = room.casinoEngine.buyLottery(player.id, data || {})
+    else return this.error('Unknown casino action', player)
+    if (result && !result.success) {
+      player.send({ type: MESSAGE_TYPES.ERROR, data: { message: humanizeCasinoError(result.error) } })
+      return result
+    }
+    // The result message gives the panel the data it needs to animate
+    // the spin/roll/buy. Sent only to the acting player — casino is a
+    // solo surface (others don't care what reels you spun).
+    let replyType = null
+    if (type === 'casino:slots:spin')        replyType = 'casino:slots:result'
+    else if (type === 'casino:craps:roll')   replyType = 'casino:craps:result'
+    else if (type === 'casino:lottery:buy')  replyType = 'casino:lottery:result'
+    if (replyType) player.send({ type: replyType, data: result })
+    // Money moved — push room_update so the seat-popover P/L and bank
+    // pills refresh between hands the same way they do for stocks /
+    // jobs / asset trades.
+    if (typeof room.broadcastRoomUpdate === 'function') room.broadcastRoomUpdate()
+    return result
+  }
+
   handleAssetTrade(player, type, data) {
     const room = this.roomManager.getPlayerRoom(player)
     if (!room || !room.assetEngine) {
@@ -1780,6 +1820,22 @@ function humanizeAssetError(code) {
     case 'insufficient_chips': return 'Not enough money in bank for that buy.'
     case 'insufficient_units': return 'You don\'t hold that many units.'
     default: return code ? `Asset trade failed: ${code}` : 'Asset trade failed.'
+  }
+}
+
+function humanizeCasinoError(code) {
+  switch (code) {
+    case 'not_at_table': return 'Sit down or spectate first.'
+    case 'bots_cannot_play': return 'Bots can\'t play the casino.'
+    case 'invalid_bet': return 'Invalid bet amount.'
+    case 'invalid_amount': return 'Invalid bet amount.'
+    case 'invalid_count': return 'Invalid ticket count.'
+    case 'bet_too_large': return 'Bet exceeds the table cap.'
+    case 'too_many_tickets': return 'Too many tickets in one purchase (cap is 1,000,000).'
+    case 'insufficient_bank': return 'Not enough money in your bank.'
+    case 'no_bets': return 'Place at least one bet before rolling.'
+    case 'unknown_bet': return 'Unknown bet type.'
+    default: return code ? `Casino action failed: ${code}` : 'Casino action failed.'
   }
 }
 

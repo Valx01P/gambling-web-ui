@@ -68,6 +68,7 @@ import AssetsPanel from './components/AssetsPanel'
 import JobsPanel from './components/JobsPanel'
 import StocksPanel from './components/StocksPanel'
 import WorldPanel from './components/WorldPanel'
+import CasinoPanel from './components/CasinoPanel'
 import InvestmentHUD from './components/InvestmentHUD'
 import { resolveSkinCss } from '../lib/skinPresets'
 import { buildPokerStatistics, buildSpectatorStatistics, evaluateHand, formatCard, formatPercent, getHandName } from '../lib/pokerOdds'
@@ -180,6 +181,7 @@ const TOOLS_TOOLTIPS = {
   stocks:   'Trade stocks, sabotage competitors, ride earnings events',
   world:    'Claim territories, paint the map your color, release pandemics',
   influence:'Pay-to-manipulate-markets meta layer (fake news, scandals, crises)',
+  casino:   'Slots, craps, and the lottery — pure RNG vs. the house',
   bank:     'Loans + credit score + payoff',
   bots:     'Seat AI bots at the table',
   blinds:   'Propose a different blind level',
@@ -199,7 +201,7 @@ const TOOLS_TOOLTIPS = {
 // because they're admin/info surfaces, not "stay open while you play"
 // widgets.
 const MARKET_WIDGET_IDS = new Set([
-  'crypto', 'items', 'assets', 'jobs', 'stocks', 'world',
+  'crypto', 'items', 'assets', 'jobs', 'stocks', 'world', 'casino',
 ])
 
 // Panels in these Tools-menu categories layer ABOVE the docked Tools
@@ -227,6 +229,11 @@ const MARKET_WIDGET_META = {
   jobs:      { title: 'Jobs Board',     icon: '★', accent: 'orange',  defaultWidth: 380, defaultHeight: 520 },
   stocks:    { title: 'Stock Market',   icon: '★', accent: 'sky',     defaultWidth: 440, defaultHeight: 600 },
   world:     { title: 'World Map',      icon: '★', accent: 'purple',  defaultWidth: 460, defaultHeight: 600 },
+  // Casino is the widest market widget: the craps bet layout is a
+  // 2-column grid and the slot reels need 3 evenly-sized columns.
+  // The min height keeps the prize table visible without scrolling
+  // the moment the panel opens. The user can still drag-resize.
+  casino:    { title: 'Casino',         icon: '★', accent: 'amber',   defaultWidth: 540, defaultHeight: 700, minWidth: 420, minHeight: 520 },
 }
 
 const TOOLS_LRU_META = {
@@ -241,6 +248,7 @@ const TOOLS_LRU_META = {
   stocks:   { label: 'Stocks',        accent: 'text-sky-200' },
   world:    { label: 'World',         accent: 'text-purple-200' },
   influence:{ label: 'Influence',     accent: 'text-violet-200' },
+  casino:   { label: 'Casino',        accent: 'text-amber-200' },
   bank:     { label: 'Bank',          accent: 'text-teal-200' },
   bots:     { label: 'Bots',          accent: 'text-white' },
   blinds:   { label: 'Blinds',        accent: 'text-white' },
@@ -1056,6 +1064,19 @@ export default function PokerPage() {
   const [optionsState, setOptionsState] = useState({ chain: [], myPositions: [], expiryHands: 3, contractMultiplier: 100 })
   const [worldState, setWorldState] = useState({ territories: [], pandemicActive: false, yieldMultiplier: 1 })
   const [influenceState, setInfluenceState] = useState({ ops: [] })
+  // Casino — config-only snapshot (slot payouts, craps bet catalog,
+  // lottery tiers + ticket price) plus the per-action results. Game
+  // outcomes are not persistent: every spin/roll/buy is a one-shot
+  // server resolution. We keep just the latest of each here so the
+  // panel can render the win banner / dice / breakdown until the user
+  // plays again.
+  const [casinoState, setCasinoState] = useState(null)
+  const [casinoLastSpin, setCasinoLastSpin] = useState(null)
+  const [casinoLastRoll, setCasinoLastRoll] = useState(null)
+  const [casinoLastBuy, setCasinoLastBuy] = useState(null)
+  const [casinoSpinning, setCasinoSpinning] = useState(false)
+  const [casinoRolling, setCasinoRolling] = useState(false)
+  const [casinoBuying, setCasinoBuying] = useState(false)
   // Kick-vote state from server. `threshold` = votes needed to kick (null
   // when below 3 humans). `polls` is keyed by targetId → { votes, expiresAt }.
   const [kickState, setKickState] = useState({ threshold: null, humanCount: 0, polls: {} })
@@ -1760,6 +1781,21 @@ export default function PokerPage() {
           setInfluenceState({
             ops: Array.isArray(msg.data?.ops) ? msg.data.ops : []
           })
+          break
+        case 'casino:state':
+          // Static config payload — symbol weights, payout multipliers,
+          // craps bet catalog, lottery tiers. Per-player results come
+          // through casino:*:result on each action.
+          setCasinoState(msg.data || null)
+          break
+        case 'casino:slots:result':
+          setCasinoLastSpin(msg.data || null)
+          break
+        case 'casino:craps:result':
+          setCasinoLastRoll(msg.data || null)
+          break
+        case 'casino:lottery:result':
+          setCasinoLastBuy(msg.data || null)
           break
         case 'kick:state':
           setKickState({
@@ -3701,6 +3737,7 @@ export default function PokerPage() {
                       !roomDisabledTools.has('stocks') ||
                       !roomDisabledTools.has('world') ||
                       !roomDisabledTools.has('influence') ||
+                      !roomDisabledTools.has('casino') ||
                       authUser
                     ) && (
                       <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Markets</div>
@@ -3721,6 +3758,7 @@ export default function PokerPage() {
                         { id: 'jobs',   label: 'Jobs Board',     on: 'text-orange-200',  dot: 'bg-orange-400 shadow-[0_0_6px_rgba(251,146,60,0.7)]' },
                         { id: 'stocks', label: 'Stock Market',   on: 'text-sky-200',     dot: 'bg-sky-400 shadow-[0_0_6px_rgba(56,189,248,0.7)]' },
                         { id: 'world',  label: 'World Map',      on: 'text-purple-200',  dot: 'bg-purple-400 shadow-[0_0_6px_rgba(192,132,252,0.7)]' },
+                        { id: 'casino', label: 'Casino',         on: 'text-amber-200',   dot: 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.7)]' },
                       ]
                       return MARKET_ENTRIES.map(({ id, label, on, dot }) => {
                         if (roomDisabledTools.has(id)) return null
@@ -3733,7 +3771,7 @@ export default function PokerPage() {
                           badge = <span className="ml-auto text-[9px] text-zinc-400">{toolsHidden.has(id) ? '+show' : '×hide'}</span>
                         } else if (id === 'items') {
                           const ready = (itemsState?.items || []).filter(i => i.ready).length
-                          if (ready > 0) badge = <span className="ml-auto rounded-md bg-lime-500/20 px-1.5 py-0.5 text-[10px] text-lime-300">{ready} ready</span>
+                          if (ready > 0) badge = <span className="ml-auto rounded-md bg-lime-500/20 px-1.5 py-0.5 text-[10px] text-lime-300">{ready}</span>
                         } else if (id === 'assets') {
                           const n = assetsState?.myPositions?.length || 0
                           if (n > 0) badge = <span className="ml-auto rounded-md bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-300">{n}</span>
@@ -6307,6 +6345,12 @@ export default function PokerPage() {
           storageKey: `pokerxyz:widget:${id}`,
           defaultWidth: meta.defaultWidth,
           defaultHeight: meta.defaultHeight,
+          // Per-widget min size — casino's craps grid + slot reels need
+          // a wider floor than the default 320×260 that other widgets
+          // are happy with. Falls back to undefined → FloatingWindow's
+          // own defaults when not set in meta.
+          ...(meta.minWidth ? { minWidth: meta.minWidth } : {}),
+          ...(meta.minHeight ? { minHeight: meta.minHeight } : {}),
         }
         let body = null
         if (id === 'crypto') {
@@ -6373,6 +6417,26 @@ export default function PokerPage() {
               onCloseOption={(payload) => send('options:close', payload)}
               influenceState={!roomDisabledTools.has('influence') ? influenceState : null}
               onRunInfluence={(opId, targetSymbol) => send('influence:run', { opId, targetSymbol })}
+            />
+          )
+        } else if (id === 'casino') {
+          body = (
+            <CasinoPanel
+              casinoState={casinoState}
+              myBank={bankState.bankBalance ?? 0}
+              joined={joined || isSpectator}
+              onSpinSlots={(bet) => send('casino:slots:spin', { bet })}
+              onRollCraps={(bets) => send('casino:craps:roll', { bets })}
+              onBuyLottery={(tickets) => send('casino:lottery:buy', { tickets })}
+              lastSpin={casinoLastSpin}
+              lastRoll={casinoLastRoll}
+              lastBuy={casinoLastBuy}
+              spinning={casinoSpinning}
+              setSpinning={setCasinoSpinning}
+              rolling={casinoRolling}
+              setRolling={setCasinoRolling}
+              buying={casinoBuying}
+              setBuying={setCasinoBuying}
             />
           )
         } else if (id === 'world') {

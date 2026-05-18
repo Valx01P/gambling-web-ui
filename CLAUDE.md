@@ -144,7 +144,82 @@ Layout protocol that keeps the right gutter consistent:
 - Avatar / DMs / Notifications / BotSpeed stay in `AccountDock`. The
   dock is only fully hidden when nothing in it would render.
 
-## Floating windows (PiP pattern)
+## Windowing system
+
+Five overlapping surfaces compete for screen space on `/poker`: floating
+windows, the dock column (HUD / side-bets / chat anchored slots), the
+docked Tools menu, the freeform Tools menu, and elevated tool panels.
+They share **one z-band layout and one click-to-front counter** —
+getting this hierarchy wrong is the #1 source of "why is X behind Y?"
+bugs in the UI.
+
+### z-band layout
+
+| Surface                             | Default z      | Source                                                  |
+|-------------------------------------|----------------|---------------------------------------------------------|
+| Dock column (HUD/side-bets/chat)    | 30             | `dockColumnZ` state in `poker/page.jsx`                 |
+| Floating windows (mount + raise)    | 901+           | `FloatingWindow.jsx` via `nextRaisedZ()`                |
+| Docked Tools menu (anchored)        | 800 → 901+     | `toolsMenuZ`; bumps to `bumpRaisedZ()` on open          |
+| Freeform Tools menu                 | 901+           | Itself a `FloatingWindow`                               |
+| Elevated panels (`ELEVATED_PANEL_IDS`) | `z-[10000]` | Inline class on the `activePokerPanel` div              |
+
+`FloatingWindow.jsx` exposes a single counter via `bumpRaisedZ()` (and
+`nextRaisedZ()` internally). Every floating window, the docked Tools
+menu, and the dock column share it — whichever surface most recently
+received a `pointerdown` ends up on top. The counter is
+session-monotonic; closing a surface releases nothing.
+
+`BASE_Z = 260` exists for historical reasons but is no longer used —
+new mounts seed in the raise band too, so a freshly-opened window
+lands above every previously-opened one without needing a click.
+
+### Click-to-front contracts
+
+- **Floating windows**: `pointerdown` anywhere inside raises via
+  `raise() → nextRaisedZ()`. New mounts also seed from the same
+  counter. The `useLayoutEffect` on `[open]` re-seeds z AND re-cascades
+  pos on every `open → true` transition — necessary because
+  persistently-mounted windows (`PokerWindow`, `FeedWindow`) keep
+  their state across close/open toggles and otherwise inherit a stale
+  z and pos.
+- **Docked Tools menu**: `pointerdown` on its outer portal div bumps
+  `toolsMenuZ` via `bumpRaisedZ()`. A `useLayoutEffect` watching
+  `[tableMenuOpen, toolsFreeform, activePokerPanel, pokerWindowOpen,
+  feedWindowOpen, widgetPanels]` re-bumps after any panel-state change
+  — so opening a tool from the menu reliably stacks as: old windows <
+  new tool < docked menu. Closing the menu resets `toolsMenuZ` to 800.
+- **Dock column** (`InvestmentHUD` / side-bets / chat anchored slots):
+  each of the three wrappers has `onPointerDown={activateDockColumn}`;
+  the column wrapper carries inline `style={{ zIndex: dockColumnZ }}`
+  and `position: relative` so the z applies on both mobile and md+.
+- **Elevated panels** (`ELEVATED_PANEL_IDS` — Actions / Profile / Basic
+  Info / Guide / Daily Challenge / Bank): static `z-[10000]`. They're
+  spec'd to always sit above menu/windows; the ~9100 headroom over the
+  click-raise band is intentional — the counter would need thousands
+  of bumps in one session to reach it. Non-elevated panels stay at
+  `z-[600]` (below the menu and windows by design).
+
+### Cascade for fresh windows
+
+`pickCascadedPos(defaultPos, w, h)` in `FloatingWindow.jsx` walks
+`_registry` of currently-open windows and offsets the proposed pos by
+`TITLE_H` (32px) for each collision — so spam-opening windows from the
+menu leaves every title bar visible in a stair-step the user can drag
+apart. Wraps to the top of the cascade band if it'd run off-screen.
+Two entry points:
+
+1. The pos `useState` initializer (first mount, no remembered layout).
+2. The `useLayoutEffect` on `[open]` — feeds the *current* pos through
+   `pickCascadedPos`. If nothing else is at that spot it returns
+   unchanged (preserves the user's last drag); otherwise cascades.
+   Critical for `PokerWindow` / `FeedWindow` since their pos
+   initializer only fires on first mount.
+
+Registry entries carry a live `pos` field via `updateWindowPos`,
+updated on every drag / resize / clamp — so cascading always sees the
+user's current positions, not stale ones.
+
+### PiP windows
 
 Three draggable, resizable, portal-rendered windows share the same
 chrome and constraints:
@@ -158,22 +233,38 @@ chrome and constraints:
   precisely so this window can share them.
 - (The DmsPopup is similar but older.)
 
-Each window persists position + size in localStorage (`POS_KEY` /
-`SIZE_KEY` per file) and survives a viewport resize via a re-clamp on
-the `resize` event. The "menu stays open while you click inside" rule
-(see below) treats these windows as logically-inside-the-tools-menu.
+Position + size persist per-window in `_sessionLayouts` (module-level
+Map keyed by `storageKey`) — survives close/reopen within a session
+but doesn't follow you to another device. Re-clamp on viewport resize
+keeps the window grabbable when the browser shrinks.
+
+### Anchored vs freeform Tools menu
+
+The Tools menu has two modes, toggled via the `↗ Pop out` / `↺ Anchor`
+button in its header (`toolsFreeform` state, persisted in
+`pokerxyz:tools:freeform`):
+
+- **Anchored** (default): portaled to body, pinned just below the
+  Tools button via `toolsMenuAnchorRect`. Has the manual × close
+  button on the right of its header (matches the FloatingWindow
+  title-bar × styling).
+- **Freeform**: itself a `FloatingWindow`. Rides the standard
+  click-raise rules — the docked-menu z-bumping logic is gated on
+  `!toolsFreeform`.
 
 ### Tools menu — companion-surface exemptions
 
 `poker/page.jsx` has a pointerdown handler that auto-closes the Tools
-menu on any click outside its `tableMenuRef`. Several surfaces are
+menu on any click outside its `tableMenuRef`. These surfaces are
 exempted so a click inside them keeps the dropdown open:
 
-- `chatDockRef` — wraps the chat-dock container.
-- `sideBetsDockRef` — wraps the side-bets dock container.
-- `[data-pokerwin="1"]` data-attribute on `PokerWindow`'s outer node.
-  Detected via `event.target.closest()` since the window portals to
-  body and isn't inside any React ref hierarchy.
+- `chatDockRef` — chat-dock container.
+- `sideBetsDockRef` — side-bets dock container.
+- `hudDockRef` — InvestmentHUD anchored slot.
+- `pokerPanelRef` — active tool panel (Bank / Bots / Blinds / etc.).
+- `[data-tools-menu="1"]` — the portaled docked menu itself.
+- `[data-pokerwin="1"]` — `PokerWindow`'s outer node (it portals to
+  body, isn't inside any React ref hierarchy).
 
 Any new companion surface (a future right-rail panel, etc.) that the
 user expects to interact with WHILE the menu is open should either get
@@ -259,6 +350,13 @@ Each lives in its own dir with `<feature>Repository.js` + `<feature>Routes.js`
   indistinguishable from auto-mints.
 - Hand history: migration 029 (`anonymous_hand_archive`) — separate from
   the per-user hand log; used for training data and anonymous review.
+- `server/src/casino/` — slots / craps / lottery on a stateless engine.
+  Stands apart from the other market engines: no per-player position
+  state, no hand-end hook. Every action settles immediately against
+  the bank and replies with a per-player `casino:slots:result` /
+  `casino:craps:result` / `casino:lottery:result` message; the panel
+  reads those to drive its animations. See "Casino engine specifics"
+  below.
 
 Single-file world engines live next to those: `server/src/{influence,
 items,jobs,stocks,world}/` are each one engine module (e.g.
@@ -291,6 +389,94 @@ screen corners (`scamPopups` array in `poker/page.jsx`); the first
 keeps the centered backdrop, popups 2-5 peel to corners. The pin_hack
 popup is always centered (only one in flight per target at a time).
 
+### Gambler bot strategies (`server/src/bots/gambler/strategies.js`)
+
+Five auto-provisioned bots (Splashy / Chaser / Maniac / Sticky / Hunter)
+seeded for every new user. They're user-scripted JS bots like any other —
+the script source lives here.
+
+Each strategy is a `_decide(ctx)` function with a thin `decide(ctx)`
+wrapper that post-processes the result. The wrapper checks
+`streetBetLevel(ctx)` (in `SHARED_HELPERS`) — preflop counts the BB as
+the opening "bet" so `level === 4` means the street has seen a 4-bet
+already. If `_decide` returns `{ action: 'raise', ... }` at that level,
+the wrapper swaps it to `{ action: 'all_in' }`. Rule: once the action
+is past the 4-bet, the next raise is a shove, never another small
+re-raise that drags the table into 5-bet / 6-bet territory.
+
+Future edits to these five bots must preserve the wrapper OR move the
+rule into each `_decide` body — otherwise the bots regress to
+mini-raising each other indefinitely.
+
+### Casino engine specifics (`server/src/casino/casinoEngine.js`)
+
+Three mini-games on one engine. Different shape from every other
+market in this repo:
+
+- **Stateless on the server.** No per-player holdings, no hand-end
+  tick. The engine's only persistent surface is `casinoEngine.buildSnapshot()`
+  which returns a config payload (symbol weights, payout multipliers,
+  craps bet ids, lottery prize tiers). Sent once on join + reconnect
+  via `casino:state`. The client mirrors this — it doesn't keep a
+  `casinoState` ledger between sessions, just the most recent
+  `casinoLastSpin` / `casinoLastRoll` / `casinoLastBuy` from the WS
+  reply.
+- **Per-player result dispatch.** Unlike asset/stock/crypto trades
+  which broadcast room-wide state, casino sends `casino:slots:result`,
+  `casino:craps:result`, `casino:lottery:result` ONLY to the acting
+  player. Other seats don't care what reels you spun. The handler
+  still calls `broadcastRoomUpdate()` so the new bank balance shows
+  up in the seat popovers — but the spin's outcome detail (which
+  symbols, which dice, which prize tiers) is private.
+- **Bank-balance-only.** Every wager debits / credits `player.bankBalance`,
+  never `player.chips`. The slot reels are not poker chips on the
+  table — they're off-table gambling against the house. If you add a
+  new game, follow the same rule (and the same MAX_*_BET caps to
+  keep variance bounded against the trillion-scale economy).
+- **House edges** (verified empirically over 2M+ trials):
+  - Slots: ~96% RTP. 3-of-a-kind from cherry (3×) up to seven (4000×),
+    plus a 0.5× two-cherry consolation. Virtual 64-stop reels weighted
+    so the seven jackpot is 2 stops out of 64.
+  - Craps: real Vegas one-roll edges. 6/8 are the player-friendly bets
+    (~2.8%), corner bets (2/12, 3/11, 4/10) are 11-17%, 7 is 16.7%, the
+    hard 6/8 hop bets are 72% (authentic Vegas hard-way trap — don't
+    "fix" them).
+  - Lottery: ~22% RTP. 12 prize tiers, $5 → $10B jackpot at 1-in-10¹⁵.
+    Per-ticket sequential roll on the server (Math.random + a 12-entry
+    cumulative-probability scan) — 1M tickets per click runs in a
+    couple of frames.
+
+### Casino slot animation lifecycle (`client/app/poker/components/CasinoPanel.jsx`)
+
+The slot reels have a load-bearing rule: **only real new spins animate.**
+Tab switches, panel reopens, and idle remounts must NOT replay the spin.
+This required some care:
+
+- `spinId` is owned by `CasinoPanel` (not `SlotsTab`) so it survives
+  the SlotsTab unmount/remount when the user toggles to Craps/Lottery.
+- `seenSpin` ref initializes to the CURRENT `lastSpin` at mount, not
+  null. That way reopening the casino with a prior result in scope
+  doesn't bump `spinId` and trigger a phantom animation — only a new
+  ref (a fresh server reply) bumps it.
+- Each `Reel` has its own `animatedRef = useRef(spinId)`. The effect
+  watching `[spinId]` bails when `spinId === animatedRef.current` — so
+  a fresh Reel mount with an unchanged spinId skips the animation.
+- The Reel's drum uses a **single CSS transition with cubic-bezier
+  ease-out**, not an infinite-loop animation + snap-to-result. The
+  strip is rebuilt per spinId with the final three cells = (filler,
+  result, filler); `translateY(0) → translateY(finalOffset)` over the
+  duration with `requestAnimationFrame` x2 between the snap and the
+  spin to force a paint between the two transform writes (otherwise
+  the browser collapses them into a teleport).
+- Win highlight (`isWinning`) lives on the **payline div** (z-10),
+  NOT the whole reel viewport. The symbol strip is z-20, vignettes
+  z-30. Result: the amber glow shines through the SVG's transparent
+  gutters around the fruit but doesn't tint the fruit pixels themselves
+  — the user explicitly called this out as wanted behavior.
+
+The same `lastSpin`-ref-on-mount pattern applies to craps + lottery
+P/L tallies (`seenRoll`, `seenBuy`) so reopens don't double-count.
+
 ### Jobs board success rates
 
 `server/src/jobs/jobsEngine.js` — success rates are computed at
@@ -304,7 +490,8 @@ $1M → 1%, ≥$10M → 0.1%. Edit one map to change them all.
 Client mirrors: `client/app/feed/`, `client/app/users/`, plus components
 like `DmsPopup`, `NotificationsBell`, `FeedWindow`, `PostCard`,
 `PostComposer`, `SideBetsPanel`, `PeerLoanPanel`, `InvestmentHUD`,
-`StocksPanel`, `CryptoMarketPanel`, `AssetsPanel`, `WorldPanel`.
+`StocksPanel`, `CryptoMarketPanel`, `AssetsPanel`, `WorldPanel`,
+`CasinoPanel`.
 
 ## Commands
 
@@ -364,12 +551,12 @@ The client has no test runner today.
 - **CloudFront overwrites**: when replacing an object at the same key,
   issue a `create-invalidation` — propagation is 5–10 min and async.
 - **Money-mutating WS handlers** (`stock:*`, `crypto:*`, `asset:*`,
-  `options:*`, `job:claim`, etc.) must call `room.broadcastRoomUpdate()`
-  after a successful mutation. The client's `room_update` handler
-  applies the bundled `gameState`, which is the only way live bank
-  balance updates flow back to the seat-click popover between hands.
-  If you skip the broadcast, the player will see stale bank numbers
-  until the next poker action.
+  `options:*`, `job:claim`, `casino:*`, etc.) must call
+  `room.broadcastRoomUpdate()` after a successful mutation. The
+  client's `room_update` handler applies the bundled `gameState`,
+  which is the only way live bank balance updates flow back to the
+  seat-click popover between hands. If you skip the broadcast, the
+  player will see stale bank numbers until the next poker action.
 - **Persistent client state** (localStorage): `poker_blind_level_pref`
   was the source of the "auto-jam on the post" bug — it silently
   re-proposed a saved high-stakes blind level on every join. New
