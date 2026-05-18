@@ -66,6 +66,12 @@ export function buildEventForPlayer(summary, player, extra = {}) {
 export async function applyDailyToPlayer(player, event) {
   if (!player || !event) return
   if (player.isBot) return
+  // Daily challenges require a saved account — anonymous seats can't
+  // bank progress, can't pile up the trophy ladder, and can't claim
+  // the chip reward in any meaningful sense (it dies with the
+  // session). Early-return so the engine doesn't tick progress and
+  // doesn't credit the bonus chips for users who can't keep them.
+  if (!player.userId) return
 
   const today = todayDateKey()
   const daily = getTodayDaily()
@@ -96,19 +102,15 @@ export async function applyDailyToPlayer(player, event) {
   if (justCompleted) {
     player.dailyCompleted = true
     player.dailyCompletedAt = Date.now()
-    player.chips += DAILY_REWARD_CHIPS  // reward fires for everyone (signed-in or not)
-    if (player.userId) {
-      player.dailiesCompleted = (player.dailiesCompleted || 0) + 1
-    }
+    player.chips += DAILY_REWARD_CHIPS
+    player.dailiesCompleted = (player.dailiesCompleted || 0) + 1
   }
 
-  // Persist for signed-in users only. Anonymous progress dies with the
-  // session — same rule as the existing ELO / hands-played counters.
-  if (player.userId) {
-    persistDailyProgress(player, today, justCompleted).catch(err =>
-      console.warn('[daily] persist failed:', err.message)
-    )
-  }
+  // Top of this function already gated on player.userId — anon seats
+  // never reach this line, so persist is unconditional now.
+  persistDailyProgress(player, today, justCompleted).catch(err =>
+    console.warn('[daily] persist failed:', err.message)
+  )
 }
 
 async function persistDailyProgress(player, dateKey, justCompleted) {

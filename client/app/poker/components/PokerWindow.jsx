@@ -1,54 +1,13 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import CardSprite from '../../components/CardSprite'
+import FloatingWindow from '../../components/FloatingWindow'
 
 // Floating PiP-style poker window. Mirrors the main table's state
 // (parent passes everything in as props) and routes actions through
 // the same `send()` callback the main view uses — so a click inside
 // here moves the real game forward and the underlying table updates
-// in sync. Built on the same drag/resize/portal chrome as FeedWindow.
-
-const POS_KEY = 'pokerxyz:pokerwin:pos'
-const SIZE_KEY = 'pokerxyz:pokerwin:size'
-const MIN_W = 280
-const MIN_H = 360
-const TITLE_H = 32
-
-function defaultLayout() {
-  if (typeof window === 'undefined') return { x: 80, y: 100, w: 340, h: 480 }
-  const vw = window.innerWidth
-  const vh = window.innerHeight
-  const w = Math.max(MIN_W, Math.min(360, Math.floor(vw * 0.7)))
-  const h = Math.max(MIN_H, Math.min(520, Math.floor(vh * 0.75)))
-  const x = Math.max(16, Math.min(96, vw - w - 16))
-  const y = Math.max(16, Math.min(80, vh - h - 16))
-  return { x, y, w, h }
-}
-
-function loadJson(key, fallback) {
-  if (typeof window === 'undefined') return fallback
-  try {
-    const raw = window.localStorage.getItem(key)
-    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback
-  } catch { return fallback }
-}
-function saveJson(key, value) {
-  if (typeof window === 'undefined') return
-  try { window.localStorage.setItem(key, JSON.stringify(value)) } catch {}
-}
-
-function clamp({ x, y, w, h }) {
-  if (typeof window === 'undefined') return { x, y, w, h }
-  const vw = window.innerWidth
-  const vh = window.innerHeight
-  const cw = Math.max(MIN_W, Math.min(w, vw - 16))
-  const ch = Math.max(MIN_H, Math.min(h, vh - 16))
-  const cx = Math.max(40 - cw, Math.min(x, vw - 40))
-  const cy = Math.max(0, Math.min(y, vh - TITLE_H))
-  return { x: cx, y: cy, w: cw, h: ch }
-}
+// in sync. Window chrome lives in FloatingWindow.
 
 function fmt(n) {
   const v = Math.max(0, Math.round(Number(n) || 0))
@@ -61,7 +20,6 @@ function fmt(n) {
 export default function PokerWindow({
   open,
   onClose,
-  onBack,
   // Game state — same shape the main view consumes.
   gameState,
   playerId,
@@ -80,82 +38,6 @@ export default function PokerWindow({
   // Action callback. `kind` is one of 'fold'|'check'|'call'|'raise'|'all_in'.
   onAction,
 }) {
-  const wrapRef = useRef(null)
-  const [pos, setPos] = useState(() => {
-    const def = defaultLayout()
-    return loadJson(POS_KEY, { x: def.x, y: def.y })
-  })
-  const [size, setSize] = useState(() => {
-    const def = defaultLayout()
-    return loadJson(SIZE_KEY, { w: def.w, h: def.h })
-  })
-  const [drag, setDrag] = useState(null)
-  const [resize, setResize] = useState(null)
-
-  // ── Drag / resize wiring (same pattern as FeedWindow) ─────────────
-  useEffect(() => {
-    if (!drag) return
-    function onMove(e) {
-      const next = clamp({ x: e.clientX - drag.dx, y: e.clientY - drag.dy, w: size.w, h: size.h })
-      setPos({ x: next.x, y: next.y })
-    }
-    function onUp() { setDrag(null) }
-    document.addEventListener('pointermove', onMove)
-    document.addEventListener('pointerup', onUp)
-    document.addEventListener('pointercancel', onUp)
-    return () => {
-      document.removeEventListener('pointermove', onMove)
-      document.removeEventListener('pointerup', onUp)
-      document.removeEventListener('pointercancel', onUp)
-    }
-  }, [drag, size.w, size.h])
-
-  useEffect(() => {
-    if (!resize) return
-    function onMove(e) {
-      const dx = e.clientX - resize.x0
-      const dy = e.clientY - resize.y0
-      const next = clamp({ x: pos.x, y: pos.y, w: resize.w0 + dx, h: resize.h0 + dy })
-      setSize({ w: next.w, h: next.h })
-    }
-    function onUp() { setResize(null) }
-    document.addEventListener('pointermove', onMove)
-    document.addEventListener('pointerup', onUp)
-    document.addEventListener('pointercancel', onUp)
-    return () => {
-      document.removeEventListener('pointermove', onMove)
-      document.removeEventListener('pointerup', onUp)
-      document.removeEventListener('pointercancel', onUp)
-    }
-  }, [resize, pos.x, pos.y])
-
-  useEffect(() => { if (!drag) saveJson(POS_KEY, pos) }, [pos, drag])
-  useEffect(() => { if (!resize) saveJson(SIZE_KEY, size) }, [size, resize])
-
-  useEffect(() => {
-    function onResize() {
-      const next = clamp({ ...pos, ...size })
-      setPos({ x: next.x, y: next.y })
-      setSize({ w: next.w, h: next.h })
-    }
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [pos.x, pos.y, size.w, size.h])
-
-  if (!open) return null
-  if (typeof document === 'undefined') return null
-
-  function onTitleDown(e) {
-    if (e.button !== 0 && e.pointerType === 'mouse') return
-    e.preventDefault()
-    setDrag({ dx: e.clientX - pos.x, dy: e.clientY - pos.y })
-  }
-  function onResizeDown(e) {
-    if (e.button !== 0 && e.pointerType === 'mouse') return
-    e.preventDefault()
-    setResize({ x0: e.clientX, y0: e.clientY, w0: size.w, h0: size.h })
-  }
-
   // ── Derived display state ─────────────────────────────────────────
   const seats = gameState?.players || []
   const community = gameState?.communityCards || []
@@ -163,55 +45,22 @@ export default function PokerWindow({
   const phase = gameState?.phase || 'waiting'
   const activeId = gameState?.activePlayerId
 
-  return createPortal(
-    <div
-      ref={wrapRef}
-      role="dialog"
-      aria-label="Poker game"
-      // The data attribute is the contract with poker/page.jsx's
-      // outside-click handler — clicks here MUST NOT close the Tools
-      // menu so the user can flip between menu and game freely.
-      data-pokerwin="1"
-      className="fixed z-[260] flex flex-col rounded-lg border border-emerald-400/40 bg-zinc-900/98 shadow-2xl backdrop-blur-md"
-      style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}
+  return (
+    <FloatingWindow
+      open={open}
+      onClose={onClose}
+      // Intentionally no onBack — the mini table is a permanent
+      // companion popup and doesn't need a back-to-Tools shortcut.
+      title={`Table · ${phase}`}
+      icon="♠"
+      accent="emerald"
+      storageKey="pokerxyz:pokerwin"
+      defaultWidth={340}
+      defaultHeight={520}
+      minHeight={360}
+      minWidth={280}
     >
-      {/* Title bar — drag handle + back/close. */}
-      <div
-        onPointerDown={onTitleDown}
-        className="flex items-center justify-between gap-2 rounded-t-lg border-b border-zinc-700 bg-zinc-950/60 px-2 py-1 cursor-move select-none"
-        style={{ height: TITLE_H }}
-      >
-        <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-emerald-200">
-          {onBack && (
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); onBack() }}
-              aria-label="Back to Tools menu"
-              title="Back to Tools menu"
-              className="inline-flex items-center gap-0.5 rounded-md border border-zinc-600/70 bg-zinc-800 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-100 transition-colors hover:bg-zinc-700"
-            >
-              <span aria-hidden className="text-[11px] leading-none">←</span>
-              Tools
-            </button>
-          )}
-          <span aria-hidden>♠</span>
-          <span>Table</span>
-          <span className="ml-2 text-zinc-500">· {phase}</span>
-        </div>
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onClose() }}
-          aria-label="Close poker window"
-          className="rounded px-1.5 text-base leading-none text-zinc-400 hover:bg-zinc-800 hover:text-white"
-        >×</button>
-      </div>
-
-      {/* Body. min-h-0 + flex-1 + overflow-y-auto keeps the window from
-          ballooning past its size on tall content (lots of players,
-          spectator panel, etc.). */}
-      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2 text-white">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-2 text-white">
         {/* Pot + community ────────────────────────────────────────── */}
         <div className="rounded-md border border-emerald-500/30 bg-gradient-to-b from-emerald-900/40 to-emerald-950/60 p-2">
           <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-emerald-200">
@@ -330,13 +179,10 @@ export default function PokerWindow({
               </button>
             </div>
 
-            {/* Raise row — input + slider + button. Mirrors the main
-                view's controls: typing a number, dragging the slider,
-                or clicking a quick-bet button all feed the same
-                `raiseAmount` state in the parent, so flipping between
-                the mini window and the full table keeps the value in
-                sync. Slider max = stack so a one-drag-to-end pegs at
-                all-in. */}
+            {/* Raise row — input + slider + quick-bets. Mirrors the
+                main view; all three controls feed the same parent
+                `raiseAmount` state so flipping between this window
+                and the full table keeps the value in sync. */}
             <div className={`flex flex-col gap-1 ${(!canAct || !hasRaiseRoom) ? 'opacity-40' : ''}`}>
               <div className="flex items-center gap-1">
                 <input
@@ -372,8 +218,6 @@ export default function PokerWindow({
                 title="Drag to bet — finer control via the input box"
                 className="h-1 w-full rounded-full bg-zinc-900 accent-amber-400 disabled:cursor-not-allowed"
               />
-              {/* Quick-bet shortcuts (¼ / ½ / pot / all-in), clamped to
-                  [minRaise, stack]. Compact, single row. */}
               <div className="grid grid-cols-4 gap-1">
                 {(() => {
                   const myChips = myPlayer?.chips || 0
@@ -406,17 +250,6 @@ export default function PokerWindow({
           </div>
         )}
       </div>
-
-      {/* Resize handle */}
-      <div
-        onPointerDown={onResizeDown}
-        className="absolute bottom-0 right-0 h-4 w-4 cursor-nwse-resize select-none rounded-br-lg"
-        style={{
-          background: 'linear-gradient(135deg, transparent 0%, transparent 50%, rgb(82 82 91 / 0.7) 50%, rgb(82 82 91 / 0.7) 100%)'
-        }}
-        aria-label="Resize poker window"
-      />
-    </div>,
-    document.body
+    </FloatingWindow>
   )
 }

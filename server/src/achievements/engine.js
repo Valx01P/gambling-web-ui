@@ -18,6 +18,12 @@ import { KINDS as NOTIF } from '../notifications/notificationsRepository.js'
 
 export function evaluateAchievements(player, event) {
   if (!player || player.isBot || !event) return
+  // Anonymous seats don't earn achievements — there's nowhere to
+  // persist them, and the Build-My-Bot CTA the toast offers requires
+  // an authenticated account anyway. Skipping the entire eval means
+  // anon users never see a toast they can't act on AND can't trigger
+  // cumulative counter ticks that would silently no-op at persist time.
+  if (!player.userId) return
   const owned = new Set(player.achievements || [])
   const newlyUnlocked = []
 

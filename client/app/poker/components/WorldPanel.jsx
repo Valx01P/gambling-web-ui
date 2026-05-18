@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import InfluenceOpsTab, { INFLUENCE_OPS_BY_MARKET } from './InfluenceOpsTab'
 import CatalogIcon from './CatalogIcon'
 import WorldMapView from './WorldMapView'
 
@@ -175,10 +176,17 @@ function TerritoryRow({ t, myChips, joined, yieldMul, onClaim, onMakeOffer, onAc
   )
 }
 
-export default function WorldPanel({ worldState, myChips, joined, myPlayerId, onClaim, onPandemic, onMakeOffer, onAcceptOffer, onDeclineOffer, onCancelOffer }) {
+export default function WorldPanel({
+  worldState, myChips, joined, myPlayerId,
+  onClaim, onPandemic, onMakeOffer, onAcceptOffer, onDeclineOffer, onCancelOffer,
+  // Influence ops integrated as a fourth view here (pandemic is the
+  // world-relevant op). Optional so the panel renders fine without it.
+  influenceState = null, onRunInfluence,
+}) {
   // 'globe' = real SVG world map with country borders
   // 'map'   = stylized regional grid (faster, no network for the topojson)
   // 'list'  = full detail per territory
+  // 'influence' = pay-to-disrupt ops (pandemic etc.) — separate view
   const [view, setView] = useState('globe')
   const territories = worldState?.territories || []
   const myOwned = territories.filter(t => t.isMine).length
@@ -255,6 +263,18 @@ export default function WorldPanel({ worldState, myChips, joined, myPlayerId, on
         >
           List
         </button>
+        {/* Influence Ops view — pandemic is the world-relevant op.
+            Only renders when the caller passed influence state. */}
+        {influenceState && onRunInfluence && (
+          <button
+            type="button"
+            onClick={() => setView('influence')}
+            className={`flex-1 rounded-md border px-2 py-1.5 ${view === 'influence' ? 'border-violet-500/60 bg-violet-500/20 text-violet-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
+            title="Pay-to-disrupt ops that hit the world map"
+          >
+            Influence
+          </button>
+        )}
       </div>
 
       <div className="rounded-lg border border-red-500/40 bg-red-950/40 p-3">
@@ -276,7 +296,17 @@ export default function WorldPanel({ worldState, myChips, joined, myPlayerId, on
         </div>
       </div>
 
-      {view === 'globe' ? (
+      {view === 'influence' && influenceState && onRunInfluence ? (
+        <InfluenceOpsTab
+          opIds={INFLUENCE_OPS_BY_MARKET.world}
+          influenceState={influenceState}
+          myChips={myChips}
+          onRun={onRunInfluence}
+          joined={joined}
+          accent="purple"
+          intro="Pay-to-disrupt ops that hit the world map directly. Pandemic crashes territory yields globally and tanks real-estate values."
+        />
+      ) : view === 'globe' ? (
         <WorldMapView
           territories={territories}
           myChips={myChips}

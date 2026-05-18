@@ -3,6 +3,7 @@
 import { useEffect } from 'react'
 import { useAuth } from '../lib/useAuth'
 import { hydrateFromLocalStorage, hydrateFromServerUser } from '../lib/feltColor'
+import { hydrateFromServerUser as hydrateZoomsFromServerUser } from '../lib/windowZooms'
 
 // Tiny client component mounted once in the root layout. Responsible
 // for getting the site-wide felt color into the shared store on every
@@ -27,7 +28,12 @@ export default function FeltBootstrap() {
   }, [])
 
   useEffect(() => {
-    if (user) hydrateFromServerUser(user)
+    if (!user) return
+    hydrateFromServerUser(user)
+    // Window zoom map travels in the same /auth/me payload — hydrate
+    // it alongside felt color so popups open at the user's saved size
+    // on cold start, not the 100% default.
+    hydrateZoomsFromServerUser(user)
   }, [user])
 
   return null

@@ -66,6 +66,10 @@ export const api = {
   // Site-wide felt color preference. Body: `{ colorId, customColors }`.
   // Server validates both; see feltColor.js for the shape.
   setFelt: (payload) => apiFetch('/api/auth/me/felt', { method: 'POST', auth: true, body: payload }),
+  // One window's zoom percent. Body: `{ key, zoom }`. zoom=100 or null
+  // clears the entry. See client/app/lib/windowZooms.js.
+  setWindowZoom: ({ key, zoom }) =>
+    apiFetch('/api/auth/me/window-zoom', { method: 'POST', auth: true, body: { key, zoom } }),
 
   // Native auth — email/password with a 6-digit code verification step.
   // Lives alongside Google OAuth; a user can have either or both.

@@ -102,15 +102,17 @@ export default function AccountDock() {
     <div
       // pointer-events-none on the wrapper lets clicks pass through to
       // the page in the empty space around the stack; each child re-
-      // enables pointer-events via the button itself. z-[120] keeps the
-      // dock above page-level chrome (z-50 header rows etc.) without
-      // racing the very-top modal layer (z-200+).
+      // enables pointer-events via the button itself. z-[500] keeps
+      // the dock above the floating-window popup range (260+) so the
+      // profile / DMs / notifications stay clickable even when a popup
+      // is in front of the table. The active tool panel (z-[600]) and
+      // anchored Tools menu (z-[700]) still outrank it intentionally.
       // The `right` offset is `max(<mobile-offset>, calc((100vw - 80rem) / 2 + <mobile-offset>))`
       // so on viewports wider than the `max-w-7xl` (80rem = 1280px) content
       // band, the dock tracks the content's right edge instead of drifting
       // to the viewport edge. Below 80rem it stays at the original 12/16px
       // viewport gutter. Mirrors the RouteNavCluster offset math.
-      className="pointer-events-none fixed top-3 z-[120] flex flex-col items-end gap-2 sm:top-4 right-[max(0.75rem,calc((100vw-80rem)/2+0.75rem))] sm:right-[max(1rem,calc((100vw-80rem)/2+1rem))]"
+      className="pointer-events-none fixed top-3 z-[500] flex flex-col items-end gap-2 sm:top-4 right-[max(0.75rem,calc((100vw-80rem)/2+0.75rem))] sm:right-[max(1rem,calc((100vw-80rem)/2+1rem))]"
     >
       {/* AccountMenu still mounts even when its visible chip is
           suppressed — it owns the AuthGateModal portal and the global

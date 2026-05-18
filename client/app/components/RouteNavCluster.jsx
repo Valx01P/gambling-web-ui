@@ -82,7 +82,7 @@ export default function RouteNavCluster({ as: As = 'div', className = '', childr
     : 'right-[max(0.75rem,calc((100vw-80rem)/2+0.75rem))] sm:right-[max(1rem,calc((100vw-80rem)/2+1rem))]'
   return (
     <As
-      className={`fixed ${offset} top-3 z-10 flex items-center gap-2 sm:top-4 ${className}`}
+      className={`fixed ${offset} top-3 z-[500] flex items-center gap-2 sm:top-4 ${className}`}
       {...rest}
     >
       {children}

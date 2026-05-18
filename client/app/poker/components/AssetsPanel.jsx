@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import InfluenceOpsTab, { INFLUENCE_OPS_BY_MARKET } from './InfluenceOpsTab'
 import CatalogIcon from './CatalogIcon'
 
 // Real-estate / appreciating-assets panel. Server is the source of
@@ -20,7 +21,12 @@ function fmtChipsCompact(amount) {
   return n.toLocaleString()
 }
 
-export default function AssetsPanel({ assetsState, myChips, onBuy, onSell, joined }) {
+export default function AssetsPanel({
+  assetsState, myChips, onBuy, onSell, joined,
+  // Influence-ops integration — real-estate-relevant ops (pandemic)
+  // appear as a tab. Optional; not wired in legacy callers.
+  influenceState = null, onRunInfluence,
+}) {
   const [tab, setTab] = useState('market')
   const catalog = assetsState?.catalog || []
   const positions = assetsState?.myPositions || []
@@ -80,6 +86,16 @@ export default function AssetsPanel({ assetsState, myChips, onBuy, onSell, joine
         >
           Holdings ({positions.length})
         </button>
+        {influenceState && onRunInfluence && (
+          <button
+            type="button"
+            onClick={() => setTab('influence')}
+            className={`flex-1 rounded-md border px-2 py-1.5 ${tab === 'influence' ? 'border-violet-500/60 bg-violet-500/20 text-violet-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
+            title="Ops that hit real-estate"
+          >
+            Influence
+          </button>
+        )}
       </div>
 
       {tab === 'market' && (
@@ -174,6 +190,18 @@ export default function AssetsPanel({ assetsState, myChips, onBuy, onSell, joine
             })
           )}
         </div>
+      )}
+
+      {tab === 'influence' && influenceState && onRunInfluence && (
+        <InfluenceOpsTab
+          opIds={INFLUENCE_OPS_BY_MARKET.assets}
+          influenceState={influenceState}
+          myChips={myChips}
+          onRun={onRunInfluence}
+          joined={joined}
+          accent="emerald"
+          intro="Real-estate-disrupting ops. A pandemic crashes territory yields globally and tanks property values — buy the dip if you can stomach it."
+        />
       )}
     </div>
   )

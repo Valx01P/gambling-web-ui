@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback, useMemo, useDeferredValue, startTransition } from 'react'
+import { createPortal } from 'react-dom'
 import PokerChip from '../components/PokerChip'
 import CardSprite from '../components/CardSprite'
 import { BetChips, PotChips } from '../components/ChipStack'
@@ -52,12 +53,21 @@ import PeekRevealModal from './components/PeekRevealModal'
 import ScamPopupModal from './components/ScamPopupModal'
 import PinHackModal from './components/PinHackModal'
 import PokerWindow from './components/PokerWindow'
+import FloatingWindow, {
+  cycleNextFloatingWindow,
+  toggleHideAllFloatingWindows,
+  showAllFloatingWindows,
+  clearAllFloatingWindowLayouts,
+  closeCurrentFloatingWindow,
+  focusLastFloatingWindow,
+  prevFloatingWindow,
+  nextFloatingWindow,
+} from '../components/FloatingWindow'
 import AssetsPanel from './components/AssetsPanel'
 import JobsPanel from './components/JobsPanel'
 import StocksPanel from './components/StocksPanel'
 import WorldPanel from './components/WorldPanel'
 import InvestmentHUD from './components/InvestmentHUD'
-import InfluencePanel from './components/InfluencePanel'
 import { resolveSkinCss } from '../lib/skinPresets'
 import { buildPokerStatistics, buildSpectatorStatistics, evaluateHand, formatCard, formatPercent, getHandName } from '../lib/pokerOdds'
 // Seat geometry lives in ./lib/seatLayout — shared by spectator view, the
@@ -178,6 +188,44 @@ const TOOLS_TOOLTIPS = {
   profile:  'Edit your username / avatar',
   reset:    'Wipe your bankroll back to starting chips',
   big_yahu: 'Forgive all loans, reset P/L (one-use unlock)',
+}
+
+// Market / power panels that open as floating widgets instead of as
+// embedded panels under the Tools dropdown. `accent` maps to a
+// FloatingWindow accent; `title` shows in the title bar; the rest of
+// the entries (bank/blinds/contest/arena/profile/skin/reset/big_yahu/
+// help/hand/session/daily) keep the existing embedded-panel rendering
+// because they're admin/info surfaces, not "stay open while you play"
+// widgets.
+const MARKET_WIDGET_IDS = new Set([
+  'crypto', 'items', 'assets', 'jobs', 'stocks', 'world',
+])
+
+// Panels in these Tools-menu categories layer ABOVE the docked Tools
+// menu (z-[800] via the portal). Without the bump they sit at the
+// default panel z (z-[600]) and the still-open Tools dropdown ends
+// up painted over them.
+const ELEVATED_PANEL_IDS = new Set([
+  // Actions
+  'bots', 'blinds', 'contest', 'arena', 'reset', 'big_yahu',
+  // Profile
+  'skin', 'profile',
+  // Basic Info
+  'hand', 'session',
+  // Guide
+  'help', 'shortcuts',
+  // Bank — same treatment, user-confirmed it was being covered.
+  'bank',
+  // Daily Challenge
+  'daily',
+])
+const MARKET_WIDGET_META = {
+  crypto:    { title: 'Crypto Market', icon: '★', accent: 'fuchsia', defaultWidth: 420, defaultHeight: 560 },
+  items:     { title: 'Items & Powers', icon: '★', accent: 'cyan',    defaultWidth: 380, defaultHeight: 520 },
+  assets:    { title: 'Real Estate',    icon: '★', accent: 'emerald', defaultWidth: 400, defaultHeight: 560 },
+  jobs:      { title: 'Jobs Board',     icon: '★', accent: 'orange',  defaultWidth: 380, defaultHeight: 520 },
+  stocks:    { title: 'Stock Market',   icon: '★', accent: 'sky',     defaultWidth: 440, defaultHeight: 600 },
+  world:     { title: 'World Map',      icon: '★', accent: 'purple',  defaultWidth: 460, defaultHeight: 600 },
 }
 
 const TOOLS_LRU_META = {
@@ -718,11 +766,70 @@ export default function PokerPage() {
   const [spectatorRevealAll, setSpectatorRevealAll] = useState(false)
   const [spectatorHoveredPlayerId, setSpectatorHoveredPlayerId] = useState(null)
   const [tableMenuOpen, setTableMenuOpen] = useState(false)
+  // Anchored Tools menu is rendered via a portal to document.body so
+  // its z-index applies at the document root, not inside the nav
+  // cluster's stacking context. (Without the portal, the menu's z is
+  // capped by the cluster, and elements like the equity widget end
+  // up painted on top of it.) We track the Tools button's screen rect
+  // so the portaled menu can pin itself just below the button.
+  const [toolsMenuAnchorRect, setToolsMenuAnchorRect] = useState(null)
   // Floating PiP poker window — opens from the Tools menu's
   // ★ Mini Table entry. Mirrors the main view's state (same React
   // tree), so actions inside the window move the real game and
   // updates from the server immediately reflect both surfaces.
   const [pokerWindowOpen, setPokerWindowOpen] = useState(false)
+  // Market panels promoted to floating widgets. Each id in the set
+  // renders as its own draggable FloatingWindow at body level instead
+  // of (or in addition to) the embedded panel slot under the Tools
+  // dropdown. Clicking the tool entry adds; clicking the widget's ×
+  // removes. Persisted in localStorage so a panel left open survives
+  // a refresh.
+  const [widgetPanels, setWidgetPanels] = useState(() => {
+    if (typeof window === 'undefined') return new Set()
+    try {
+      const raw = window.localStorage.getItem('pokerxyz:widgets:open')
+      const parsed = raw ? JSON.parse(raw) : []
+      return new Set(Array.isArray(parsed) ? parsed : [])
+    } catch { return new Set() }
+  })
+  const setWidgetPanelsPersist = useCallback((updater) => {
+    setWidgetPanels(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      try { window.localStorage.setItem('pokerxyz:widgets:open', JSON.stringify([...next])) } catch {}
+      return next
+    })
+  }, [])
+  // Tools menu freeform mode. Default false → menu drops down anchored
+  // to the Tools button (current behavior). When true → menu lives as
+  // a FloatingWindow you can drag anywhere; position persists.
+  const [toolsFreeform, setToolsFreeform] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try { return window.localStorage.getItem('pokerxyz:tools:freeform') === '1' } catch { return false }
+  })
+  const setToolsFreeformPersist = useCallback((next) => {
+    setToolsFreeform(next)
+    try { window.localStorage.setItem('pokerxyz:tools:freeform', next ? '1' : '0') } catch {}
+  }, [])
+  // Per-widget freeform flags. Default off — widget renders in its
+  // historical anchored position. On → widget wraps in FloatingWindow
+  // (drag/resize/persist). The map covers the widgets the user can
+  // explicitly toggle: chat dock, side-bets dock, finances widget,
+  // investment HUD, hand-equity HUD. The mini-table + market widgets
+  // are ALWAYS freeform (they're widget-only) so they don't appear here.
+  const [widgetFreeform, setWidgetFreeform] = useState(() => {
+    if (typeof window === 'undefined') return {}
+    try {
+      const raw = window.localStorage.getItem('pokerxyz:widgets:freeform')
+      return raw ? JSON.parse(raw) : {}
+    } catch { return {} }
+  })
+  const toggleWidgetFreeform = useCallback((widgetId) => {
+    setWidgetFreeform(prev => {
+      const next = { ...prev, [widgetId]: !prev[widgetId] }
+      try { window.localStorage.setItem('pokerxyz:widgets:freeform', JSON.stringify(next)) } catch {}
+      return next
+    })
+  }, [])
   // Two-step confirm for the custom-felt × buttons. First click sets
   // this to the slot index (turning that × red); a second click on the
   // SAME × actually clears the slot. Any other × click reassigns the
@@ -1267,6 +1374,29 @@ export default function PokerPage() {
     return () => clearInterval(timerId)
   }, [joined, gameState?.activeTurnExpiresAt])
 
+  // Track the Tools button's screen position so the portaled anchored
+  // menu can pin itself just below it. Recomputes on resize + scroll
+  // (capture phase, to catch scrolls inside ancestors like ZoomLayer).
+  useEffect(() => {
+    if (!tableMenuOpen) {
+      setToolsMenuAnchorRect(null)
+      return
+    }
+    function compute() {
+      const el = tableMenuRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      setToolsMenuAnchorRect({ bottom: r.bottom, right: window.innerWidth - r.right })
+    }
+    compute()
+    window.addEventListener('resize', compute)
+    window.addEventListener('scroll', compute, true)
+    return () => {
+      window.removeEventListener('resize', compute)
+      window.removeEventListener('scroll', compute, true)
+    }
+  }, [tableMenuOpen])
+
   useEffect(() => {
     if (!tableMenuOpen) {
       // Disarm the auto-fill confirm whenever the menu closes so reopening
@@ -1278,6 +1408,10 @@ export default function PokerPage() {
     function handlePointerDown(event) {
       const t = event.target
       if (tableMenuRef.current?.contains(t)) return
+      // The anchored menu is portaled to <body> now — it isn't inside
+      // tableMenuRef. data-tools-menu tags its outer node so a click
+      // on the menu still counts as "inside Tools".
+      if (t?.closest?.('[data-tools-menu="1"]')) return
       // Companion surfaces — clicking inside any of these stays
       // "logically inside the Tools menu" so the user can toggle
       // chat, place a side bet, or work the mini table without the
@@ -1287,6 +1421,12 @@ export default function PokerPage() {
       if (chatDockRef.current?.contains(t)) return
       if (sideBetsDockRef.current?.contains(t)) return
       if (t?.closest?.('[data-pokerwin="1"]')) return
+      // Active tool panel (Bank / Bots / Blinds / etc.) is logically a
+      // child of the Tools menu — clicking it keeps Tools open so the
+      // user can hit Back-to-Tools and pick another tool. Without this
+      // the panel's first interaction would collapse Tools out from
+      // under it.
+      if (pokerPanelRef.current?.contains(t)) return
       setTableMenuOpen(false)
     }
 
@@ -1306,6 +1446,67 @@ export default function PokerPage() {
     document.addEventListener('pointerdown', handlePointerDown)
     return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [activePokerPanel])
+
+  // Floating-window keyboard shortcuts. Ctrl-based — Cmd was off the
+  // table because macOS reserves Cmd+H system-wide to hide the whole
+  // app (browser couldn't even see the keystroke). Ctrl variants work
+  // on every platform. They no-op while the user is typing (form
+  // inputs / contenteditable) so they don't fight chat or the raise
+  // box, and only swallow the browser's default when a popup is
+  // actually available to act on.
+  //
+  //   Tab            cycle through popups (raise the bottom-most)
+  //   Ctrl+X         close the currently focused popup
+  //   Ctrl+A         jump back to the previously focused popup
+  //   Ctrl+←         previous popup in registration order
+  //   Ctrl+→         next popup in registration order
+  //   Ctrl+H         hide every popup off-screen / restore them
+  useEffect(() => {
+    function isTypingTarget(el) {
+      if (!el) return false
+      const tag = el.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+      if (el.isContentEditable) return true
+      return false
+    }
+    function onKeyDown(e) {
+      if (isTypingTarget(e.target)) return
+      // Only ctrlKey — explicitly NOT metaKey. Letting Cmd through on
+      // macOS would either get intercepted by the OS (Cmd+H) or
+      // clobber familiar text-editing chords the user expects.
+      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        const k = e.key.toLowerCase()
+        if (k === 'x') {
+          if (closeCurrentFloatingWindow()) e.preventDefault()
+          return
+        }
+        if (k === 'a') {
+          if (focusLastFloatingWindow()) e.preventDefault()
+          return
+        }
+        if (k === 'h') {
+          e.preventDefault()
+          toggleHideAllFloatingWindows()
+          return
+        }
+        if (e.key === 'ArrowLeft') {
+          if (prevFloatingWindow()) e.preventDefault()
+          return
+        }
+        if (e.key === 'ArrowRight') {
+          if (nextFloatingWindow()) e.preventDefault()
+          return
+        }
+      }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Tab') {
+        // Only intercept Tab when we actually have a window to raise —
+        // otherwise let the browser do its normal focus traversal.
+        if (cycleNextFloatingWindow()) e.preventDefault()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   // Parse URL for invite code
   useEffect(() => {
@@ -1654,6 +1855,31 @@ export default function PokerPage() {
           setSessionHands([])
           setActivePokerPanel(null)
           setTableMenuOpen(false)
+          // Fresh game = fresh window slate. Every popup closes and
+          // every freeform widget collapses back to its docked
+          // position. The user's zoom preferences are the only thing
+          // we still carry across (persisted via /me/window-zoom).
+          setPokerWindowOpen(false)
+          setFeedWindowOpen(false)
+          setFeedOpenedFromTools(false)
+          setWidgetFreeform({})
+          try { window.localStorage.removeItem('pokerxyz:widgets:freeform') } catch {}
+          // Market widgets (crypto / stocks / world / assets / jobs /
+          // items) each render as a FloatingWindow when in the set —
+          // wipe the set + its localStorage backing so they're closed
+          // on join, same as the other popups. setWidgetPanelsPersist
+          // already mirrors the new state to localStorage.
+          setWidgetPanelsPersist(new Set())
+          // If the user had pressed H to stash popups before joining,
+          // un-stash now — there are no popups to hide anymore, but
+          // we don't want the hide-flag lingering so the next popup
+          // they open isn't invisibly off-screen.
+          showAllFloatingWindows()
+          // Clear the session-scoped position/size memory so popups
+          // opened at this new table start at their computed defaults
+          // — a layout the user dialed in for one game shouldn't bleed
+          // into the next one.
+          clearAllFloatingWindowLayouts()
           setCurrentRoomId(msg.data.roomId || null)
           setIsSpectator(msg.data.isSpectator || false)
           applyGameState(msg.data.gameState)
@@ -2584,8 +2810,23 @@ export default function PokerPage() {
       setTableMenuOpen(false)
       return
     }
+    // Markets open as floating widgets, not as embedded panels —
+    // multiple can be open at once, each is draggable/resizable.
+    if (MARKET_WIDGET_IDS.has(panel)) {
+      setWidgetPanelsPersist(prev => {
+        const next = new Set(prev)
+        if (next.has(panel)) next.delete(panel)
+        else next.add(panel)
+        return next
+      })
+      if (panel && !TOOLS_LRU_BLOCKLIST.has(panel)) bumpToolsLRU(panel)
+      return
+    }
     setActivePokerPanel(prev => prev === panel ? null : panel)
-    setTableMenuOpen(false)
+    // Tools menu stays open while a panel is active — the panel layers
+    // on top (z-[600]) and Back-to-Tools returns focus to the still-
+    // visible menu so the user can pick another tool without re-
+    // opening Tools every time.
     if (panel === 'bots' || panel === 'arena') refreshBotRoster()
     if (panel === 'profile') {
       setProfileDraftName(username)
@@ -2661,10 +2902,12 @@ export default function PokerPage() {
         if (next) window.localStorage.removeItem(CHAT_VISIBLE_STORAGE_KEY)
         else window.localStorage.setItem(CHAT_VISIBLE_STORAGE_KEY, '0')
       } catch {}
-      // Chat and Side Bets share the same bottom-right slot in every mode
-      // (seated, spectator, arena) — only one can be visible at a time so
-      // turning chat on closes side bets.
-      if (next) {
+      // Chat + Side Bets share the same bottom-right dock slot. They
+      // can coexist when at least one is in freeform mode — only the
+      // both-docked case forces mutual exclusion. So turning chat on
+      // only kicks side bets out of the dock if side bets is also
+      // docked (i.e. not in freeform).
+      if (next && sideBetsDockVisible && !widgetFreeform.sidebets) {
         setSideBetsDockVisible(false)
         try { window.localStorage.setItem(SIDE_BETS_VISIBLE_STORAGE_KEY, '0') } catch {}
       }
@@ -2685,9 +2928,10 @@ export default function PokerPage() {
         if (next) window.localStorage.removeItem(SIDE_BETS_VISIBLE_STORAGE_KEY)
         else window.localStorage.setItem(SIDE_BETS_VISIBLE_STORAGE_KEY, '0')
       } catch {}
-      // Mutually exclude with chat — both docks share the same bottom-right
-      // slot. Turning side bets on closes chat.
-      if (next) {
+      // Mutually exclude only when BOTH would be docked. If chat is in
+      // freeform mode, it isn't using the dock slot, so side bets can
+      // dock without kicking chat out.
+      if (next && chatDockVisible && !widgetFreeform.chat) {
         setChatDockVisible(false)
         try { window.localStorage.setItem(CHAT_VISIBLE_STORAGE_KEY, '0') } catch {}
       }
@@ -3026,19 +3270,24 @@ export default function PokerPage() {
   // button so the user can toggle the dock off without hunting the Tools
   // menu. messagesEndRef is attached on every render; the parent already
   // owns the scroll-to-bottom effect.
-  const chatBoxInner = (
+  // `showInlineClose` lets the freeform FloatingWindow caller suppress
+  // the inner × — the floating chrome already has its own close, and
+  // rendering both would double-stack the X icon.
+  const renderChatInner = (showInlineClose = true) => (
     <>
       <div className="flex shrink-0 items-center justify-between border-b border-zinc-700/60 bg-zinc-900/60 px-3 py-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Chat</span>
-        <button
-          type="button"
-          onClick={toggleChatDock}
-          aria-label="Close chat"
-          title="Close chat"
-          className="-mr-2 rounded-md px-1.5 text-base leading-none text-zinc-400 transition-colors hover:bg-zinc-700/60 hover:text-zinc-100"
-        >
-          ×
-        </button>
+        {showInlineClose && (
+          <button
+            type="button"
+            onClick={toggleChatDock}
+            aria-label="Close chat"
+            title="Close chat"
+            className="-mr-2 rounded-md px-1.5 text-base leading-none text-zinc-400 transition-colors hover:bg-zinc-700/60 hover:text-zinc-100"
+          >
+            ×
+          </button>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto px-4 py-2 space-y-1">
         {chatMessages.length === 0 && sysMessages.length === 0 && (
@@ -3086,6 +3335,7 @@ export default function PokerPage() {
       </div>
     </>
   )
+  const chatBoxInner = renderChatInner(true)
 
   return (
     <div className="min-h-[100dvh] flex flex-col p-3 md:p-4 max-w-7xl mx-auto overflow-x-hidden">
@@ -3101,7 +3351,7 @@ export default function PokerPage() {
           system. The row keeps only the left cluster + a right-padding
           reservation to prevent that cluster from sliding under the
           fixed Tools+Lobby chips. */}
-      <div className={`relative flex flex-wrap items-center gap-y-2 mb-3 sm:mb-4 z-50 shrink-0 ${authUser ? 'pr-36 sm:pr-44' : 'pr-48 sm:pr-60'}`}>
+      <div className={`relative flex flex-wrap items-center gap-y-2 mb-3 sm:mb-4 z-[500] shrink-0 ${authUser ? 'pr-36 sm:pr-44' : 'pr-48 sm:pr-60'}`}>
         <div className="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0">
           {isArena && (
             <button
@@ -3263,14 +3513,27 @@ export default function PokerPage() {
               type="button"
               onClick={() => setTableMenuOpen(prev => {
                 const nextOpen = !prev
-                if (nextOpen) setActivePokerPanel(null)
+                if (nextOpen) {
+                  setActivePokerPanel(null)
+                  // If the user pressed H to stash popups, opening
+                  // Tools brings them all back — same effect as a
+                  // second H. Avoids a "wait, where did my windows
+                  // go?" moment when reaching for Tools.
+                  showAllFloatingWindows()
+                }
                 return nextOpen
               })}
               className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-zinc-500/50 bg-zinc-800/80 px-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-zinc-700/90 active:scale-95 sm:px-3 sm:text-sm"
             >
               Tools
             </button>
-            {tableMenuOpen && (
+            {tableMenuOpen && (() => {
+              // Tools dropdown body. Either anchors to the Tools button
+              // (default) OR floats free as a draggable window when the
+              // user has flipped `toolsFreeform` in the header. The
+              // body itself is identical — only the outer wrapper
+              // changes.
+              const menuBody = (
               // Explicit 2-column grid (not CSS multi-column). Each
               // column is its own flex stack, so section headers and
               // items in BOTH columns anchor to the same top edge —
@@ -3282,23 +3545,39 @@ export default function PokerPage() {
               // column locks every row to the same height/padding so
               // rows visually line up across columns even when the
               // sections themselves contain different items.
-              <div className="absolute right-0 top-full mt-2 z-[100] w-56 md:w-[28rem] max-w-[calc(100vw-1.5rem)] max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md">
+              <>
                 {/* Customize toggle — when on, every tool button shows
                     a × badge that toggles its hidden state. Persisted
                     in localStorage so hides survive reloads. */}
                 <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-1.5">
                   <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Tools</span>
-                  <button
-                    type="button"
-                    onClick={() => setToolsCustomizing(v => !v)}
-                    className={`text-[9px] font-black uppercase tracking-widest rounded-md border px-2 py-0.5 ${
-                      toolsCustomizing
-                        ? 'border-amber-400/60 bg-amber-500/20 text-amber-200'
-                        : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-white'
-                    }`}
-                  >
-                    {toolsCustomizing ? 'Done' : 'Customize'}
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {/* Free / anchor toggle — flips the dropdown into a
+                        draggable floating window and back. Persists. */}
+                    <button
+                      type="button"
+                      onClick={() => setToolsFreeformPersist(!toolsFreeform)}
+                      title={toolsFreeform ? 'Re-anchor to the Tools button' : 'Pop out as a draggable window'}
+                      className={`whitespace-nowrap text-[9px] font-black uppercase tracking-widest rounded-md border px-2 py-0.5 ${
+                        toolsFreeform
+                          ? 'border-emerald-400/60 bg-emerald-500/20 text-emerald-200'
+                          : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      {toolsFreeform ? '↺ Anchor' : '↗ Pop out'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setToolsCustomizing(v => !v)}
+                      className={`whitespace-nowrap text-[9px] font-black uppercase tracking-widest rounded-md border px-2 py-0.5 ${
+                        toolsCustomizing
+                          ? 'border-amber-400/60 bg-amber-500/20 text-amber-200'
+                          : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      {toolsCustomizing ? 'Done' : 'Customize'}
+                    </button>
+                  </div>
                 </div>
                 {/* Recents bar — last 5 panels you opened. Persists in
                     localStorage so it's there next session too. Sits
@@ -3378,70 +3657,78 @@ export default function PokerPage() {
                     ) && (
                       <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Markets</div>
                     )}
-                    {!roomDisabledTools.has('crypto') && (!toolsHidden.has('crypto') || toolsCustomizing) && (
-                      <button type="button" onClick={() => openPokerPanel('crypto')} title={TOOLS_TOOLTIPS.crypto} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-fuchsia-200 hover:bg-zinc-800 ${toolsHidden.has('crypto') ? 'opacity-40' : ''}`}>
-                        <span>★ Crypto Market</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('crypto') ? '+show' : '×hide'}</span>}
-                      </button>
-                    )}
-                    {!roomDisabledTools.has('items') && (!toolsHidden.has('items') || toolsCustomizing) && (
-                      <button type="button" onClick={() => openPokerPanel('items')} title={TOOLS_TOOLTIPS.items} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-lime-200 hover:bg-zinc-800 ${toolsHidden.has('items') ? 'opacity-40' : ''}`}>
-                        <span>★ Items &amp; Powers</span>
-                        {toolsCustomizing ? (
-                          <span className="ml-auto text-[9px] text-zinc-400">{toolsHidden.has('items') ? '+show' : '×hide'}</span>
-                        ) : (() => {
+                    {/* Market entries — they open as floating widgets,
+                        not embedded panels. To make that visually
+                        obvious, each uses the same dot + colored-text
+                        "On / Off" treatment the existing widget
+                        toggles (Hand Equity, Chat, etc.) use — colored
+                        + glowing when the widget is open, grayed when
+                        closed. The ★ prefix is gone; the dot does the
+                        work of "this is a togglable widget". */}
+                    {(() => {
+                      const MARKET_ENTRIES = [
+                        { id: 'crypto', label: 'Crypto Market',  on: 'text-fuchsia-200', dot: 'bg-fuchsia-400 shadow-[0_0_6px_rgba(232,121,249,0.7)]' },
+                        { id: 'items',  label: 'Items & Powers', on: 'text-lime-200',    dot: 'bg-lime-400 shadow-[0_0_6px_rgba(163,230,53,0.7)]' },
+                        { id: 'assets', label: 'Real Estate',    on: 'text-emerald-200', dot: 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)]' },
+                        { id: 'jobs',   label: 'Jobs Board',     on: 'text-orange-200',  dot: 'bg-orange-400 shadow-[0_0_6px_rgba(251,146,60,0.7)]' },
+                        { id: 'stocks', label: 'Stock Market',   on: 'text-sky-200',     dot: 'bg-sky-400 shadow-[0_0_6px_rgba(56,189,248,0.7)]' },
+                        { id: 'world',  label: 'World Map',      on: 'text-purple-200',  dot: 'bg-purple-400 shadow-[0_0_6px_rgba(192,132,252,0.7)]' },
+                      ]
+                      return MARKET_ENTRIES.map(({ id, label, on, dot }) => {
+                        if (roomDisabledTools.has(id)) return null
+                        if (toolsHidden.has(id) && !toolsCustomizing) return null
+                        const open = widgetPanels.has(id)
+                        const colorCls = open ? on : 'text-zinc-400'
+                        const dotCls = open ? dot : 'bg-zinc-600'
+                        let badge = null
+                        if (toolsCustomizing) {
+                          badge = <span className="ml-auto text-[9px] text-zinc-400">{toolsHidden.has(id) ? '+show' : '×hide'}</span>
+                        } else if (id === 'items') {
                           const ready = (itemsState?.items || []).filter(i => i.ready).length
-                          if (ready === 0) return null
-                          return (
-                            <span className="ml-auto rounded-md bg-lime-500/20 px-1.5 py-0.5 text-[10px] text-lime-300">
-                              {ready} ready
-                            </span>
-                          )
-                        })()}
-                      </button>
-                    )}
-                    {!roomDisabledTools.has('assets') && (!toolsHidden.has('assets') || toolsCustomizing) && (
-                      <button type="button" onClick={() => openPokerPanel('assets')} title={TOOLS_TOOLTIPS.assets} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-emerald-200 hover:bg-zinc-800 ${toolsHidden.has('assets') ? 'opacity-40' : ''}`}>
-                        <span>★ Real Estate</span>
-                        {toolsCustomizing ? (
-                          <span className="ml-auto text-[9px] text-zinc-400">{toolsHidden.has('assets') ? '+show' : '×hide'}</span>
-                        ) : (assetsState?.myPositions?.length > 0) && (
-                          <span className="ml-auto rounded-md bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-300">
-                            {assetsState.myPositions.length}
-                          </span>
-                        )}
-                      </button>
-                    )}
-                    {!roomDisabledTools.has('jobs') && (!toolsHidden.has('jobs') || toolsCustomizing) && (
-                      <button type="button" onClick={() => openPokerPanel('jobs')} title={TOOLS_TOOLTIPS.jobs} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-orange-200 hover:bg-zinc-800 ${toolsHidden.has('jobs') ? 'opacity-40' : ''}`}>
-                        <span>★ Jobs Board</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('jobs') ? '+show' : '×hide'}</span>}
-                      </button>
-                    )}
-                    {!roomDisabledTools.has('stocks') && (!toolsHidden.has('stocks') || toolsCustomizing) && (
-                      <button type="button" onClick={() => openPokerPanel('stocks')} title={TOOLS_TOOLTIPS.stocks} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-sky-200 hover:bg-zinc-800 ${toolsHidden.has('stocks') ? 'opacity-40' : ''}`}>
-                        <span>★ Stock Market</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('stocks') ? '+show' : '×hide'}</span>}
-                      </button>
-                    )}
-                    {!roomDisabledTools.has('world') && (!toolsHidden.has('world') || toolsCustomizing) && (
-                      <button type="button" onClick={() => openPokerPanel('world')} title={TOOLS_TOOLTIPS.world} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-purple-200 hover:bg-zinc-800 ${toolsHidden.has('world') ? 'opacity-40' : ''}`}>
-                        <span>★ World Map</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('world') ? '+show' : '×hide'}</span>}
-                      </button>
-                    )}
-                    {!roomDisabledTools.has('influence') && (!toolsHidden.has('influence') || toolsCustomizing) && (
-                      <button type="button" onClick={() => openPokerPanel('influence')} title={TOOLS_TOOLTIPS.influence} className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800 ${toolsHidden.has('influence') ? 'opacity-40' : ''}`}>
-                        <span>★ Influence Ops</span>{toolsCustomizing && <span className="text-[9px] text-zinc-400">{toolsHidden.has('influence') ? '+show' : '×hide'}</span>}
-                      </button>
-                    )}
+                          if (ready > 0) badge = <span className="ml-auto rounded-md bg-lime-500/20 px-1.5 py-0.5 text-[10px] text-lime-300">{ready} ready</span>
+                        } else if (id === 'assets') {
+                          const n = assetsState?.myPositions?.length || 0
+                          if (n > 0) badge = <span className="ml-auto rounded-md bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-300">{n}</span>
+                        }
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => openPokerPanel(id)}
+                            title={TOOLS_TOOLTIPS[id]}
+                            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${colorCls} ${toolsHidden.has(id) ? 'opacity-40' : ''}`}
+                          >
+                            <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${dotCls}`} />
+                            <span className="truncate">{label} {open ? 'On' : 'Off'}</span>
+                            {badge}
+                          </button>
+                        )
+                      })
+                    })()}
+                    {/* ★ Influence Ops entry removed — ops now live as
+                        tabs inside Stocks / World Map / Real Estate.
+                        roomDisabledTools.has('influence') is still
+                        respected via each host panel's conditional
+                        rendering of its Influence tab. */}
                     {authUser && (
                       <button
                         type="button"
                         onClick={() => {
-                          setFeedWindowOpen(true)
-                          setFeedOpenedFromTools(true)
-                          setTableMenuOpen(false)
+                          // Toggle the Feed window like the other widget
+                          // toggles — clicking when open closes it,
+                          // clicking when closed opens + brings focus.
+                          if (feedWindowOpen) {
+                            setFeedWindowOpen(false)
+                            setFeedOpenedFromTools(false)
+                          } else {
+                            setFeedWindowOpen(true)
+                            setFeedOpenedFromTools(true)
+                          }
                         }}
-                        className="block w-full px-3 py-2 text-left text-xs font-bold text-violet-200 hover:bg-zinc-800"
+                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold hover:bg-zinc-800 ${feedWindowOpen ? 'text-violet-200' : 'text-zinc-400'}`}
                       >
-                        ★ Social Media
+                        <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${feedWindowOpen ? 'bg-violet-400 shadow-[0_0_6px_rgba(167,139,250,0.7)]' : 'bg-zinc-600'}`} />
+                        <span className="truncate">Social Media {feedWindowOpen ? 'On' : 'Off'}</span>
                       </button>
                     )}
 
@@ -3515,6 +3802,20 @@ export default function PokerPage() {
                         </button>
                       </>
                     )}
+
+                    {/* ── GUIDE ───────────────────────────────────── */}
+                    {/* Hand-holding section — How to Play (moved from
+                        Basic Info) plus the reference for keyboard
+                        shortcuts that act on the floating popout
+                        windows. Sits under Daily so a new user landing
+                        here lands on the right onboarding ramp. */}
+                    <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Guide</div>
+                    <button type="button" onClick={() => openPokerPanel('help')} title={TOOLS_TOOLTIPS.help} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      How to Play
+                    </button>
+                    <button type="button" onClick={() => openPokerPanel('shortcuts')} title="Keyboard shortcuts for the floating windows" className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
+                      Window Shortcuts
+                    </button>
                   </div>
 
                   {/* ════════ RIGHT COLUMN: actions & profile ════════ */}
@@ -3947,13 +4248,12 @@ export default function PokerPage() {
 
                     {/* ── BASIC INFO ──────────────────────────────── */}
                     {/* Pinned to the very bottom of the right column, after
-                        Big Yahu. The five reference panels — kept neutral
-                        white because they're always-available info, not
-                        actions or markets. */}
+                        Big Yahu. Reference panels — kept neutral white
+                        because they're always-available info, not actions
+                        or markets. "How to Play" lives under Guide now
+                        (under Daily Challenge) so the onboarding ramp
+                        reads top-down. */}
                     <div className="mt-1 border-t border-zinc-800 px-3 pt-2 pb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Basic Info</div>
-                    <button type="button" onClick={() => openPokerPanel('help')} title={TOOLS_TOOLTIPS.help} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
-                      How to Play
-                    </button>
                     <button type="button" onClick={() => openPokerPanel('hand')} title={TOOLS_TOOLTIPS.hand} className="block w-full px-3 py-2 text-left text-xs font-bold text-white hover:bg-zinc-800">
                       Current Hand
                     </button>
@@ -3962,8 +4262,52 @@ export default function PokerPage() {
                     </button>
                   </div>
                 </div>
-              </div>
-            )}
+              </>
+              )
+              // Anchored mode: the original absolute-positioned dropdown
+              // hanging under the Tools button. Freeform mode: a
+              // FloatingWindow at body level, draggable + resizable +
+              // remembered. The user toggles between them with the
+              // ↗/↺ button in the menu header.
+              if (toolsFreeform) {
+                return (
+                  <FloatingWindow
+                    open={tableMenuOpen}
+                    onClose={() => setTableMenuOpen(false)}
+                    onBack={() => setToolsFreeformPersist(false)}
+                    backLabel="Anchor"
+                    title="Tools"
+                    icon="✦"
+                    accent="zinc"
+                    storageKey="pokerxyz:toolsmenu"
+                    defaultWidth={448}
+                    defaultHeight={Math.min(720, typeof window !== 'undefined' ? window.innerHeight - 60 : 720)}
+                    minWidth={280}
+                    minHeight={240}
+                  >
+                    {menuBody}
+                  </FloatingWindow>
+                )
+              }
+              // Anchored mode: portal to <body> with a fixed position
+              // derived from the Tools button's screen rect. Without
+              // the portal, the menu's z-index is trapped inside the
+              // nav cluster's stacking context, so root-level peers
+              // like the equity widget paint over it. data-tools-menu
+              // tags the portaled node so the close-on-outside-click
+              // handler still treats clicks inside as "inside Tools".
+              if (!toolsMenuAnchorRect || typeof document === 'undefined') return null
+              return createPortal(
+                <div
+                  data-tools-menu="1"
+                  className="fixed z-[800] w-56 md:w-[28rem] max-w-[calc(100vw-1.5rem)] max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain rounded-lg border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md"
+                  style={{ top: toolsMenuAnchorRect.bottom + 8, right: toolsMenuAnchorRect.right }}
+                >
+                  {menuBody}
+                </div>,
+                document.body
+              )
+            })()}
           </div>
           <button
             type="button"
@@ -4007,7 +4351,16 @@ export default function PokerPage() {
         // pickers have room to read at a glance.
         <div
           ref={pokerPanelRef}
-          className={`fixed right-3 top-16 z-[90] max-h-[calc(100dvh-5rem)] w-[calc(100vw-1.5rem)] overflow-y-auto rounded-xl border border-zinc-600/60 bg-zinc-900/95 p-3 text-white shadow-2xl backdrop-blur-md sm:right-4 sm:top-20 ${
+          // Base z is z-[600] — above the popup-window range (260+)
+          // and the top chrome (z-[500]). Panels in the elevated
+          // categories (Actions / Profile / Basic Info / Guide —
+          // see ELEVATED_PANEL_IDS) jump to z-[900] so they layer
+          // ABOVE the portaled docked Tools menu (z-[800]); without
+          // the bump, opening one of those panels would leave the
+          // dropdown floating over the panel the user just chose.
+          // Bank / Daily intentionally stay at z-[600] — those rank
+          // below the docked menu per the user's spec.
+          className={`fixed right-3 top-16 ${ELEVATED_PANEL_IDS.has(activePokerPanel) ? 'z-[900]' : 'z-[600]'} max-h-[calc(100dvh-5rem)] w-[calc(100vw-1.5rem)] overflow-y-auto rounded-xl border border-zinc-600/60 bg-zinc-900/95 p-3 text-white shadow-2xl backdrop-blur-md sm:right-4 sm:top-20 ${
             activePokerPanel === 'bots' || activePokerPanel === 'arena' || activePokerPanel === 'items'
               ? 'max-w-[640px]'
               : 'max-w-[460px]'
@@ -4016,6 +4369,7 @@ export default function PokerPage() {
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="text-sm font-black truncate">
               {activePokerPanel === 'help' ? 'How to Play'
+                : activePokerPanel === 'shortcuts' ? 'Window Shortcuts'
                 : activePokerPanel === 'hand' ? 'Current Hand'
                 : activePokerPanel === 'bots' ? 'Add Bots'
                 : activePokerPanel === 'bank' ? 'Bank Account'
@@ -4104,6 +4458,60 @@ export default function PokerPage() {
               </div>
             </div>
           )}
+
+          {activePokerPanel === 'shortcuts' && (() => {
+            // One row per shortcut. Each shows the Mac chord first
+            // (⌃ glyph — the macOS Control key, NOT Command — Cmd is
+            // off the table because the OS reserves it) then the
+            // Windows/Linux equivalent. Both fire the same handler:
+            // the keydown listener only checks `ctrlKey`, which the
+            // browser sets for the Control key on every platform.
+            const ShortcutRow = ({ macKey, winKey, desc }) => (
+              <div className="flex items-baseline gap-2">
+                <div className="flex shrink-0 items-center gap-1">
+                  <kbd className="inline-flex items-center justify-center gap-0.5 rounded border border-zinc-600 bg-zinc-800 px-1.5 py-0.5 text-[10px] font-black text-zinc-200">{macKey}</kbd>
+                  <span className="text-[9px] font-bold text-zinc-500">/</span>
+                  <kbd className="inline-flex items-center justify-center gap-0.5 rounded border border-zinc-600 bg-zinc-800 px-1.5 py-0.5 text-[10px] font-black text-zinc-200">{winKey}</kbd>
+                </div>
+                <span>{desc}</span>
+              </div>
+            )
+            return (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
+                <div className="mb-2 flex items-baseline justify-between gap-2">
+                  <div className="text-xs font-black text-zinc-300">Floating Windows</div>
+                  <div className="text-[9px] font-bold text-zinc-500">
+                    macOS / Windows · Linux
+                  </div>
+                </div>
+                <div className="space-y-2 text-xs font-bold text-zinc-400">
+                  <div className="flex items-baseline gap-2">
+                    <kbd className="inline-flex min-w-[2rem] justify-center rounded border border-zinc-600 bg-zinc-800 px-1.5 py-0.5 text-[10px] font-black text-zinc-200">Tab</kbd>
+                    <span>Cycle through your open popups — brings the bottom-most window forward.</span>
+                  </div>
+                  <ShortcutRow macKey="⌃ X" winKey="Ctrl X" desc="Close the currently focused popup." />
+                  <ShortcutRow macKey="⌃ A" winKey="Ctrl A" desc="Jump back to the previously focused popup (toggle between two)." />
+                  <ShortcutRow macKey="⌃ ←" winKey="Ctrl ←" desc="Previous popup in the order they were opened." />
+                  <ShortcutRow macKey="⌃ →" winKey="Ctrl →" desc="Next popup in the order they were opened." />
+                  <ShortcutRow macKey="⌃ H" winKey="Ctrl H" desc="Hide every popup off-screen. Press again to bring them all back — exact spots and state preserved." />
+                </div>
+                <div className="mt-3 text-[10px] font-bold text-zinc-500">
+                  On macOS use the <kbd className="rounded border border-zinc-700 bg-zinc-800 px-1 text-[9px] font-black text-zinc-200">control</kbd> key (⌃), not <kbd className="rounded border border-zinc-700 bg-zinc-800 px-1 text-[9px] font-black text-zinc-200">⌘</kbd> — the system reserves Cmd+H to hide the whole app, so it never reaches the browser. Shortcuts also ignore typing — they only fire when no input is focused.
+                </div>
+              </div>
+              <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/45 p-3">
+                <div className="mb-2 text-xs font-black text-zinc-300">Window Chrome</div>
+                <div className="space-y-1.5 text-xs font-bold text-zinc-400">
+                  <div><span className="text-white">←</span> Back arrow: returns the window to its dock (where applicable) or jumps you back to the Tools menu.</div>
+                  <div><span className="text-white">−&nbsp;%&nbsp;+</span> Zoom: scales the window's content. Chrome stays the same size.</div>
+                  <div><span className="text-white">×</span> Close: dismisses the popup. Reopen it from Tools.</div>
+                  <div>Drag the title bar to move; grab the bottom-right or top-left corner to resize. Position and size reset to defaults whenever you join a new game; zoom carries across sessions.</div>
+                </div>
+              </div>
+            </div>
+            )
+          })()}
 
           {activePokerPanel === 'hand' && (
             <div className="space-y-3">
@@ -4259,6 +4667,31 @@ export default function PokerPage() {
               <div className="space-y-3">
                 <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
                   Tap the bots to seat. They each sit with the same chip stack as you (1000 minimum). Pick as many as you want — they'll all be added when you hit Add.
+                </div>
+
+                {/* Bot decision speed — any human at the table can drag
+                    this, the server broadcasts to everyone (same WS
+                    path the arena slider uses). Range matches the dock
+                    widget: 200ms (fast) → 2000ms (deliberate). Default
+                    is the room's current value pulled from gameState. */}
+                <div className="rounded-lg border border-zinc-700/70 bg-zinc-950/40 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Bot speed</span>
+                    <span className="tabular-nums text-[11px] font-black text-amber-200">{arenaThinkDelayMs}ms / turn</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={200}
+                    max={2000}
+                    step={100}
+                    value={arenaThinkDelayMs}
+                    onChange={(e) => handleArenaSpeedChange(parseInt(e.target.value, 10))}
+                    className="mt-2 h-1 w-full rounded-full bg-zinc-900 accent-amber-400"
+                    aria-label="Bot think delay"
+                  />
+                  <div className="mt-1 flex justify-between text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                    <span>Fast</span><span>Slow</span>
+                  </div>
                 </div>
 
                 {/* ── Bots currently at the table ── */}
@@ -5141,127 +5574,18 @@ export default function PokerPage() {
             />
           )}
 
-          {activePokerPanel === 'crypto' && (
-            <CryptoMarketPanel
-              crypto={cryptoState}
-              // Crypto trades from the bank wallet, not the poker stack.
-              myChips={bankState.bankBalance ?? 0}
-              canTrade={joined}
-              onBuy={cryptoBuy}
-              onSell={cryptoSell}
-              onCreate={cryptoCreate}
-              onRug={cryptoRug}
-            />
-          )}
+          {/* Market panels (crypto / items / assets / jobs / stocks /
+              world) used to render here as embedded panels under the
+              Tools dropdown. They've moved to floating widgets — see
+              the FloatingWindow block at the bottom of this file. The
+              embedded path is gone because openPokerPanel routes those
+              ids into `widgetPanels` now, not `activePokerPanel`. */}
 
-          {activePokerPanel === 'items' && (
-            <ItemsPanel
-              itemsState={itemsState}
-              players={gameState?.players || []}
-              myPlayerId={playerId}
-              // crash_coin's inline picker reads the live coin list out
-              // of crypto state — same source the Crypto Market panel
-              // uses, so the items panel never shows a stale roster.
-              cryptoCoins={cryptoState?.coins || []}
-              // Server flag exposed in the game-state envelope. When
-              // true another player has rig_hand queued for the next
-              // hand — the modal renders a warning banner + disables
-              // the confirm button so the user doesn't try to double-rig.
-              nextHandRigged={!!gameState?.nextHandRigged}
-              // Sub-editor state lifted to the page so the chrome's
-              // "← Back" can pop the editor first.
-              activeEditor={itemsActiveEditor}
-              setActiveEditor={setItemsActiveEditor}
-              onUseItem={(itemId, targetId, extras) => {
-                // Backwards-compat with the existing peek/swap/scam/hack
-                // shape: those pass `extras = picks[]` directly. The new
-                // deck-rig items pass an object with `card` or `payload`.
-                // Spread either shape onto the wire message so the server
-                // sees the right keys; legacy `picks` is normalized.
-                const payload = { itemId, targetId }
-                if (Array.isArray(extras)) payload.picks = extras
-                else if (extras && typeof extras === 'object') Object.assign(payload, extras)
-                send('item:use', payload)
-              }}
-            />
-          )}
-
-          {activePokerPanel === 'assets' && (
-            <AssetsPanel
-              assetsState={assetsState}
-              // Assets are an off-table money game — bank wallet only.
-              myChips={bankState.bankBalance ?? 0}
-              joined={joined}
-              onBuy={(assetId, units) => {
-                // Direct send — no confirm modal. The Assets panel
-                // already shows price + an inline "Need $X" affordability
-                // gate on the Buy button, so a separate confirm popup
-                // was just blocking spam-buy. Mirrors the crypto-market
-                // flow: panel stays open after every purchase.
-                send('asset:buy', { assetId, units })
-              }}
-              onSell={(assetId, units) => send('asset:sell', { assetId, units })}
-            />
-          )}
-
-          {activePokerPanel === 'jobs' && (
-            <JobsPanel
-              jobsState={jobsState}
-              joined={joined || isSpectator}
-              onClaim={(id) => send('job:claim', { id })}
-            />
-          )}
-
-          {activePokerPanel === 'stocks' && (
-            <StocksPanel
-              stocksState={stocksState}
-              optionsState={optionsState}
-              // Stocks + options + earnings spend from the bank wallet —
-              // poker chips at the table are betting money only.
-              myChips={bankState.bankBalance ?? 0}
-              joined={joined}
-              onBuy={(symbol, amount) => send('stock:buy', { symbol, amount })}
-              // sharesToSell omitted = sell entire position (server default).
-              onSell={(symbol, sharesToSell) => send('stock:sell', { symbol, sharesToSell })}
-              onSabotage={(symbol) => send('stock:sabotage', { symbol })}
-              onBuyOption={(payload) => send('options:buy', payload)}
-              onCloseOption={(payload) => send('options:close', payload)}
-            />
-          )}
-
-          {activePokerPanel === 'world' && (
-            <WorldPanel
-              worldState={worldState}
-              // World purchases + offers spend from the BANK wallet,
-              // not the poker stack. Yields also settle to bank.
-              myChips={bankState.bankBalance ?? 0}
-              joined={joined}
-              myPlayerId={playerId}
-              onClaim={(territoryId) => {
-                // Direct claim — only works on UNOWNED regions.
-                // For owned regions, the panel routes the buyer to
-                // the make-offer flow instead.
-                const t = (worldState?.territories || []).find(tt => tt.id === territoryId)
-                if (!t || t.isMine || t.ownerId) return
-                send('world:claim', { territoryId })
-              }}
-              onPandemic={() => send('world:pandemic', {})}
-              onMakeOffer={(territoryId, price) => send('world:offer', { territoryId, price })}
-              onAcceptOffer={(territoryId, offerId) => send('world:accept_offer', { territoryId, offerId })}
-              onDeclineOffer={(territoryId, offerId) => send('world:decline_offer', { territoryId, offerId })}
-              onCancelOffer={(territoryId, offerId) => send('world:cancel_offer', { territoryId, offerId })}
-            />
-          )}
-
-          {activePokerPanel === 'influence' && (
-            <InfluencePanel
-              influenceState={influenceState}
-              stocksState={stocksState}
-              myChips={bankState.chips ?? 0}
-              joined={joined}
-              onRun={(opId, targetSymbol) => send('influence:run', { opId, targetSymbol })}
-            />
-          )}
+          {/* Standalone Influence Ops panel removed — ops now live as
+              tabs inside the markets they affect (stocks, world, real
+              estate). Players were ignoring the standalone surface;
+              putting ops where their effects land makes them
+              discoverable. */}
 
         </div>
       )}
@@ -5889,6 +6213,9 @@ export default function PokerPage() {
         <PokerWindow
           open={pokerWindowOpen}
           onClose={() => setPokerWindowOpen(false)}
+          // No back arrow — Mini Table is a permanent companion view
+          // and doesn't need a ← Tools shortcut (Tools is already
+          // reachable from its always-visible button in the nav).
           gameState={gameState}
           playerId={playerId}
           isSpectator={isSpectator}
@@ -5909,6 +6236,206 @@ export default function PokerPage() {
             else if (kind === 'raise')  send('poker_raise', { amount: safeRaise })
           }}
         />
+      )}
+
+      {/* Market widgets — each entry in `widgetPanels` opens here as
+          its own draggable FloatingWindow at body level. Multiple can
+          be open at once (you can play stocks AND crypto AND world
+          simultaneously). Position + size persist per widget via the
+          storageKey. State plumbing is the same as the legacy embedded
+          panels — these consume the same props. */}
+      {[...widgetPanels].map(id => {
+        const meta = MARKET_WIDGET_META[id]
+        if (!meta) return null
+        const close = () => setWidgetPanelsPersist(prev => {
+          const next = new Set(prev); next.delete(id); return next
+        })
+        const common = {
+          open: true,
+          onClose: close,
+          title: meta.title,
+          icon: meta.icon,
+          accent: meta.accent,
+          storageKey: `pokerxyz:widget:${id}`,
+          defaultWidth: meta.defaultWidth,
+          defaultHeight: meta.defaultHeight,
+        }
+        let body = null
+        if (id === 'crypto') {
+          body = (
+            <CryptoMarketPanel
+              crypto={cryptoState}
+              myChips={bankState.bankBalance ?? 0}
+              canTrade={joined}
+              onBuy={cryptoBuy}
+              onSell={cryptoSell}
+              onCreate={cryptoCreate}
+              onRug={cryptoRug}
+            />
+          )
+        } else if (id === 'items') {
+          body = (
+            <ItemsPanel
+              itemsState={itemsState}
+              players={gameState?.players || []}
+              myPlayerId={playerId}
+              cryptoCoins={cryptoState?.coins || []}
+              nextHandRigged={!!gameState?.nextHandRigged}
+              activeEditor={itemsActiveEditor}
+              setActiveEditor={setItemsActiveEditor}
+              onUseItem={(itemId, targetId, extras) => {
+                const payload = { itemId, targetId }
+                if (Array.isArray(extras)) payload.picks = extras
+                else if (extras && typeof extras === 'object') Object.assign(payload, extras)
+                send('item:use', payload)
+              }}
+            />
+          )
+        } else if (id === 'assets') {
+          body = (
+            <AssetsPanel
+              assetsState={assetsState}
+              myChips={bankState.bankBalance ?? 0}
+              joined={joined}
+              onBuy={(assetId, units) => send('asset:buy', { assetId, units })}
+              onSell={(assetId, units) => send('asset:sell', { assetId, units })}
+              influenceState={!roomDisabledTools.has('influence') ? influenceState : null}
+              onRunInfluence={(opId, targetSymbol) => send('influence:run', { opId, targetSymbol })}
+            />
+          )
+        } else if (id === 'jobs') {
+          body = (
+            <JobsPanel
+              jobsState={jobsState}
+              joined={joined || isSpectator}
+              onClaim={(claimId) => send('job:claim', { id: claimId })}
+            />
+          )
+        } else if (id === 'stocks') {
+          body = (
+            <StocksPanel
+              stocksState={stocksState}
+              optionsState={optionsState}
+              myChips={bankState.bankBalance ?? 0}
+              joined={joined}
+              onBuy={(symbol, amount) => send('stock:buy', { symbol, amount })}
+              onSell={(symbol, sharesToSell) => send('stock:sell', { symbol, sharesToSell })}
+              onSabotage={(symbol) => send('stock:sabotage', { symbol })}
+              onBuyOption={(payload) => send('options:buy', payload)}
+              onCloseOption={(payload) => send('options:close', payload)}
+              influenceState={!roomDisabledTools.has('influence') ? influenceState : null}
+              onRunInfluence={(opId, targetSymbol) => send('influence:run', { opId, targetSymbol })}
+            />
+          )
+        } else if (id === 'world') {
+          body = (
+            <WorldPanel
+              worldState={worldState}
+              myChips={bankState.bankBalance ?? 0}
+              joined={joined}
+              myPlayerId={playerId}
+              onClaim={(territoryId) => {
+                const t = (worldState?.territories || []).find(tt => tt.id === territoryId)
+                if (!t || t.isMine || t.ownerId) return
+                send('world:claim', { territoryId })
+              }}
+              onPandemic={() => send('world:pandemic', {})}
+              onMakeOffer={(territoryId, price) => send('world:offer', { territoryId, price })}
+              onAcceptOffer={(territoryId, offerId) => send('world:accept_offer', { territoryId, offerId })}
+              onDeclineOffer={(territoryId, offerId) => send('world:decline_offer', { territoryId, offerId })}
+              onCancelOffer={(territoryId, offerId) => send('world:cancel_offer', { territoryId, offerId })}
+              influenceState={!roomDisabledTools.has('influence') ? influenceState : null}
+              onRunInfluence={(opId, targetSymbol) => send('influence:run', { opId, targetSymbol })}
+            />
+          )
+        }
+        return (
+          <FloatingWindow key={id} {...common}>
+            <div className="p-3">{body}</div>
+          </FloatingWindow>
+        )
+      })}
+
+      {/* Freeform copies of the existing docked widgets. Each opens
+          here when the user clicked the widget's small ↗ button to
+          pop it out; the floating window's back-arrow ("↺ Dock")
+          returns it to its original anchored slot. The widget's own
+          state (visibility / size / etc.) is unchanged — only the
+          rendering frame moves. */}
+      {hudEnabled && !roomDisabledTools.has('hud') && widgetFreeform.hud && (
+        <FloatingWindow
+          open
+          onClose={() => setHudEnabledPersist(false)}
+          onBack={() => toggleWidgetFreeform('hud')}
+          backLabel="Dock"
+          title="Investment HUD"
+          icon="✦"
+          accent="amber"
+          storageKey="pokerxyz:widget:hud"
+          defaultWidth={340}
+          defaultHeight={420}
+        >
+          <div className="p-2">
+            {/* No `onClose` — the floating chrome's × already closes
+                this. Passing it here would render a SECOND × inside the
+                panel header, stacked under the chrome's. */}
+            <InvestmentHUD
+              myBank={bankState.bankBalance ?? 0}
+              myChips={bankState.chips ?? 0}
+              bankLoans={bankState.loans || []}
+              peerLoans={myPeerLoans}
+              myPlayerId={playerId}
+              cryptoState={cryptoState}
+              assetsState={assetsState}
+              stocksState={stocksState}
+              worldState={worldState}
+              onOpenPanel={openPokerPanel}
+            />
+          </div>
+        </FloatingWindow>
+      )}
+      {sideBetsDockVisible && !roomDisabledTools.has('sidebets') && widgetFreeform.sidebets && (
+        <FloatingWindow
+          open
+          onClose={toggleSideBetsDock}
+          onBack={() => toggleWidgetFreeform('sidebets')}
+          backLabel="Dock"
+          title="Side Bets"
+          icon="✦"
+          accent="amber"
+          storageKey="pokerxyz:widget:sidebets"
+          defaultWidth={340}
+          defaultHeight={500}
+        >
+          {/* No `onClose` — the floating chrome's × already closes
+              this. See HUD note above. */}
+          <SideBetsPanel
+            sideBets={sideBetsState}
+            myPlayerId={playerId}
+            myStack={bankState.bankBalance ?? 0}
+            onPlace={placeSideBet}
+            onSell={sellSideBet}
+            expanded={sideBetsExpanded}
+            onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
+          />
+        </FloatingWindow>
+      )}
+      {chatDockVisible && !roomDisabledTools.has('chat') && widgetFreeform.chat && (
+        <FloatingWindow
+          open
+          onClose={toggleChatDock}
+          onBack={() => toggleWidgetFreeform('chat')}
+          backLabel="Dock"
+          title="Chat"
+          icon="✦"
+          accent="cyan"
+          storageKey="pokerxyz:widget:chat"
+          defaultWidth={340}
+          defaultHeight={360}
+        >
+          {/* Inline × suppressed — the floating chrome's × handles it. */}
+          {renderChatInner(false)}
+        </FloatingWindow>
       )}
 
       {/* PIN-hack popup — landed on us because another player used
@@ -5972,14 +6499,8 @@ export default function PokerPage() {
       <FeedWindow
         open={feedWindowOpen}
         onClose={() => { setFeedWindowOpen(false); setFeedOpenedFromTools(false) }}
-        // Show the back arrow only when the window was opened via the
-        // ★ Social Media entry in the Tools menu. Other entry points
-        // (e.g., notifications) don't have a Tools menu to return to.
-        onBack={feedOpenedFromTools ? () => {
-          setFeedWindowOpen(false)
-          setFeedOpenedFromTools(false)
-          setTableMenuOpen(true)
-        } : null}
+        // No back arrow — Tools is always reachable from its own
+        // button in the nav, and a ← would just duplicate ×.
       />
 
       {/* Run-it-twice flow: vote modal (server starts when both humans are
@@ -6279,7 +6800,7 @@ export default function PokerPage() {
             panel auto-minimizes it (handled by a useEffect above) so it
             never shifts other UI around. The Close button exits entirely. */}
         {!isSpectator && statsMode && !roomDisabledTools.has('equity') && (
-          <div className="pointer-events-none fixed inset-x-0 top-12 z-40 sm:top-14">
+          <div className="pointer-events-none fixed inset-x-0 top-12 z-[500] sm:top-14">
             <div className="relative mx-auto max-w-7xl">
               <div
                 ref={statsPanelRef}
@@ -6394,12 +6915,24 @@ export default function PokerPage() {
           // Host-disabled tools force the corresponding dock off, even
           // if the player previously toggled it on in another room.
           const showSidebets = sideBetsDockVisible && !roomDisabledTools.has('sidebets')
-          const showChat = chatDockVisible && !showSidebets && !roomDisabledTools.has('chat')
+          // Chat can claim the dock slot only when no docked side-bets
+          // is using it. If side bets is in FREEFORM, the slot is free,
+          // so chat docks normally. The "both docked simultaneously"
+          // case is the one we suppress.
+          const sidebetsBlockingDock = showSidebets && !widgetFreeform.sidebets
+          const showChat = chatDockVisible && !sidebetsBlockingDock && !roomDisabledTools.has('chat')
           // Investment HUD sits ABOVE the dock in the same column. Render
           // the parent column whenever any of the three (HUD, sidebets,
-          // chat) is on — otherwise nothing in the column.
+          // chat) is on AND none are in freeform mode — otherwise the
+          // freeform copy at body level is the only render.
           const showHUD = hudEnabled && !roomDisabledTools.has('hud')
-          if (!showSidebets && !showChat && !showHUD) return null
+          // Freeform widgets render OUTSIDE this column at body level
+          // (see the FloatingWindow block further down). Skip them
+          // here so they don't double-render.
+          const dockHUD = showHUD && !widgetFreeform.hud
+          const dockSidebets = showSidebets && !widgetFreeform.sidebets
+          const dockChat = showChat && !widgetFreeform.chat
+          if (!dockHUD && !dockSidebets && !dockChat) return null
           // Match the spectator panel's md+ lift so both sides of the
           // bottom-UI row visually align. KEEP THESE VALUES IN SYNC with
           // `md:-translate-y-20 md:-mb-20` on the spectator wrapper
@@ -6411,52 +6944,73 @@ export default function PokerPage() {
           const lift = isSpectator ? 'md:-translate-y-20 md:-mb-20' : ''
           return (
             <div className={`order-1 w-[92%] max-w-[360px] mx-auto md:order-2 md:absolute md:bottom-0 md:right-0 md:mx-0 md:w-auto md:max-w-none md:z-30 flex flex-col items-end gap-3 shrink-0 ${lift}`}>
-              {showHUD && (
-                <InvestmentHUD
-                  // Bank cash — the wallet for off-table money. The
-                  // HUD's "Money" tile reads from here; goes red when
-                  // overdrawn so the player sees the debt at a glance.
-                  myBank={bankState.bankBalance ?? 0}
-                  // Poker chips on the table, capped at 1k. Separate
-                  // tile so the player sees both numbers without
-                  // mistaking betting chips for spending money.
-                  myChips={bankState.chips ?? 0}
-                  // Bank loans + peer loans drive the debt-accrual
-                  // side of passive income. Sum(owed × rate) per hand
-                  // subtracts from yields.
-                  bankLoans={bankState.loans || []}
-                  peerLoans={myPeerLoans}
-                  myPlayerId={playerId}
-                  cryptoState={cryptoState}
-                  assetsState={assetsState}
-                  stocksState={stocksState}
-                  worldState={worldState}
-                  onOpenPanel={openPokerPanel}
-                  onClose={() => setHudEnabledPersist(false)}
-                />
-              )}
-              {showSidebets && (
-                <div ref={sideBetsDockRef} className={`w-full md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
-                  <SideBetsPanel
-                    sideBets={sideBetsState}
+              {dockHUD && (
+                <div className="relative w-full md:w-auto">
+                  {/* Small pop-out affordance — flips the HUD into a
+                      freeform FloatingWindow at body level. Clicking
+                      the ↺ button on the floating copy returns it to
+                      this anchored slot. */}
+                  <button
+                    type="button"
+                    onClick={() => toggleWidgetFreeform('hud')}
+                    title="Pop out — drag this widget anywhere"
+                    className="absolute -top-1.5 -left-1.5 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-600/70 bg-zinc-900 text-[9px] font-black text-zinc-300 shadow-md hover:bg-zinc-800 hover:text-amber-200"
+                  >↗</button>
+                  <InvestmentHUD
+                    myBank={bankState.bankBalance ?? 0}
+                    myChips={bankState.chips ?? 0}
+                    bankLoans={bankState.loans || []}
+                    peerLoans={myPeerLoans}
                     myPlayerId={playerId}
-                    // Side bets are funded from the off-table BANK
-                    // wallet (the poker stack is 1000 chips, too small
-                    // to express any meaningful prop bet). Pass the
-                    // bank balance — the panel's input clamps + the
-                    // "you have" label both key off this number.
-                    myStack={bankState.bankBalance ?? 0}
-                    onPlace={placeSideBet}
-                    onSell={sellSideBet}
-                    expanded={sideBetsExpanded}
-                    onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
-                    onClose={toggleSideBetsDock}
+                    cryptoState={cryptoState}
+                    assetsState={assetsState}
+                    stocksState={stocksState}
+                    worldState={worldState}
+                    onOpenPanel={openPokerPanel}
+                    onClose={() => setHudEnabledPersist(false)}
                   />
                 </div>
               )}
-              {showChat && (
-                <div ref={chatDockRef} className="w-full md:w-[320px] flex flex-col h-56 lg:h-72 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
-                  {chatBoxInner}
+              {dockSidebets && (
+                // Outer wrapper holds the pop-out button so it can sit
+                // OUTSIDE the rounded card — the inner card keeps
+                // overflow-hidden for corner clipping, which would
+                // otherwise chop a negative-offset button. The dock ref
+                // wraps the outer node so a click on the pop-out button
+                // still counts as "inside the side-bets dock" for the
+                // tools-menu close-outside detector.
+                <div ref={sideBetsDockRef} className="relative w-full md:w-auto pt-1.5 pl-1.5">
+                  <button
+                    type="button"
+                    onClick={() => toggleWidgetFreeform('sidebets')}
+                    title="Pop out — drag this widget anywhere"
+                    className="absolute top-0 left-0 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-600/70 bg-zinc-900 text-[9px] font-black text-zinc-300 shadow-md hover:bg-zinc-800 hover:text-amber-200"
+                  >↗</button>
+                  <div className={`relative w-full md:w-[320px] flex flex-col ${sidebetsHeight} bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0`}>
+                    <SideBetsPanel
+                      sideBets={sideBetsState}
+                      myPlayerId={playerId}
+                      myStack={bankState.bankBalance ?? 0}
+                      onPlace={placeSideBet}
+                      onSell={sellSideBet}
+                      expanded={sideBetsExpanded}
+                      onToggleExpanded={() => setSideBetsExpanded(prev => !prev)}
+                      onClose={toggleSideBetsDock}
+                    />
+                  </div>
+                </div>
+              )}
+              {dockChat && (
+                <div ref={chatDockRef} className="relative w-full md:w-auto pt-1.5 pl-1.5">
+                  <button
+                    type="button"
+                    onClick={() => toggleWidgetFreeform('chat')}
+                    title="Pop out — drag this widget anywhere"
+                    className="absolute top-0 left-0 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-600/70 bg-zinc-900 text-[9px] font-black text-zinc-300 shadow-md hover:bg-zinc-800 hover:text-amber-200"
+                  >↗</button>
+                  <div className="relative w-full md:w-[320px] flex flex-col h-56 lg:h-72 bg-zinc-800/95 border border-zinc-600/50 rounded-xl shadow-2xl backdrop-blur-md overflow-hidden shrink-0">
+                    {chatBoxInner}
+                  </div>
                 </div>
               )}
             </div>

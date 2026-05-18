@@ -1,94 +1,19 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/useAuth'
 import PostComposer from './PostComposer'
 import PostCard from './PostCard'
+import FloatingWindow from './FloatingWindow'
 
-// Persistence keys — position + size survive across sessions so a user
-// who likes the feed window in the bottom-right doesn't have to drag
-// it there on every page load.
-const POS_KEY = 'pokerxyz:feedwin:pos'
-const SIZE_KEY = 'pokerxyz:feedwin:size'
+// Social-feed window — composer + scrollable post list inside a
+// draggable/resizable shell. All the chrome (title bar, drag, resize,
+// position persistence, reset, refresh) lives in FloatingWindow; this
+// file is just the feed-specific body + data loading.
 
-const MIN_W = 260
-const MIN_H = 260
-const TITLE_H = 32
-
-// Pick a sensible initial size + position when no persisted state is
-// available. Defaults shrink on small viewports so the window doesn't
-// blanket the table on a phone or a narrow desktop panel. Capped at
-// 70% of the viewport in either axis with a reasonable comfort ceiling.
-function defaultLayout() {
-  if (typeof window === 'undefined') {
-    return { x: 80, y: 72, w: 360, h: 500 }
-  }
-  const vw = window.innerWidth
-  const vh = window.innerHeight
-  const w = Math.max(MIN_W, Math.min(380, Math.floor(vw * 0.7)))
-  const h = Math.max(MIN_H, Math.min(520, Math.floor(vh * 0.7)))
-  // Bias toward the top-left so the window doesn't cover the seat
-  // chrome on small viewports. The user can drag wherever they want
-  // — this is just where it opens for the first time.
-  const x = Math.max(16, Math.min(80, vw - w - 16))
-  const y = Math.max(16, Math.min(72, vh - h - 16))
-  return { x, y, w, h }
-}
-
-function loadJson(key, fallback) {
-  if (typeof window === 'undefined') return fallback
-  try {
-    const raw = window.localStorage.getItem(key)
-    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback
-  } catch { return fallback }
-}
-function saveJson(key, value) {
-  if (typeof window === 'undefined') return
-  try { window.localStorage.setItem(key, JSON.stringify(value)) } catch {}
-}
-
-// Clamp a (x, y, w, h) so the window stays mostly on-screen. Pulls the
-// box back inside the viewport leaving at least 40px of the title bar
-// visible at the edge so the user can always grab it back.
-function clamp({ x, y, w, h }) {
-  if (typeof window === 'undefined') return { x, y, w, h }
-  const vw = window.innerWidth
-  const vh = window.innerHeight
-  const cw = Math.max(MIN_W, Math.min(w, vw - 16))
-  const ch = Math.max(MIN_H, Math.min(h, vh - 16))
-  const cx = Math.max(40 - cw, Math.min(x, vw - 40))
-  const cy = Math.max(0, Math.min(y, vh - TITLE_H))
-  return { x: cx, y: cy, w: cw, h: ch }
-}
-
-// Floating, movable, resizable feed window. Renders via portal so the
-// table chrome can't trap it inside a stacking context. The viewport
-// edge gates ensure it can't be dragged completely off-screen.
-// `onBack` is optional. When provided, the title bar renders a left-
-// arrow button that closes the window AND fires `onBack` — the poker
-// page uses it to reopen the Tools menu after the user opened the
-// feed via the ★ Social Media entry, so they can navigate back instead
-// of having to click Tools again from scratch.
-export default function FeedWindow({ open, onClose, onBack }) {
+export default function FeedWindow({ open, onClose }) {
   const { user } = useAuth()
-  const wrapRef = useRef(null)
-  // Lazy-init both pos + size from a single defaultLayout() so a fresh
-  // open on a small viewport doesn't slam down a 440x600 window when
-  // the screen is only 600 wide. Persisted values still win when set.
-  const [pos, setPos] = useState(() => {
-    const def = defaultLayout()
-    return loadJson(POS_KEY, { x: def.x, y: def.y })
-  })
-  const [size, setSize] = useState(() => {
-    const def = defaultLayout()
-    return loadJson(SIZE_KEY, { w: def.w, h: def.h })
-  })
-  const [drag, setDrag] = useState(null) // { dx, dy }
-  const [resize, setResize] = useState(null) // { x0, y0, w0, h0 }
-
-  // Feed state.
   const [posts, setPosts] = useState([])
   const [loading, setLoading] = useState(false)
   const [endReached, setEndReached] = useState(false)
@@ -131,140 +56,22 @@ export default function FeedWindow({ open, onClose, onBack }) {
     } catch {} finally { setLoadingMore(false) }
   }, [posts, loadingMore, endReached])
 
-  // ── Drag handlers ───────────────────────────────────────────────────
-  // Pointer events instead of mouse events so touch + stylus work out
-  // of the box. We capture on the title bar at pointerdown; document-
-  // level move/up listeners drive the rest until release.
-  useEffect(() => {
-    if (!drag) return
-    function onMove(e) {
-      const next = clamp({ x: e.clientX - drag.dx, y: e.clientY - drag.dy, w: size.w, h: size.h })
-      setPos({ x: next.x, y: next.y })
-    }
-    function onUp() { setDrag(null) }
-    document.addEventListener('pointermove', onMove)
-    document.addEventListener('pointerup', onUp)
-    document.addEventListener('pointercancel', onUp)
-    return () => {
-      document.removeEventListener('pointermove', onMove)
-      document.removeEventListener('pointerup', onUp)
-      document.removeEventListener('pointercancel', onUp)
-    }
-  }, [drag, size.w, size.h])
-
-  useEffect(() => {
-    if (!resize) return
-    function onMove(e) {
-      const dx = e.clientX - resize.x0
-      const dy = e.clientY - resize.y0
-      const next = clamp({ x: pos.x, y: pos.y, w: resize.w0 + dx, h: resize.h0 + dy })
-      setSize({ w: next.w, h: next.h })
-    }
-    function onUp() { setResize(null) }
-    document.addEventListener('pointermove', onMove)
-    document.addEventListener('pointerup', onUp)
-    document.addEventListener('pointercancel', onUp)
-    return () => {
-      document.removeEventListener('pointermove', onMove)
-      document.removeEventListener('pointerup', onUp)
-      document.removeEventListener('pointercancel', onUp)
-    }
-  }, [resize, pos.x, pos.y])
-
-  // Persist on settle (not during drag) so we don't thrash localStorage.
-  useEffect(() => { if (!drag) saveJson(POS_KEY, pos) }, [pos, drag])
-  useEffect(() => { if (!resize) saveJson(SIZE_KEY, size) }, [size, resize])
-
-  // Re-clamp on viewport resize — keeps the window grabbable if the
-  // user shrinks the browser to a width smaller than its current size.
-  useEffect(() => {
-    function onResize() {
-      const next = clamp({ ...pos, ...size })
-      setPos({ x: next.x, y: next.y })
-      setSize({ w: next.w, h: next.h })
-    }
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [pos.x, pos.y, size.w, size.h])
-
-  if (!open) return null
-  if (typeof document === 'undefined') return null
-
-  function onTitleDown(e) {
-    if (e.button !== 0 && e.pointerType === 'mouse') return
-    e.preventDefault()
-    setDrag({ dx: e.clientX - pos.x, dy: e.clientY - pos.y })
-  }
-  function onResizeDown(e) {
-    if (e.button !== 0 && e.pointerType === 'mouse') return
-    e.preventDefault()
-    setResize({ x0: e.clientX, y0: e.clientY, w0: size.w, h0: size.h })
-  }
-
-  return createPortal(
-    <div
-      ref={wrapRef}
-      role="dialog"
-      aria-label="Feed"
-      className="fixed z-[260] flex flex-col rounded-lg border border-violet-400/40 bg-zinc-900/98 shadow-2xl backdrop-blur-md"
-      style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}
+  return (
+    <FloatingWindow
+      open={open}
+      onClose={onClose}
+      // Intentionally no onBack — Feed is a long-form popup; Tools
+      // stays reachable from its own nav button.
+      onRefresh={fetchInitial}
+      refreshing={loading}
+      title="Social"
+      icon="★"
+      accent="violet"
+      storageKey="pokerxyz:feedwin"
+      defaultWidth={380}
+      defaultHeight={520}
     >
-      {/* Title bar — drag handle + close. Cursor flips to move when
-          hovering so the affordance is obvious. Tighter padding +
-          smaller text so the chrome doesn't dominate the window. */}
-      <div
-        onPointerDown={onTitleDown}
-        className="flex items-center justify-between gap-2 rounded-t-lg border-b border-zinc-700 bg-zinc-950/60 px-2 py-1 cursor-move select-none"
-        style={{ height: TITLE_H }}
-      >
-        <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-violet-200">
-          {onBack && (
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); onBack() }}
-              aria-label="Back to Tools menu"
-              title="Back to Tools menu"
-              className="inline-flex items-center gap-0.5 rounded-md border border-zinc-600/70 bg-zinc-800 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-100 transition-colors hover:bg-zinc-700"
-            >
-              <span aria-hidden className="text-[11px] leading-none">←</span>
-              Tools
-            </button>
-          )}
-          <span aria-hidden>★</span>
-          <span>Social</span>
-        </div>
-        <div className="flex items-center gap-1">
-          {/* Reload — re-fetches the feed from /api/feed. Spins while
-              loading. Same fetchInitial() path the empty-state +
-              error-state Reload buttons use, so the post list, pagination
-              and error/loading flags all reset cleanly. */}
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); fetchInitial() }}
-            disabled={loading}
-            aria-label="Reload feed"
-            title="Reload feed"
-            className="rounded px-1.5 py-0.5 text-[11px] leading-none text-zinc-400 hover:bg-zinc-800 hover:text-violet-200 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <span aria-hidden className={loading ? 'inline-block animate-spin' : 'inline-block'}>↻</span>
-          </button>
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); onClose() }}
-            aria-label="Close feed window"
-            className="rounded px-1.5 text-base leading-none text-zinc-400 hover:bg-zinc-800 hover:text-white"
-          >×</button>
-        </div>
-      </div>
-
-      {/* Body — composer + scrollable post list. The scroll container's
-          flex-1 lets the composer pin to the top and the list fill the
-          rest of the window. Tighter mobile padding so the window
-          holds more content on small screens. */}
-      <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-1.5 text-white sm:gap-2 sm:p-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-1.5 p-1.5 text-white sm:gap-2 sm:p-2">
         {user && <PostComposer onPosted={(p) => setPosts(prev => [p, ...prev])} />}
         {loading && (
           <div className="rounded-lg border border-zinc-700/70 bg-zinc-900/40 p-3 text-center text-[11px] font-bold text-zinc-400 sm:p-4 sm:text-xs">
@@ -315,19 +122,6 @@ export default function FeedWindow({ open, onClose, onBack }) {
           </button>
         )}
       </div>
-
-      {/* Resize handle — bottom-right corner grip. Pointer-events on the
-          grip itself stop the underlying body from intercepting the
-          pointerdown that starts the resize. */}
-      <div
-        onPointerDown={onResizeDown}
-        className="absolute bottom-0 right-0 h-4 w-4 cursor-nwse-resize select-none rounded-br-lg"
-        style={{
-          background: 'linear-gradient(135deg, transparent 0%, transparent 50%, rgb(82 82 91 / 0.7) 50%, rgb(82 82 91 / 0.7) 100%)'
-        }}
-        aria-label="Resize feed window"
-      />
-    </div>,
-    document.body
+    </FloatingWindow>
   )
 }

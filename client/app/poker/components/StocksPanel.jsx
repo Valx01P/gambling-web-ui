@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import CatalogIcon from './CatalogIcon'
 import Sparkline from './Sparkline'
+import InfluenceOpsTab, { INFLUENCE_OPS_BY_MARKET } from './InfluenceOpsTab'
 
 // Accept K/M/B/T shorthand in the input fields so a player can type
 // "5M" instead of "5,000,000". Mirrors the parser in poker/page.jsx.
@@ -39,7 +40,14 @@ function fmtPrice(n) {
   return n < 100 ? n.toFixed(2) : Math.round(n).toLocaleString()
 }
 
-export default function StocksPanel({ stocksState, optionsState, myChips, onBuy, onSell, onSabotage, onBuyOption, onCloseOption, joined }) {
+export default function StocksPanel({
+  stocksState, optionsState, myChips,
+  onBuy, onSell, onSabotage, onBuyOption, onCloseOption, joined,
+  // Influence ops live as a tab here now — pass through the server
+  // snapshot + run callback. Optional so callers that don't surface
+  // influence (e.g. legacy unit tests, if any) don't have to wire it.
+  influenceState = null, onRunInfluence,
+}) {
   const [tab, setTab] = useState('market')
   const [buyAmount, setBuyAmount] = useState('')
   // Stock buys are always entered in dollars — non-traders don't know
@@ -148,6 +156,19 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
         >
           Sabotage
         </button>
+        {/* Influence Ops — migrated from a standalone panel into a tab
+            here so the ops live next to the market they actually move.
+            Only renders when the host passed influence state in. */}
+        {influenceState && onRunInfluence && (
+          <button
+            type="button"
+            onClick={() => setTab('influence')}
+            className={`rounded-md border px-2 py-1.5 ${tab === 'influence' ? 'border-violet-500/60 bg-violet-500/20 text-violet-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
+            title="Pay to move the whole stock market"
+          >
+            Influence
+          </button>
+        )}
       </div>
 
       {tab === 'market' && (
@@ -874,6 +895,19 @@ export default function StocksPanel({ stocksState, optionsState, myChips, onBuy,
             )
           })}
         </div>
+      )}
+
+      {tab === 'influence' && influenceState && onRunInfluence && (
+        <InfluenceOpsTab
+          opIds={INFLUENCE_OPS_BY_MARKET.stocks}
+          influenceState={influenceState}
+          stocksState={stocksState}
+          myChips={myChips}
+          onRun={onRunInfluence}
+          joined={joined}
+          accent="violet"
+          intro="Stock-market influence ops. Pay-to-pump-the-whole-tape, single-ticker hits, or trigger a global crisis and buy the dip."
+        />
       )}
     </div>
   )

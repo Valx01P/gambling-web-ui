@@ -142,7 +142,13 @@ export function authRoutes() {
         feltColorId: user.felt_color_id ?? null,
         feltCustomColors: Array.isArray(user.felt_custom_colors)
           ? user.felt_custom_colors
-          : (user.felt_custom_colors ?? null)
+          : (user.felt_custom_colors ?? null),
+        // Per-window zoom map ({ storageKey: percent }) — see
+        // client/app/lib/windowZooms.js. Same surfacing rationale as
+        // felt color: one fetch covers all of the user's prefs.
+        windowZooms: (user.window_zooms && typeof user.window_zooms === 'object')
+          ? user.window_zooms
+          : null
       }
     })
   })
@@ -258,6 +264,60 @@ export function authRoutes() {
       [req.user.id, colorId, customColors ? JSON.stringify(customColors) : null]
     )
     res.json({ feltColorId: colorId, feltCustomColors: customColors })
+  })
+
+  // POST /api/auth/me/window-zoom — persist one window's zoom %. Body
+  // is `{ key, zoom }` where `key` is the FloatingWindow storageKey
+  // (e.g. 'pokerxyz:pokerwin', 'pokerxyz:feedwin') and `zoom` is an
+  // integer percent in [50, 200] OR null/100 to clear that entry. The
+  // server merges the single update into the existing JSONB blob so
+  // separate clients hitting different windows don't race each other.
+  //
+  // Cap on the number of distinct keys: 64. Stops a runaway client
+  // from ballooning the column with junk keys. We never see anywhere
+  // near that many windows in practice.
+  router.post('/me/window-zoom', authRequired, profileUpdateLimiter, async (req, res) => {
+    const key = req.body?.key
+    if (typeof key !== 'string' || key.length === 0 || key.length > 96) {
+      return res.status(400).json({ error: 'invalid_key' })
+    }
+    const rawZoom = req.body?.zoom
+    let zoom = null
+    if (rawZoom === null || rawZoom === undefined || rawZoom === 100) {
+      zoom = null
+    } else if (typeof rawZoom === 'number' && Number.isFinite(rawZoom)) {
+      const n = Math.round(rawZoom)
+      if (n < 50 || n > 200) return res.status(400).json({ error: 'invalid_zoom' })
+      zoom = n
+    } else {
+      return res.status(400).json({ error: 'invalid_zoom' })
+    }
+    // Fetch-modify-write keeps the merge tight without needing a jsonb
+    // function dance. The profile limiter prevents pathological churn.
+    const result = await query(
+      `SELECT window_zooms FROM users WHERE id = $1`,
+      [req.user.id]
+    )
+    const current = (result.rows[0]?.window_zooms && typeof result.rows[0].window_zooms === 'object')
+      ? { ...result.rows[0].window_zooms }
+      : {}
+    if (zoom === null) {
+      delete current[key]
+    } else {
+      current[key] = zoom
+    }
+    if (Object.keys(current).length > 64) {
+      return res.status(400).json({ error: 'too_many_zoom_entries' })
+    }
+    const next = Object.keys(current).length > 0 ? current : null
+    await query(
+      `UPDATE users
+          SET window_zooms = $2::jsonb,
+              updated_at = NOW()
+        WHERE id = $1`,
+      [req.user.id, next ? JSON.stringify(next) : null]
+    )
+    res.json({ windowZooms: next })
   })
 
   // === Native email/password auth ========================================

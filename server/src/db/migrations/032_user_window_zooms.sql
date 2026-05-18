@@ -1,0 +1,16 @@
+-- Per-user, per-window zoom percentages for the floating popup windows
+-- (mini table, feed, freeform tools / HUD / side-bets / chat, market
+-- widgets — any FloatingWindow with a storageKey). Previously stored
+-- localStorage-only; promoted so the user's chosen zooms follow them
+-- across devices, mirroring the felt-color migration (031).
+--
+-- Shape: `{ "<storage-key>": <percent> }` — e.g.
+--   {
+--     "pokerxyz:pokerwin":      120,
+--     "pokerxyz:feedwin":        90,
+--     "pokerxyz:widget:hud":    100
+--   }
+-- Default of 100 is implicit — we only persist a key when the user has
+-- changed that window's zoom away from default. NULL means "user
+-- hasn't customized any window" — falls back to local defaults.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS window_zooms JSONB;
