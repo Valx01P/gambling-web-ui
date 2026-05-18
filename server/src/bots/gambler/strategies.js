@@ -88,6 +88,22 @@ function smallBetWindow(ctx) {
   if (pot > 0 && ctx.toCall / (pot + ctx.toCall) <= 0.30) return true
   return false
 }
+// Aggressive actions on the current street. Preflop counts the BB as
+// the opening "bet" so open=2, 3-bet=3, 4-bet=4. Used by every bot's
+// decide() wrapper to upgrade further raises into shoves — once you're
+// past the 4-bet, you know what you want, no point grinding out a 5-bet
+// that just becomes a 6-bet next action.
+function streetBetLevel(ctx) {
+  var hist = ctx.actionHistory || []
+  var n = 0
+  for (var i = 0; i < hist.length; i++) {
+    var a = hist[i]
+    if (a.phase !== ctx.phase) continue
+    if (a.action === 'raise' || a.action === 'all_in') n += 1
+  }
+  if (ctx.streetIsPreflop) n += 1
+  return n
+}
 `.trim()
 
 // 1. Splashy — pays to see every flop, fires turn barrels when checked
@@ -97,6 +113,14 @@ const SPLASHY_CODE = `
 ${SHARED_HELPERS}
 
 function decide(ctx) {
+  var r = _decide(ctx)
+  if (r && r.action === 'raise' && streetBetLevel(ctx) >= 4) {
+    return { action: 'all_in', say: r.say || "shipping it" }
+  }
+  return r
+}
+
+function _decide(ctx) {
   var s = ctx.handStrengthScore || 0
   var eq = (typeof ctx.equity === 'number') ? ctx.equity : null
   var toCall = ctx.toCall || 0
@@ -184,6 +208,14 @@ const CHASER_CODE = `
 ${SHARED_HELPERS}
 
 function decide(ctx) {
+  var r = _decide(ctx)
+  if (r && r.action === 'raise' && streetBetLevel(ctx) >= 4) {
+    return { action: 'all_in', say: r.say || "all the chips" }
+  }
+  return r
+}
+
+function _decide(ctx) {
   var s = ctx.handStrengthScore || 0
   var eq = (typeof ctx.equity === 'number') ? ctx.equity : null
   var toCall = ctx.toCall || 0
@@ -255,6 +287,14 @@ const MANIAC_CODE = `
 ${SHARED_HELPERS}
 
 function decide(ctx) {
+  var r = _decide(ctx)
+  if (r && r.action === 'raise' && streetBetLevel(ctx) >= 4) {
+    return { action: 'all_in', say: r.say || "LET'S GO" }
+  }
+  return r
+}
+
+function _decide(ctx) {
   var s = ctx.handStrengthScore || 0
   var eq = (typeof ctx.equity === 'number') ? ctx.equity : null
   var toCall = ctx.toCall || 0
@@ -321,6 +361,14 @@ const STICKY_CODE = `
 ${SHARED_HELPERS}
 
 function decide(ctx) {
+  var r = _decide(ctx)
+  if (r && r.action === 'raise' && streetBetLevel(ctx) >= 4) {
+    return { action: 'all_in', say: r.say || "fine, all-in" }
+  }
+  return r
+}
+
+function _decide(ctx) {
   var s = ctx.handStrengthScore || 0
   var eq = (typeof ctx.equity === 'number') ? ctx.equity : null
   var toCall = ctx.toCall || 0
@@ -382,6 +430,14 @@ const HUNTER_CODE = `
 ${SHARED_HELPERS}
 
 function decide(ctx) {
+  var r = _decide(ctx)
+  if (r && r.action === 'raise' && streetBetLevel(ctx) >= 4) {
+    return { action: 'all_in', say: r.say || "for it all" }
+  }
+  return r
+}
+
+function _decide(ctx) {
   var s = ctx.handStrengthScore || 0
   var eq = (typeof ctx.equity === 'number') ? ctx.equity : null
   var toCall = ctx.toCall || 0
