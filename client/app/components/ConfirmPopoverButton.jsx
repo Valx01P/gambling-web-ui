@@ -156,12 +156,17 @@ export default function ConfirmPopoverButton({
           ref={popoverRef}
           role="dialog"
           aria-label="Confirm"
-          // z-[800] sits above the new chrome stack (chrome 500,
-          // active tool panel 600, anchored Tools menu 700). The
-          // popover is portaled to body, so it has to be authoritative
-          // — anything lower would land behind the very panel it was
-          // launched from (the bots panel uses this for Auto-Fill).
-          className="fixed z-[800] w-[min(18rem,calc(100vw-1.5rem))] rounded-lg border border-amber-300/60 bg-zinc-900/98 shadow-2xl"
+          // z-[20000] keeps the confirmation popover on top of EVERY
+          // other surface while it's open — the click-raised
+          // FloatingWindow / Tools-menu band (901+) AND the elevated
+          // tool panels (z-[10000] — Actions/Profile/Bank/etc.). The
+          // seat-bot tools, Auto-Fill, recalc-clone, delete-bot all
+          // launch this popover from inside an elevated panel; at any
+          // value <= 10000 the popover would render BEHIND its own
+          // launcher. 20000 is unreachable by the session-monotonic
+          // click-raise counter in practice (tens of thousands of
+          // clicks).
+          className="fixed z-[20000] w-[min(18rem,calc(100vw-1.5rem))] rounded-lg border border-amber-300/60 bg-zinc-900/98 shadow-2xl"
           style={popoverStyle}
           // Stop pointerdown (in addition to click) so the Tools menu's
           // click-outside-to-close handler — which listens on

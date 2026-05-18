@@ -100,13 +100,15 @@ export default function InviteToTablePopover({ open, onClose, roomId, fromDispla
       role="dialog"
       aria-modal="false"
       aria-label="Invite to table"
-      // z-[900] keeps the invite popover above the equity widget and
-      // top chrome (z-[500]), the popups (260+), the active tool
-      // panel (z-[600] base / z-[900] for elevated panels), and the
-      // docked Tools menu (z-[800]). It's a user-initiated action
-      // overlay, so it should sit at the top of the chrome stack
-      // while it's open.
-      className="fixed right-3 top-16 z-[900] w-[min(20rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md sm:right-6 sm:top-20"
+      // z-[20000] puts the invite popover on top of EVERY other surface
+      // while it's open — above the click-raised FloatingWindow band
+      // (901+), the docked Tools menu, elevated tool panels (z-[10000]
+      // — Actions/Profile/Bank/etc.), and the achievement toast
+      // (z-[9999]). It's the active confirmation surface; the user is
+      // mid-action and nothing else should obstruct it. The 20000 floor
+      // is unreachable by the session-monotonic click-raise counter in
+      // practice (would need tens of thousands of clicks).
+      className="fixed right-3 top-16 z-[20000] w-[min(20rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-zinc-600/60 bg-zinc-900/98 shadow-2xl backdrop-blur-md sm:right-6 sm:top-20"
     >
       <div className="flex items-center justify-between gap-2 border-b border-zinc-800/80 px-3 py-2">
         <div className="text-[11px] font-black uppercase tracking-widest text-zinc-300">Invite to this table</div>
