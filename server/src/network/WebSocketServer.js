@@ -20,6 +20,27 @@ const MAX_CONNECTIONS_PER_IP = Number(process.env.WS_MAX_CONNECTIONS_PER_IP) || 
 const MAX_MESSAGE_BURST = Number(process.env.WS_MSG_BURST) || 30
 const REFILL_PER_SEC = Number(process.env.WS_MSG_REFILL_PER_SEC) || 10
 
+// Casino actions get their OWN dedicated token bucket per socket so spam-
+// fire on slots / craps / lottery can't starve the main bucket and the
+// main bucket's small ceiling can't gate the casino. The slot UI
+// explicitly supports hold-Space spam, and casino actions are stateless
+// on the server (each spin is a quick rand + payout calc + bank update,
+// no DB write, no cross-player state) — so a generous cap is safe.
+//
+// 200 burst / 100/sec sustained leaves plenty of headroom over the OS
+// key-repeat rate (~30/sec on most setups, up to ~60/sec on aggressive
+// keyboards) so the user can't trip this in normal play. A malicious
+// client still can't truly DoS the engine: 100 spins/sec × 8 sockets
+// per IP = 800/sec max from one source, well inside what the engine can
+// chew. Casino message types skip the main bucket entirely.
+const CASINO_MESSAGE_TYPES = new Set([
+  'casino:slots:spin',
+  'casino:craps:roll',
+  'casino:lottery:buy',
+])
+const CASINO_BURST = Number(process.env.WS_CASINO_BURST) || 200
+const CASINO_REFILL_PER_SEC = Number(process.env.WS_CASINO_REFILL_PER_SEC) || 100
+
 // Per-message size cap. The handler accepts ~4KB messages comfortably; the
 // real limits per type live downstream (chat trims to 200 chars, etc.), but
 // the JSON.parse + dispatch costs scale with input size. Anything past 4KB
@@ -154,6 +175,12 @@ export class WebSocketServer {
         tokens: MAX_MESSAGE_BURST,
         lastRefill: Date.now()
       }
+      // Separate, much larger bucket for casino spam. See CASINO_BURST
+      // / CASINO_REFILL_PER_SEC comments above for sizing rationale.
+      ws._casinoBucket = {
+        tokens: CASINO_BURST,
+        lastRefill: Date.now()
+      }
 
       const player = this.playerManager.addPlayer(playerId, ws)
 
@@ -178,22 +205,50 @@ export class WebSocketServer {
           return
         }
 
-        // Refill the bucket then spend a token. elapsedSec is capped at the
-        // time needed to fully top up the bucket — without this, a client
-        // idle for hours/days then sending one frame would multiply a huge
-        // elapsed value by REFILL_PER_SEC before Math.min clamps. Math.min
-        // saves us today, but the inner multiply is unbounded; cap early.
-        const bucket = ws._tokenBucket
+        // Parse once up front so we can route to the right bucket by
+        // message type before charging tokens. Re-parse inside the handler
+        // would be wasted work; we hand the parsed payload through.
+        const msgStr = msg.toString()
+        let parsed
+        try { parsed = JSON.parse(msgStr) }
+        catch {
+          player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Malformed message.' } })
+          return
+        }
+
+        // Pick the right bucket. Casino messages get their own dedicated
+        // bucket sized for spam-fire; everything else shares the global
+        // bucket whose tight ceiling is what protects against chat /
+        // trade / poker action floods.
         const now = Date.now()
+        const isCasino = CASINO_MESSAGE_TYPES.has(parsed?.type)
+        const bucket = isCasino ? ws._casinoBucket : ws._tokenBucket
+        const burst = isCasino ? CASINO_BURST : MAX_MESSAGE_BURST
+        const refill = isCasino ? CASINO_REFILL_PER_SEC : REFILL_PER_SEC
+
+        // Refill then spend. elapsedSec is capped at the time needed to
+        // fully top up the bucket — without this, a client idle for
+        // hours/days then sending one frame would multiply a huge
+        // elapsed value by refill before Math.min clamps.
         const rawElapsedSec = (now - bucket.lastRefill) / 1000
-        const maxRefillSec = MAX_MESSAGE_BURST / REFILL_PER_SEC
+        const maxRefillSec = burst / refill
         const elapsedSec = rawElapsedSec > maxRefillSec ? maxRefillSec : rawElapsedSec
         if (elapsedSec > 0) {
-          bucket.tokens = Math.min(MAX_MESSAGE_BURST, bucket.tokens + elapsedSec * REFILL_PER_SEC)
+          bucket.tokens = Math.min(burst, bucket.tokens + elapsedSec * refill)
           bucket.lastRefill = now
         }
         if (bucket.tokens < 1) {
-          player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Slow down — rate limited.' } })
+          // Casino overflows are silenced on the client (by `code` AND by
+          // message-text fallback for old-client compatibility). Other
+          // types still surface the toast — chat / trade flood feedback
+          // is real "you're doing something wrong" UX.
+          if (!isCasino) {
+            player.send({ type: MESSAGE_TYPES.ERROR, data: { message: 'Slow down — rate limited.', code: 'rate_limited' } })
+          }
+          // Casino: drop the message silently. The user is mashing Space
+          // past the engine's already-generous spam ceiling; the engine
+          // simply won't fire that one spin. No error noise, no animation,
+          // bank balance just doesn't move for that beat.
           return
         }
         bucket.tokens -= 1
@@ -204,7 +259,11 @@ export class WebSocketServer {
         // to the right Player. The reattach handler sets this on the WS
         // itself, not on a per-message basis.
         const activePlayerId = ws._reattachedPlayerId || playerId
-        this.messageHandler.handle(activePlayerId, msg.toString())
+        // Pass the pre-parsed payload so handle() doesn't JSON.parse the
+        // string a second time. handle() falls back to parsing the string
+        // if `parsed` is omitted (preserves the old call signature for
+        // anything that still calls it without it).
+        this.messageHandler.handle(activePlayerId, msgStr, parsed)
       })
 
       // Guard against close + error firing back-to-back on the same socket.

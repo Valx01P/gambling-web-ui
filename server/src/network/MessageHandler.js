@@ -106,7 +106,7 @@ export class MessageHandler {
     this.roomManager = roomManager
   }
 
-  handle(playerId, message) {
+  handle(playerId, message, parsedPayload = null) {
     const player = this.playerManager.getPlayer(playerId)
     if (!player) return this.error('Player not found')
 
@@ -114,7 +114,10 @@ export class MessageHandler {
     player.updateActivity()
 
     try {
-      const { type, data } = JSON.parse(message)
+      // WebSocketServer parses up front to look up per-type rate-limit
+      // cost; honor that here to avoid a second JSON.parse. Falls back
+      // to parsing the raw string for any caller that doesn't pre-parse.
+      const { type, data } = parsedPayload || JSON.parse(message)
 
       // Host-disabled-tool gate. Runs before the real handler so the
       // check is in one place instead of scattered across nine different

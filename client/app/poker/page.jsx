@@ -2385,13 +2385,25 @@ export default function PokerPage() {
         case 'poker_contest_mode_update':
           setContestMode(msg.data || {})
           break
-        case 'error':
-          if (msg.data?.message && /sign in/i.test(msg.data.message)) {
-            setAuthGateMessage(msg.data.message)
+        case 'error': {
+          // Rate-limit errors are swallowed silently. The casino spam
+          // path (hold-Space on slots) deliberately fires faster than
+          // strictly needed, and the user explicitly does not want a
+          // "Slow down" toast every time the bucket brushes its
+          // ceiling. We match on BOTH the explicit `code: 'rate_limited'`
+          // (current server) AND a regex on the message text (in case
+          // the server build cached on Render hasn't picked up the
+          // code field yet — old server, new client). Either match
+          // drops the toast.
+          const errMsg = msg.data?.message || ''
+          if (msg.data?.code === 'rate_limited' || /^\s*slow down/i.test(errMsg)) break
+          if (errMsg && /sign in/i.test(errMsg)) {
+            setAuthGateMessage(errMsg)
           } else {
-            addSys(`Error: ${msg.data.message}`)
+            addSys(`Error: ${errMsg}`)
           }
           break
+        }
       }
     }
     }  // end inner connect()

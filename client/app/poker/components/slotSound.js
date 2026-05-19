@@ -143,18 +143,44 @@ function scheduleWinChime(ctx, startSec, multiple, masterVol) {
 // bell fires, not which pitch.
 const REEL_BELL_FREQS = [50, 60, 70]
 
+// Quick percussive click for rapid-fire spins. ~30ms sine pulse at
+// 600Hz — short enough that even at 10 spins/sec it reads as discrete
+// "tick … tick … tick" feedback rather than a continuous buzz. Used
+// only in rapid mode; normal/turbo spins still get the full bell train.
+function playRapidClick(ctx, t, gainVal) {
+  const osc = ctx.createOscillator()
+  const g = ctx.createGain()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(600, t)
+  g.gain.setValueAtTime(0, t)
+  g.gain.linearRampToValueAtTime(gainVal, t + 0.003)
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03)
+  osc.connect(g).connect(ctx.destination)
+  osc.start(t)
+  osc.stop(t + 0.04)
+}
+
 // Public entry — called once per spin from SlotsTab's spinId effect.
 // `reelDelaysMs` and `baseDurationMs` mirror the values driving the
 // visual transition so the audio and animation can never drift; each
 // bell fires the moment its reel comes to rest. If `payout > bet`
 // (net profit), a tiered celebratory chime fires ~150ms after the
 // last reel bell.
+//
+// `rapid` mode is for spam-click / hold-Space play: the user is
+// firing spins faster than a normal animation can settle. We skip
+// the 3-bell ascending landing train (which would pile on top of
+// itself at 10 spins/sec and turn into noise) in favor of a single
+// short click — but we ALWAYS play the win chime if there's profit,
+// because that's the whole point of letting the player spam (they
+// want to find a win, even at the cost of audio fidelity).
 export function playSlotSpin({
   baseDurationMs,
   reelDelaysMs,
   masterVol = 0.5,
   bet = 0,
   payout = 0,
+  rapid = false,
 }) {
   const ctx = getCtx()
   if (!ctx) return
@@ -167,19 +193,23 @@ export function playSlotSpin({
     ctx.resume().catch(() => {})
   }
   const now = ctx.currentTime
-  reelDelaysMs.forEach((delay, i) => {
-    const bellTimeSec = now + (delay + baseDurationMs) / 1000
-    const freq = REEL_BELL_FREQS[i] ?? REEL_BELL_FREQS[REEL_BELL_FREQS.length - 1]
-    playBell(ctx, bellTimeSec, freq, masterVol * 0.6, 0.55)
-  })
+  if (rapid) {
+    playRapidClick(ctx, now, masterVol * 0.45)
+  } else {
+    reelDelaysMs.forEach((delay, i) => {
+      const bellTimeSec = now + (delay + baseDurationMs) / 1000
+      const freq = REEL_BELL_FREQS[i] ?? REEL_BELL_FREQS[REEL_BELL_FREQS.length - 1]
+      playBell(ctx, bellTimeSec, freq, masterVol * 0.6, 0.55)
+    })
+  }
   // Win chime — only on actual profit (payout > bet), not on the
   // 0.5x two-cherry consolation which the engine still calls a "win"
   // but nets out negative for the player. Tier by multiple in
-  // scheduleWinChime. Fires 150ms after the last bell so the
-  // celebratory arpeggio has clean air to sit in.
+  // scheduleWinChime. Fires after the last bell (or right after the
+  // rapid click) so the celebratory arpeggio has clean air to sit in.
   if (bet > 0 && payout > bet) {
-    const lastReelEndMs = baseDurationMs + Math.max(...reelDelaysMs)
-    const chimeStartSec = now + lastReelEndMs / 1000 + 0.15
+    const lastReelEndMs = rapid ? 60 : baseDurationMs + Math.max(...reelDelaysMs)
+    const chimeStartSec = now + lastReelEndMs / 1000 + (rapid ? 0.05 : 0.15)
     scheduleWinChime(ctx, chimeStartSec, payout / bet, masterVol)
   }
 }

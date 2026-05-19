@@ -351,12 +351,32 @@ function SlotsTab({
   // ceremonial intro pull on the very first panel mount is the only
   // one we ever want to see for free.
 
+  // Rapid mode — the user is spam-clicking Spin (or holding Space).
+  // Rather than fight them by gating clicks behind the in-flight
+  // animation, we ABSORB the spam: each click immediately fires a
+  // new server spin AND compresses the visual settle to ~120ms so
+  // the player just sees fast result flickers. The whole design goal
+  // is "let them lose it all as fast as they want" — slot variance
+  // is fixed by the engine; pacing it slower doesn't change the math,
+  // it only frustrates the user who's chasing a flash of a jackpot.
+  //
+  // Set per-spin from rapidNextRef in the spinId useEffect; auto-
+  // expires ~600ms after the last rapid spin so a single deliberate
+  // click after a spam burst still gets the full bell-train animation.
+  const [rapidActive, setRapidActive] = useState(false)
+  const rapidNextRef = useRef(false)
+  const lastSpinClickAtRef = useRef(0)
+  const rapidExitTimerRef = useRef(null)
+  useEffect(() => () => {
+    if (rapidExitTimerRef.current) clearTimeout(rapidExitTimerRef.current)
+  }, [])
   // Reel-stop staggering. Right reel finishes last for the suspense
   // beat slot machines build their reputation on. Turbo clips both
-  // the per-reel duration and the inter-reel offsets.
-  const baseDuration = turbo ? 700 : 1300
-  const reelDelays = turbo ? [0, 140, 320] : [0, 280, 620]
-  const totalSettleMs = baseDuration + reelDelays[2] + 120
+  // the per-reel duration and the inter-reel offsets. Rapid mode
+  // collapses everything to a 120ms flicker.
+  const baseDuration = rapidActive ? 120 : (turbo ? 700 : 1300)
+  const reelDelays = rapidActive ? [0, 25, 55] : (turbo ? [0, 140, 320] : [0, 280, 620])
+  const totalSettleMs = baseDuration + reelDelays[2] + 60
   useEffect(() => {
     if (spinId === 0 || !spinning) return
     const t = setTimeout(() => setSpinning(false), totalSettleMs)
@@ -375,18 +395,37 @@ function SlotsTab({
     if (spinId === 0) return
     if (spinId === lastSoundSpinId.current) return
     lastSoundSpinId.current = spinId
+    // Promote the per-spin rapid intent (set by spinIt right before
+    // the WS roundtrip) into render state so baseDuration/reelDelays
+    // recompute for THIS spin. Both the Reel's CSS transition and
+    // the settle timer will pick up the rapid values on the next
+    // render — which lands before the Reel's double-RAF stage='spin'
+    // commit, so the visual transition uses the rapid duration.
+    const isRapid = rapidNextRef.current
+    rapidNextRef.current = false
+    setRapidActive(isRapid)
+    // Auto-exit rapid mode ~600ms after the last rapid spin so a
+    // deliberate single click after a spam burst gets the full
+    // bell-train animation again.
+    if (rapidExitTimerRef.current) clearTimeout(rapidExitTimerRef.current)
+    if (isRapid) {
+      rapidExitTimerRef.current = setTimeout(() => setRapidActive(false), 600)
+    }
     if (slotsMutedRef.current) return
     // bet + payout drive the post-bell win chime: profit (payout > bet)
     // triggers a tiered celebratory arpeggio scheduled inside playSlotSpin.
     // A 0.5x two-cherry consolation (payout < bet) deliberately stays
     // silent — the engine counts it as a "win" for stats but the player
-    // is net negative on the spin.
+    // is net negative on the spin. In rapid mode the 3-bell landing
+    // train is skipped (would overlap with the next click); only the
+    // single quick tick + win chime fire.
     playSlotSpin({
-      baseDurationMs: baseDuration,
-      reelDelaysMs: reelDelays,
+      baseDurationMs: isRapid ? 120 : baseDuration,
+      reelDelaysMs: isRapid ? [0, 25, 55] : reelDelays,
       masterVol: 0.45,
       bet: lastSpin?.bet || 0,
       payout: lastSpin?.payout || 0,
+      rapid: isRapid,
     })
     // Deliberately only depending on spinId — baseDuration / reelDelays
     // are captured at fire time, which is exactly the values driving
@@ -414,11 +453,49 @@ function SlotsTab({
     setBetInput(String(clamped))
   }
   const spinIt = () => {
-    if (spinning) return
+    // Bet validity is the only hard gate. We deliberately do NOT
+    // early-return on `spinning` — letting the user spam-click /
+    // hold-Space fires a fresh server spin each press, and the
+    // rapidNextRef flag below tells the spinId effect to compress
+    // the next animation to a ~120ms flicker. The whole point is
+    // "let them lose it all as fast as they want."
     if (bet < minBet || bet > myBank) return
+    // Manual spam cancels any in-flight auto-spin so the two pacing
+    // systems aren't fighting each other (autoSpin gates on !spinning,
+    // which now stays true continuously during a spam burst).
+    if (autoSpinsLeft > 0) setAutoSpinsLeft(0)
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    // "Spamming" = clicking while a spin is still resolving, OR firing
+    // two clicks within 400ms of each other. Either condition tags the
+    // next spin as rapid; the spinId effect reads this and compresses
+    // the animation + sound.
+    rapidNextRef.current = spinning || (now - lastSpinClickAtRef.current) < 400
+    lastSpinClickAtRef.current = now
     setSpinning(true)
     onSpin(bet)
   }
+
+  // Space-bar spin trigger. Active only while SlotsTab is mounted —
+  // unmounts when the user switches to Craps/Lottery or closes the
+  // casino panel entirely. Skip when typing in the bet input (or any
+  // other input/contentEditable) so the keystroke isn't hijacked
+  // mid-edit. preventDefault stops the browser's default page-scroll
+  // on Space; e.repeat is honored intentionally so holding Space
+  // streams spins at the OS's key-repeat rate.
+  useEffect(() => {
+    function onKey(e) {
+      if (e.code !== 'Space') return
+      const t = e.target
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      e.preventDefault()
+      spinIt()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+    // spinIt closes over `bet`, `myBank`, `spinning`, etc.; we want
+    // the listener to always call the freshest spinIt, so re-bind on
+    // every render is correct (add/remove is cheap).
+  })
   const startAutoSpin = (n) => {
     if (spinning || autoSpinsLeft > 0) {
       setAutoSpinsLeft(0)
@@ -503,10 +580,16 @@ function SlotsTab({
         <button
           type="button"
           onClick={spinIt}
-          disabled={!joined || spinning || autoSpinsLeft > 0 || bet < minBet || bet > myBank}
+          // Note `spinning` is intentionally NOT in the disabled list:
+          // re-clicking while spinning is the spam path — each click
+          // fires a fresh server spin and the animation compresses to
+          // a ~120ms flicker. autoSpin remains a hard gate so the two
+          // pacing systems don't collide.
+          disabled={!joined || autoSpinsLeft > 0 || bet < minBet || bet > myBank}
           className="flex-1 rounded-lg border-2 border-amber-400/60 bg-gradient-to-b from-amber-500 to-amber-700 px-3 py-3 text-base font-black uppercase tracking-widest text-zinc-950 shadow-[0_0_18px_rgba(245,158,11,0.35)] hover:from-amber-400 hover:to-amber-600 disabled:opacity-40 disabled:cursor-not-allowed"
+          title="Click or press Space to spin. Spam either to fast-forward through spins."
         >
-          {spinning ? 'Spinning…' : bet > myBank ? `Need $${fmtChips(bet - myBank)} more` : `Spin · $${fmtChips(bet)}`}
+          {bet > myBank ? `Need $${fmtChips(bet - myBank)} more` : (rapidActive ? `Spin × ${fmtChips(bet)} · ⚡` : (spinning ? 'Spinning…' : `Spin · $${fmtChips(bet)}`))}
         </button>
         <button
           type="button"
