@@ -1,6 +1,12 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { playSlotSpin } from './slotSound'
+
+// localStorage key for the slot-sound mute toggle. Survives page
+// reloads so a muted-by-preference user doesn't get blasted every
+// time they reopen the casino.
+const SLOT_SOUND_KEY = 'pokerxyz:slots:sound'
 
 // Casino — slots / craps / lottery. Server is the source of truth for
 // every result; this panel just renders the wager input, plays the
@@ -20,7 +26,12 @@ const SYMBOL_LABEL = {
   bell:    'Bell',
   diamond: 'Diamond',
   seven:   'Seven',
-  blank:   '—',
+  // The server's 'blank' is a real reel stop (1/64 weight in
+  // casinoEngine.js) — three of these still lose, but they're
+  // a deliberate symbol on the drum, not a missing-asset error.
+  // BAR is the classic Vegas convention for the low-value /
+  // no-prize reel face that's been on slot drums for 60+ years.
+  blank:   'BAR',
 }
 
 const SYMBOL_ACCENT = {
@@ -30,7 +41,7 @@ const SYMBOL_ACCENT = {
   bell:    'text-amber-300',
   diamond: 'text-cyan-300',
   seven:   'text-red-300',
-  blank:   'text-zinc-500',
+  blank:   'text-amber-200',
 }
 
 // Reel strip — what the player sees scrolling by. Each cell is one
@@ -170,7 +181,40 @@ function SymbolSVG({ id, className = '' }) {
         </svg>
       )
     case 'blank':
+      // Classic Vegas BAR symbol — three stacked gold bars on a deep
+      // plum plaque. Reads as "the no-prize stop on this drum" the
+      // same way it has on real machines for half a century, instead
+      // of the dashed placeholder which looked like a broken asset.
+      // Still pays nothing (the server's three-of-a-kind table
+      // intentionally omits 'blank') but now it looks like a symbol,
+      // not a render error.
+      return (
+        <svg viewBox="0 0 100 100" className={className}>
+          <defs>
+            <linearGradient id="bar-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="#fde047" />
+              <stop offset="50%" stopColor="#f59e0b" />
+              <stop offset="100%" stopColor="#92400e" />
+            </linearGradient>
+            <linearGradient id="bar-plaque" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="#3b0764" />
+              <stop offset="100%" stopColor="#1e1b4b" />
+            </linearGradient>
+          </defs>
+          <rect x="10" y="10" width="80" height="80" rx="10" fill="url(#bar-plaque)" stroke="#a16207" strokeWidth="3" />
+          {[22, 44, 66].map((y) => (
+            <g key={y}>
+              <rect x="20" y={y} width="60" height="14" rx="3" fill="url(#bar-grad)" stroke="#78350f" strokeWidth="1" />
+              <text x="50" y={y + 11} fontSize="10" fontWeight="900" textAnchor="middle" fontFamily="Impact, Arial, sans-serif" fill="#7c2d12" letterSpacing="1">BAR</text>
+            </g>
+          ))}
+        </svg>
+      )
     default:
+      // Truly unknown id (shouldn't happen — every server-side symbol
+      // has an explicit case above). Render an obvious zinc square so
+      // a future symbol-id mismatch is visible during dev rather than
+      // silently showing up as a free spin slot.
       return (
         <svg viewBox="0 0 100 100" className={className}>
           <rect x="20" y="20" width="60" height="60" rx="8" fill="#27272a" stroke="#3f3f46" strokeWidth="2" strokeDasharray="3 3" />
@@ -284,6 +328,22 @@ function SlotsTab({
   // Auto-spin queue. Decrements after each completed spin until 0.
   // Cancelable with a click; pauses if the player runs out of bank.
   const [autoSpinsLeft, setAutoSpinsLeft] = useState(0)
+  // Slot-reel SFX gate. Persisted to localStorage so a user who muted
+  // (e.g. running an auto-spin grind in a quiet room) doesn't get
+  // blasted every time they reopen the casino. SSR-safe init via the
+  // lazy state initializer + typeof window guard. Default ON so the
+  // user discovers the sound exists on their first spin.
+  const [slotsMuted, setSlotsMuted] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try { return window.localStorage.getItem(SLOT_SOUND_KEY) === 'muted' } catch { return false }
+  })
+  // Snapshot the mute state into a ref so the spin-sound effect can
+  // read the latest value without listing slotsMuted in its deps (we
+  // want the effect to run only when spinId bumps — adding slotsMuted
+  // to deps would re-fire it on the next render after a toggle, and
+  // we'd play a phantom sound for a stale spin).
+  const slotsMutedRef = useRef(slotsMuted)
+  useEffect(() => { slotsMutedRef.current = slotsMuted }, [slotsMuted])
   // spinId is owned by the parent CasinoPanel so it survives this tab
   // unmounting (the user switching to Craps or Lottery and back). The
   // Reel uses an internal "animated for spinId X" ref so a remount
@@ -302,6 +362,38 @@ function SlotsTab({
     const t = setTimeout(() => setSpinning(false), totalSettleMs)
     return () => clearTimeout(t)
   }, [spinId, spinning, totalSettleMs, setSpinning])
+
+  // Slot-reel SFX. Tied to the same spinId the visual reels use so the
+  // click train + landing thunks land in lockstep with the animation.
+  // Mirrors the Reel's `animatedRef === spinId` trick: a tab-switch
+  // remount sees the existing spinId and skips replay (no phantom
+  // sound when the user toggles back to Slots). slotsMuted is read off
+  // a ref so toggling mute mid-spin doesn't re-fire this effect on a
+  // stale spinId.
+  const lastSoundSpinId = useRef(spinId)
+  useEffect(() => {
+    if (spinId === 0) return
+    if (spinId === lastSoundSpinId.current) return
+    lastSoundSpinId.current = spinId
+    if (slotsMutedRef.current) return
+    // bet + payout drive the post-bell win chime: profit (payout > bet)
+    // triggers a tiered celebratory arpeggio scheduled inside playSlotSpin.
+    // A 0.5x two-cherry consolation (payout < bet) deliberately stays
+    // silent — the engine counts it as a "win" for stats but the player
+    // is net negative on the spin.
+    playSlotSpin({
+      baseDurationMs: baseDuration,
+      reelDelaysMs: reelDelays,
+      masterVol: 0.45,
+      bet: lastSpin?.bet || 0,
+      payout: lastSpin?.payout || 0,
+    })
+    // Deliberately only depending on spinId — baseDuration / reelDelays
+    // are captured at fire time, which is exactly the values driving
+    // the same-tick visual transition. Listing them would re-fire the
+    // effect on a turbo toggle even when no new spin happened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spinId])
 
   // Auto-spin loop: each time a spin settles, fire the next.
   useEffect(() => {
@@ -423,6 +515,26 @@ function SlotsTab({
           className={`shrink-0 rounded-lg border-2 px-3 text-[11px] font-black uppercase tracking-widest ${turbo ? 'border-amber-300 bg-amber-500/30 text-amber-100 shadow-[0_0_12px_rgba(245,158,11,0.35)]' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
         >
           ⚡<br />Turbo
+        </button>
+        {/* SFX toggle — the slot click train + landing thunks are on
+            by default. Persisted to localStorage so an auto-spin
+            grinder who muted stays muted across reloads. Slot-specific
+            (Craps + Lottery don't synth audio today). */}
+        <button
+          type="button"
+          onClick={() => {
+            setSlotsMuted(m => {
+              const next = !m
+              try { window.localStorage.setItem(SLOT_SOUND_KEY, next ? 'muted' : 'on') } catch {}
+              return next
+            })
+          }}
+          title={slotsMuted ? 'Sound off — click to enable spin SFX' : 'Sound on — click to mute spin SFX'}
+          aria-label={slotsMuted ? 'Unmute spin sound' : 'Mute spin sound'}
+          aria-pressed={!slotsMuted}
+          className={`shrink-0 rounded-lg border-2 px-3 text-[11px] font-black uppercase tracking-widest ${!slotsMuted ? 'border-amber-300 bg-amber-500/30 text-amber-100 shadow-[0_0_12px_rgba(245,158,11,0.35)]' : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}
+        >
+          {slotsMuted ? '🔇' : '🔊'}<br />{slotsMuted ? 'Muted' : 'SFX'}
         </button>
       </div>
 
