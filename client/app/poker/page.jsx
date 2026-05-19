@@ -4154,7 +4154,15 @@ export default function PokerPage() {
                               return
                             }
                             action()
-                            setTableMenuOpen(false)
+                            // Keep the Tools menu open after seating a
+                            // bot squad / Invite / Oracle / Auto-Fill —
+                            // the user typically wants to top up with
+                            // another ★ tool (e.g. seat NN squad, then
+                            // add Oracle) and re-opening the dropdown
+                            // each click is friction. The confirm
+                            // popover dismisses itself on its own
+                            // (handleConfirm → setOpen(false)); the
+                            // dropdown explicitly stays put.
                           }
                         }
                       }
@@ -6314,6 +6322,12 @@ export default function PokerPage() {
           raiseAmount={raiseAmount}
           setRaiseAmount={setRaiseAmount}
           safeRaise={safeRaise}
+          // Same turn-clock derivations the main felt uses — passed in
+          // so the mini view's countdown pill + amber/red active-seat
+          // ring stay in lockstep with the table (no second timer, no
+          // drift between the two views).
+          activeTurnTimeRemaining={activeTurnTimeRemaining}
+          isActiveTurnWarning={isActiveTurnWarning}
           onAction={(kind) => {
             if (kind === 'fold')   send('poker_fold')
             else if (kind === 'check')  send('poker_check')

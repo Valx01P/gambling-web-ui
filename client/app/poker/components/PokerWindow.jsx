@@ -2,6 +2,7 @@
 
 import CardSprite from '../../components/CardSprite'
 import FloatingWindow from '../../components/FloatingWindow'
+import { ActionBadge, formatChipsCompact } from './ActionBadge'
 
 // Floating PiP-style poker window. Mirrors the main table's state
 // (parent passes everything in as props) and routes actions through
@@ -11,10 +12,19 @@ import FloatingWindow from '../../components/FloatingWindow'
 
 function fmt(n) {
   const v = Math.max(0, Math.round(Number(n) || 0))
-  if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(1)}B`
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`
-  if (v >= 10_000) return `${(v / 1_000).toFixed(0)}K`
-  return v.toLocaleString()
+  return formatChipsCompact(v)
+}
+
+// PRE-FLOP / FLOP / TURN / RIVER / SHOWDOWN — derived from phase so the
+// header reads like the main felt's status pill instead of the raw
+// internal phase name.
+function streetLabelFor(phase, communityCount) {
+  if (phase === 'showdown') return 'SHOWDOWN'
+  if (phase === 'waiting') return 'WAITING'
+  if (communityCount >= 5) return 'RIVER'
+  if (communityCount >= 4) return 'TURN'
+  if (communityCount >= 3) return 'FLOP'
+  return 'PRE-FLOP'
 }
 
 export default function PokerWindow({
@@ -35,6 +45,10 @@ export default function PokerWindow({
   raiseAmount = 0,
   setRaiseAmount,
   safeRaise = 0,
+  // Turn-clock state — passed from parent so the mini view uses the
+  // same estimated-server-time clock the main felt does (no drift).
+  activeTurnTimeRemaining = null,
+  isActiveTurnWarning = false,
   // Action callback. `kind` is one of 'fold'|'check'|'call'|'raise'|'all_in'.
   onAction,
 }) {
@@ -44,6 +58,16 @@ export default function PokerWindow({
   const pot = gameState?.pot || 0
   const phase = gameState?.phase || 'waiting'
   const activeId = gameState?.activePlayerId
+  const dealerIndex = gameState?.dealerIndex
+  const dealerId = Number.isInteger(dealerIndex) ? seats[dealerIndex]?.id : null
+  const street = streetLabelFor(phase, community.length)
+  const isMyTurn = activeId === playerId && !isSpectator
+  // Format the turn timer to a one-decimal seconds remaining — matches the
+  // main table's countdown vibe. Hide when not in an active hand or when
+  // the active seat has no timer (no-humans-waiting → server suppresses).
+  const turnSecondsLeft = activeTurnTimeRemaining != null && activeTurnTimeRemaining > 0
+    ? Math.ceil(activeTurnTimeRemaining / 1000)
+    : null
 
   return (
     <FloatingWindow
@@ -51,7 +75,7 @@ export default function PokerWindow({
       onClose={onClose}
       // Intentionally no onBack — the mini table is a permanent
       // companion popup and doesn't need a back-to-Tools shortcut.
-      title={`Table · ${phase}`}
+      title={`Table · ${street}`}
       icon="♠"
       accent="emerald"
       storageKey="pokerxyz:pokerwin"
@@ -64,7 +88,7 @@ export default function PokerWindow({
         {/* Pot + community ────────────────────────────────────────── */}
         <div className="rounded-md border border-emerald-500/30 bg-gradient-to-b from-emerald-900/40 to-emerald-950/60 p-2">
           <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-emerald-200">
-            <span>Pot</span>
+            <span>Pot · {street}</span>
             <span className="tabular-nums">${fmt(pot)}</span>
           </div>
           <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
@@ -84,37 +108,78 @@ export default function PokerWindow({
           </div>
         </div>
 
-        {/* Seats list ───────────────────────────────────────────────── */}
+        {/* Seats list. Each row mirrors the main felt: dealer-button
+            chip, SB/BB blind tag, current-bet pill, last-action badge
+            (RAISE 20 / RE-RAISE / 4-BET / CALL ALL-IN — labels come
+            straight from the server's getAggressionLabel via
+            player.lastAction.text). Folded seats fade + strike. The
+            actor of the moment gets the amber ring (or red if
+            warning) so the eye lands on it the same way the main
+            table draws focus. */}
         <div className="space-y-1">
           {seats.map(seat => {
             const isMe = seat.id === playerId
             const isActive = seat.id === activeId
+            const isWarn = isActive && isActiveTurnWarning
+            const isDealer = seat.id === dealerId
+            const isSB = seat?.lastAction?.action === 'sb'
+            const isBB = seat?.lastAction?.action === 'bb'
             const bet = seat.currentBet || 0
+            const ringCls = isActive
+              ? (isWarn
+                  ? 'border-red-400/80 bg-red-950/40 ring-2 ring-red-400 shadow-[0_0_16px_rgba(239,68,68,0.55)]'
+                  : 'border-amber-300/80 bg-amber-950/30 ring-2 ring-amber-300 shadow-[0_0_14px_rgba(251,191,36,0.55)]')
+              : 'border-zinc-700/60 bg-zinc-950/40'
+            // Server's rich aggression text — "Bet" / "Raise" /
+            // "Re-raise" / "4-Bet" / "Re-raise All-In" / "Call
+            // All-In" / "FOLD" / "CHECK" / "CALL" — comes through on
+            // seat.lastAction.text + .amount via PokerGame.playerActions.
+            // SB/BB get the same ActionBadge styling but render in the
+            // identity slot before voluntary action takes over.
+            const showRichAction = seat.lastAction && !isSB && !isBB && seat.lastAction.action
+            // Standalone fold/all-in pills only when lastAction was
+            // cleared by the server (e.g. street advanced after the
+            // fold) — otherwise the badge already conveys the state.
+            const showFoldPill = seat.folded && (!seat.lastAction || seat.lastAction.action !== 'fold')
+            const showAllInPill = seat.allIn && (!seat.lastAction || seat.lastAction.action !== 'all_in')
             return (
               <div
                 key={seat.id}
-                className={`flex items-center gap-2 rounded-md border px-2 py-1 text-[11px] ${
-                  isActive
-                    ? 'border-amber-400/70 bg-amber-500/10'
-                    : 'border-zinc-700/60 bg-zinc-950/40'
-                } ${isMe ? 'ring-1 ring-emerald-400/40' : ''}`}
+                className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors ${ringCls} ${isMe ? 'outline outline-1 outline-emerald-400/40 -outline-offset-1' : ''}`}
               >
+                {/* Dealer chip — small white circle, identical to the
+                    main felt's dealer marker. */}
+                {isDealer && (
+                  <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-white text-[8px] font-black text-black shadow-sm border border-zinc-300" title="Dealer button">D</span>
+                )}
                 <span className={`min-w-0 flex-1 truncate font-black ${seat.folded ? 'text-zinc-500 line-through' : 'text-white'}`}>
                   {isMe ? 'You' : (seat.username || 'Player')}
                   {seat.isBot ? <span className="ml-1 text-[9px] font-bold uppercase text-zinc-500">bot</span> : null}
                 </span>
-                <span className="tabular-nums text-zinc-300">${fmt(seat.chips || 0)}</span>
+                {/* Action badge sits immediately after the name and
+                    BEFORE the stack so the user's eye doesn't have to
+                    skip past the chip count. shrink-0 + whitespace-
+                    nowrap on the badge keep it intact at every window
+                    width; the name's flex-1 + min-w-0 + truncate
+                    yields width first when space is tight. */}
+                {(isSB || isBB) && !seat.folded && (
+                  <ActionBadge action={seat.lastAction} size="sm" />
+                )}
+                {showRichAction && (
+                  <ActionBadge action={seat.lastAction} size="sm" />
+                )}
+                {showFoldPill && (
+                  <span className="shrink-0 rounded bg-red-500/15 px-1 py-0.5 text-[9px] font-black uppercase text-red-300">fold</span>
+                )}
+                {showAllInPill && (
+                  <span className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-black uppercase text-amber-200">all-in</span>
+                )}
                 {bet > 0 && (
-                  <span className="rounded bg-amber-500/20 px-1 py-0.5 text-[9px] font-black uppercase text-amber-200 tabular-nums">
+                  <span className="shrink-0 rounded bg-amber-500/20 px-1 py-0.5 text-[9px] font-black uppercase text-amber-200 tabular-nums">
                     +${fmt(bet)}
                   </span>
                 )}
-                {seat.folded && (
-                  <span className="rounded bg-red-500/15 px-1 py-0.5 text-[9px] font-black uppercase text-red-300">fold</span>
-                )}
-                {seat.allIn && (
-                  <span className="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-black uppercase text-amber-200">all-in</span>
-                )}
+                <span className="shrink-0 tabular-nums text-zinc-300">${fmt(seat.chips || 0)}</span>
               </div>
             )
           })}
@@ -125,10 +190,31 @@ export default function PokerWindow({
           )}
         </div>
 
-        {/* Your cards ───────────────────────────────────────────────── */}
+        {/* Your cards. When it's your turn the wrapper takes on the
+            same amber/red ring the main table's nameplate uses for
+            the active seat — so the mini view tells you "act now" the
+            same way the felt does. The countdown pill in the top-
+            right of this card surfaces the turn clock seconds. */}
         {!isSpectator && myHoleCards.length > 0 && (
-          <div className="rounded-md border border-zinc-700/60 bg-zinc-950/40 p-2">
-            <div className="mb-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">Your hand</div>
+          <div
+            className={`relative rounded-md border p-2 transition-colors ${
+              isMyTurn
+                ? (isActiveTurnWarning
+                    ? 'border-red-400/80 bg-red-950/40 ring-2 ring-red-400 shadow-[0_0_18px_rgba(239,68,68,0.65)]'
+                    : 'border-amber-300/80 bg-amber-950/30 ring-2 ring-amber-300 shadow-[0_0_18px_rgba(251,191,36,0.65)]')
+                : 'border-zinc-700/60 bg-zinc-950/40'
+            }`}
+          >
+            <div className="mb-1 flex items-center justify-between">
+              <div className={`text-[9px] font-black uppercase tracking-widest ${isMyTurn ? (isActiveTurnWarning ? 'text-red-200' : 'text-amber-200') : 'text-zinc-500'}`}>
+                Your hand{isMyTurn ? ' · your turn' : ''}
+              </div>
+              {isMyTurn && turnSecondsLeft != null && (
+                <div className={`rounded-full px-2 py-0.5 text-[9px] font-black tabular-nums ${isActiveTurnWarning ? 'bg-red-500/30 text-red-100' : 'bg-amber-500/25 text-amber-100'}`}>
+                  {turnSecondsLeft}s
+                </div>
+              )}
+            </div>
             <div className="flex items-center justify-center gap-2.5">
               {myHoleCards.map((c, i) => (
                 <CardSprite key={i} card={c} className="h-20 w-14" />
